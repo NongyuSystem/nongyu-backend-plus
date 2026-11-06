@@ -30,3 +30,6 @@ Thumbs.db
 # Go workspace 文件（本项目为单一 module，不使用 go.work）
 go.work
 go.work.sum
+
+# DSH 插件运行时产物（自动生成，不属于服务骨架）
+docs/agents/
