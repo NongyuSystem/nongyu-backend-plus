@@ -6,10 +6,12 @@
 
 ## 调研范围与来源
 
-本次只读两处磁盘目录，未访问网络、未读任何二手转述：
+本次只读两处磁盘位置，未访问网络、未读任何二手转述：
 
 - **新仓库**（下称 `@NEW/`）：`D:\IT\program\web-program\nongyu-system\apps\nongyu-backend-plus\`
 - **旧农屿 monorepo**（下称 `@OLD/`）：`D:\IT\program\web-program\nongyu-system\`
+
+> **包含关系更正（2026-11-06，R3 核查后）**：`@NEW/` 物理上就是 `@OLD/apps/nongyu-backend-plus/`，是**同一目录**，不是两个磁盘实体。它是嵌套在 monorepo `apps/` 下的**独立 Git 仓库**（自带 `.git/`，remote = `NongyuSystem/nongyu-backend-plus.git`）而父库 remote = `NongyuSystem/nongyu-system.git`；父库 `.gitignore:95-96` 写明「新农屿后端：独立 Git 仓库（嵌套在 apps/ 下，由自身仓库管理，父仓库不跟踪）」并忽略该目录，`git -C @OLD ls-files apps/nongyu-backend-plus` 返回空，`docs/common/项目结构总览.md:52,55-56` 亦印证。故下文「两处目录」应理解为「同一路径、两套 Git 仓库上下文」。详见 [同名backend-plus与旧迁移先例核查.md](同名backend-plus与旧迁移先例核查.md)。[来源: @OLD/.gitignore:95-96；@OLD/docs/common/项目结构总览.md:52,55-56；@NEW/.git/config:8-10；@OLD/.git/config:11-13；本会话 `git rev-parse --show-toplevel` 与 `Resolve-Path` 实测]
 
 为让每条结论可回溯，引用统一采用 `[来源: @OLD/路径:行号]` 或 `[来源: @NEW/路径:行号]` 格式；路径相对各自根目录，行号为该文件实际行号（由带行号的读取工具或 grep 给出）。
 
@@ -120,7 +122,7 @@
 - `@OLD/apps`（8 个）：`nongyu-app-plus`、`nongyu-backend-plus`、`nongyu-go-track-server`、`nongyu-node-server`、`nongyu-node-track-server`、`nongyu-rn-app`、`nongyu-web-admin`、`nongyu-web-site`。[来源: 本会话 `ls @OLD/apps`]
 - `@OLD/packages`（5 个）：`nongyu-agent-cli`、`nongyu-agent-sdk`、`nongyu-tool-jiaowu`、`nongyu-tool-second`、`nongyu-track-contract`。[来源: 本会话 `ls @OLD/packages`]
 - `@OLD/docs` 顶层：`agents`、`common`、`forhuman`、`nongyu-go-track-server`、`nongyu-node-server`、`nongyu-node-track-server`、`nongyu-rn-app`、`nongyu-web-admin`、`nongyu-web-site`。[来源: 本会话 `ls @OLD/docs`]
-- 注意：`@OLD/apps/nongyu-backend-plus` 与本仓库（`@NEW/`）**同名但是不同实体**——本仓库是「独立于旧农屿 monorepo 的全新仓库」；旧仓内 `apps/nongyu-backend-plus` 的存在仅由 `ls` 确认，本次未读取其内容，需另行核对。[来源: @NEW/README.md:3；本会话 `ls @OLD/apps`]
+- **更正（2026-11-06，R3 核查后）**：`@OLD/apps/nongyu-backend-plus` 与 `@NEW/` 是**同一物理目录**，不是「两个不同磁盘实体」；它同时是嵌套在 monorepo 下的**独立 Git 仓库**（两个不同 remote、父库 `.gitignore:95-96` 显式忽略、`ls-files` 为空、`docs/common/项目结构总览.md:52,55-56` 印证）。`README.md:3` 的「独立」指 Git 仓库独立，与「不复用旧后端代码」相互印证。详见 [同名backend-plus与旧迁移先例核查.md](同名backend-plus与旧迁移先例核查.md)。[来源: @OLD/.gitignore:95-96；@OLD/docs/common/项目结构总览.md:52,55-56；@NEW/go.mod:1,3,5；本会话 `git rev-parse` / `Resolve-Path` 实测]
 
 #### 3.2 技术栈归属（一手）
 
@@ -190,7 +192,7 @@
 - **壳 / Shell**：仓内一致指 UI 壳（App Shell、页面壳、管理端壳、Agent 对话壳）或 RN 原生安装包壳，不指 WebVPN。[来源: @OLD/docs/forhuman/rawprds/nongyu-rn-app/Shell/底部导航PRD.md:1,7；@OLD/docs/nongyu-rn-app/技术选型.md:45；@OLD/docs/nongyu-rn-app/Pushy版本管理手册.md:47-48]
 - **网关**：仓内指学校 wengine 反向代理，不是农屿自建服务。[来源: @OLD/docs/nongyu-rn-app/tech/WebVPN探索.md:99,254,300]
 - **迁移**：旧仓里已发生过一次有文档的「迁移」（Go 埋点 → Node 埋点，同契约换实现），与本次「迁到新 Go 后端」方向相反且对象不同。[来源: @OLD/docs/nongyu-go-track-server/specs/埋点服务迁移至Node.md:1,20；@NEW/README.md:84]
-- **`nongyu-backend-plus` 同名**：旧仓 `apps/` 下也存在同名目录，与本仓库是不同实体；本仓库 README 自称「独立于旧 monorepo 的全新仓库」。[来源: @NEW/README.md:3；本会话 `ls @OLD/apps`]
+- **`nongyu-backend-plus` 同名**：`@OLD/apps/nongyu-backend-plus` 与 `@NEW/` 是同一物理目录、嵌套独立 Git 仓库；「不同实体」只成立于「两套 Git 仓库上下文」，不成立於「两个磁盘目录」。[来源: @OLD/.gitignore:95-96；@OLD/docs/common/项目结构总览.md:52,55-56；同名backend-plus与旧迁移先例核查.md]
 
 ---
 
@@ -201,7 +203,7 @@
 1. **「webvpn 这个大壳」到底指什么**：全仓 `大壳` 0 命中，无法从一手材料确定。候选见问题 2（UI 壳 / wengine 反向代理网关 / 整套传输适配俗称），但都缺「大壳」字面证据，需维护者指认具体对象。[来源: 本会话 grep `大壳` 0 命中]
 2. **「迁移旧农屿」的范围**：是整体重写旧 `nongyu-node-server` 业务，还是只迁某一块能力（如 WebVPN / 教务托管），还是数据/部署切换，本笔记只列 6 种含义（问题 5），未查到任何仓内文档定义本次「迁移」的范围。[来源: @NEW/README.md:3,7,80（仅声明「不复用旧后端」）；@NEW 全仓 grep `迁移|WebVPN|CAS|SSO|壳` 0 命中]
 3. **WebVPN 是否要进新 Go 后端、以什么形态进**：旧规格明令「不做服务端代请求，不把 WebVPN 编成任意 URL 代理」[来源: @OLD/docs/nongyu-rn-app/specs/WebVPN传输适配.md:20]，而新仓库是后端进程；若要在后端承载，与这条既有边界如何协调，仓内无结论，需维护者拍板。
-4. **`@OLD/apps/nongyu-backend-plus` 的内容**：本次仅由 `ls` 确认存在，未读取，无法判断它与本仓库（`@NEW/`）的关系；需另行核对。[来源: 本会话 `ls @OLD/apps`；@NEW/README.md:3]
+4. ~~`@OLD/apps/nongyu-backend-plus` 的内容与关系~~ **已查清（2026-11-06，R3）**：与本仓是同一物理目录、嵌套独立 Git 仓库，与 `README.md:3` 无冲突；详见 [同名backend-plus与旧迁移先例核查.md](同名backend-plus与旧迁移先例核查.md)。剩余未查清的是父库历史是否曾跟踪过另一同名目录、远端服务器状态、实际切换时间线。[来源: 同名backend-plus与旧迁移先例核查.md「尚未查清」]
 5. **`packages/nongyu-agent-sdk/src/jiaowu.ts` 等消费方细节**：仅确认路径存在，未逐行读取其对 `nongyu-tool-jiaowu` 的依赖内容。[来源: 本会话 `find packages -iname "*jiaowu*"`]
 6. **SDD 前置产物**：新仓库 `docs/specs/`、`docs/plans/` 当前均为 `.gitkeep` 空占位，若要做任何业务「迁移」，按 README 须先补 PRD/Spec。[来源: @NEW/README.md:77-80；@NEW/glob `docs/specs/.gitkeep`、`docs/plans/.gitkeep`]
 7. **真账号链路未验收项**（探索笔记自列，可能影响任何重写）：WebVPN ticket TTL/空闲超时未公布、SSO 优化未验证、RN 不跑 `main.js` 时 `ASPSESSIONID*` 是否仅靠 `Set-Cookie` 进系统罐未拆响应头验证。[来源: @OLD/docs/nongyu-rn-app/tech/WebVPN探索.md:22,219,295,324-330]
