@@ -1,11 +1,11 @@
 package platform
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -105,94 +105,83 @@ func (m *MockTicketStore) ListExpiringSoon(_ context.Context, before time.Time, 
 }
 
 // ---------------------------------------------------------------------------
-// MockCipher
+// MockCipher（生产级 AES-256-GCM 实现）
 // ---------------------------------------------------------------------------
 
 const (
-	mockCipherMagic      = "NGY1"      // 4 字节格式标记，便于识别/拒绝非法输入
-	mockCipherMACLen     = sha256.Size // 32
-	mockCipherHeadLen    = 4 + mockCipherMACLen
-	defaultMockCipherKey = "dev-only-placeholder-key-change-me"
+	// 格式：[magic(4) | nonce(12) | GCM 密文+tag(n)]
+	aeadMagic   = "NGY2"
+	aeadHeadLen = 4 + 12 // magic + GCM 标准 nonce 长度
+	aeadKeyLen  = 32     // AES-256
+	// 空密钥回落到该默认值，保证无 .env 也能起服务；生产由 config 强校验拦住。
+	defaultCipherKey = "dev-only-placeholder-key-change-me"
 )
 
 var errInvalidSealed = errors.New("platform: 无效的 sealed 数据（格式错误、密钥不符或已被篡改）")
 
-// MockCipher 是 Cipher 的骨架期占位实现：密钥来自配置注入，接口本身不暴露密钥。
+// MockCipher 是 Cipher 的实现：AES-256-GCM 认证加密。
+// 名字沿用骨架期类型名以免改动装配层与既有调用方，但算法已是生产级 AEAD。
 //
-// 封装格式：[magic(4) | HMAC-SHA256(32) | XOR 密文(n)]，密文用 key 派生的
-// SHA256 密钥流异或得到；MAC 同时承担「密钥绑定」与「完整性校验」。
-// 全部只用标准库，不引入新依赖，且可逆、可注入。
-//
-// 这是占位实现，不是生产加密：按架构落点草图，后续用 AES-GCM 实现同一 Cipher
-// 接口替换即可（见 docs/tech/架构落点草图-WebVPN业务域.md 第八节 NewAESGCM）。
+// 密钥来自配置注入，接口本身不暴露密钥；每次 Seal 用 crypto/rand 生成新 nonce，
+// 因此同一明文两次封装产出不同密文。密文自带认证标签，篡改/错误密钥/截断一律拒绝。
 type MockCipher struct {
 	key []byte
 }
 
-// NewMockCipher 用配置里的密钥构造；空密钥回落到安全默认值，保证无 .env 也能起服务。
+// NewMockCipher 用配置里的密钥构造：SHA-256 派生出固定 32 字节 AES 密钥。
+// 空密钥回落到安全默认值（生产由 config.Load 的强校验拦截，见 config.go）。
 func NewMockCipher(key string) *MockCipher {
 	if key == "" {
-		key = defaultMockCipherKey
+		key = defaultCipherKey
 	}
-	return &MockCipher{key: []byte(key)}
+	sum := sha256.Sum256([]byte(key))
+	return &MockCipher{key: sum[:]}
 }
 
-// Seal 实现 Cipher。
+// Seal 实现 Cipher：随机 nonce + AES-GCM 封装，返回 [magic|nonce|ciphertext+tag]。
 func (c *MockCipher) Seal(plaintext []byte) ([]byte, error) {
-	ct := xorWithKeystream(c.key, plaintext)
-	mac := c.mac(ct)
-	out := make([]byte, 0, mockCipherHeadLen+len(ct))
-	out = append(out, mockCipherMagic...)
-	out = append(out, mac...)
-	out = append(out, ct...)
+	block, err := aes.NewCipher(c.key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("platform: 生成 nonce 失败：%w", err)
+	}
+	out := make([]byte, 0, aeadHeadLen+len(plaintext)+gcm.Overhead())
+	out = append(out, aeadMagic...)
+	out = append(out, nonce...)
+	out = gcm.Seal(out, nonce, plaintext, []byte(aeadMagic))
 	return out, nil
 }
 
-// Open 实现 Cipher；密钥不符、格式非法或被篡改时返回错误。
+// Open 实现 Cipher：校验格式/密钥/完整性后还原明文。
 func (c *MockCipher) Open(sealed []byte) ([]byte, error) {
-	if len(sealed) < mockCipherHeadLen {
+	if len(sealed) < aeadHeadLen {
 		return nil, errInvalidSealed
 	}
-	if !bytes.Equal([]byte(mockCipherMagic), sealed[:4]) {
+	if string(sealed[:4]) != aeadMagic {
 		return nil, errInvalidSealed
 	}
-	wantMAC := sealed[4:mockCipherHeadLen]
-	ct := sealed[mockCipherHeadLen:]
-	if !hmac.Equal(c.mac(ct), wantMAC) {
+	block, err := aes.NewCipher(c.key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := sealed[4:aeadHeadLen]
+	ct := sealed[aeadHeadLen:]
+	plain, err := gcm.Open(nil, nonce, ct, []byte(aeadMagic))
+	if err != nil {
 		return nil, errInvalidSealed
 	}
-	return xorWithKeystream(c.key, ct), nil
-}
-
-// mac 用 HMAC-SHA256 把密钥绑定到密文上（含格式标记），用于校验完整性与密钥一致性。
-func (c *MockCipher) mac(ct []byte) []byte {
-	m := hmac.New(sha256.New, c.key)
-	m.Write([]byte(mockCipherMagic))
-	m.Write(ct)
-	return m.Sum(nil)
-}
-
-// xorWithKeystream 生成与输入等长的确定性密钥流并异或。异或是对合运算，
-// 所以 Seal/Open 共用这一段即可互逆。
-func xorWithKeystream(key, in []byte) []byte {
-	out := make([]byte, len(in))
-	if len(in) == 0 {
-		return out
-	}
-	var counter uint32
-	var cbuf [4]byte
-	for off := 0; off < len(in); off += sha256.Size {
-		binary.BigEndian.PutUint32(cbuf[:], counter)
-		h := sha256.New()
-		h.Write(key)
-		h.Write(cbuf[:])
-		block := h.Sum(nil)
-		for i := 0; i < len(block) && off+i < len(in); i++ {
-			out[off+i] = in[off+i] ^ block[i]
-		}
-		counter++
-	}
-	return out
+	return plain, nil
 }
 
 // ---------------------------------------------------------------------------
