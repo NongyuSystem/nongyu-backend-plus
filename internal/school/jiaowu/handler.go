@@ -138,19 +138,24 @@ func captchaHandler(svc *Service) gin.HandlerFunc {
 }
 
 type loginRequest struct {
-	UserID string `json:"userID"`
-	Code   string `json:"code"`
-	UUID   string `json:"uuid"`
+	Code string `json:"code"`
+	UUID string `json:"uuid"`
 }
 
 func loginHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 身份只来自认证中间件写入的上下文；请求体里的 userID 即便存在也一律不可用。
+		userID := c.GetString(school.CtxUserID)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, errorResponse{Code: "unauthorized", Message: "缺少已认证身份"})
+			return
+		}
 		var in loginRequest
 		if err := c.ShouldBindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
 			return
 		}
-		result, err := svc.Login(c.Request.Context(), in.UserID, in.Code, in.UUID)
+		result, err := svc.Login(c.Request.Context(), userID, in.Code, in.UUID)
 		if err != nil {
 			writeError(c, err)
 			return
@@ -161,9 +166,9 @@ func loginHandler(svc *Service) gin.HandlerFunc {
 
 func logoutHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.Query("userID")
+		userID := c.GetString(school.CtxUserID)
 		if userID == "" {
-			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "缺少 userID"})
+			c.JSON(http.StatusUnauthorized, errorResponse{Code: "unauthorized", Message: "缺少已认证身份"})
 			return
 		}
 		if err := svc.Logout(c.Request.Context(), userID); err != nil {

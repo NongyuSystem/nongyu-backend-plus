@@ -61,6 +61,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	clock := platform.NewRealClock()
 	engine := server.New()
 
+	// 认证与限流：AuthKey 非空时挂到所有业务路由之前（gin 的 Use 必须先于路由注册）。
+	// 身份只从已验签的 Bearer token 写入 context，业务域不再信任请求体/query 的 userID。
+	// 空 AuthKey 仅供本地开发/单测；prod 由 config.Load 强校验要求非空。
+	if cfg.AuthKey != "" {
+		verifier := server.NewTokenVerifier(cfg.AuthKey, clock)
+		limiter := server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
+		engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(limiter))
+	}
+
 	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
 	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
 	// #17 起用 NewWithAccel + RegisterAccel：加速开关从 cfg.AccelEnabled 读（默认 false），

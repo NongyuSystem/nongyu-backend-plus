@@ -2,6 +2,11 @@ package school
 
 import "net/url"
 
+// CtxUserID 是认证中间件与业务域共享的身份上下文键。
+// 放在父包作契约，避免业务子域反向 import 框架适配层（server）。
+// 认证中间件写入、业务 handler 只读；请求体/query 里的 userID 一律不生效。
+const CtxUserID = "authenticatedUserID"
+
 // ── 逻辑目标名 ────────────────────────────────────────────────────────────
 //
 // 调用方只能传 TargetName，不能传 URL —— 这是 ADR-0001 第 1 条的结构性保证：

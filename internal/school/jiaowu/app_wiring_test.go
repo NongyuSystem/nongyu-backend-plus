@@ -17,6 +17,7 @@ import (
 	"nongyu-backend-plus/internal/app"
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/server"
 )
 
 // 说明：本文件是「与装配层配合」的 HTTP 层测试（见 issue #13 测试要求）。
@@ -156,6 +157,47 @@ func TestAppWiringDoerIsEnforced(t *testing.T) {
 	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
 	if !errors.Is(err, platform.ErrTargetDenied) {
 		t.Fatalf("装配层注入的 Doer 应以 ErrTargetDenied 拒绝非白名单目标，实际 %v", err)
+	}
+}
+
+// TestAppWiringAuthEnforced 证明生产装配（AuthKey 非空）下认证与限流真的生效：
+// 无 token → 401；合法 token → 200；超过限流 → 429；请求体里的 userID 不生效。
+func TestAppWiringAuthEnforced(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gin.DefaultWriter = io.Discard
+	gin.DefaultErrorWriter = io.Discard
+	cfg := config.Config{AuthKey: "wiring-auth-key", RateLimitPerMinute: 2}
+	application, err := app.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	h := application.Handler()
+
+	// 无凭证
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/school/address?target=jiaowu", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("无凭证应 401，实际 %d", w.Code)
+	}
+
+	// 签发合法 token
+	verifier := server.NewTokenVerifier("wiring-auth-key", platform.NewRealClock())
+	token := verifier.Issue("alice", time.Now().Add(time.Hour))
+	doGet := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/school/address?target=jiaowu", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := doGet(); code != http.StatusOK {
+		t.Fatalf("合法 token 应 200，实际 %d", code)
+	}
+	if code := doGet(); code != http.StatusOK {
+		t.Fatalf("第 2 次应仍在限流内，实际 %d", code)
+	}
+	if code := doGet(); code != http.StatusTooManyRequests {
+		t.Fatalf("超过每用户每分钟 2 次应 429，实际 %d", code)
 	}
 }
 

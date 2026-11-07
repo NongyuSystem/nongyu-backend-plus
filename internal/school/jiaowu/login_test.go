@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/school"
 	"nongyu-backend-plus/internal/school/jiaowu"
 )
 
@@ -49,6 +49,14 @@ func newAuthEngine(t *testing.T, doer *platform.MockHTTPDoer) (http.Handler, *pl
 	audit := &captureAudit{}
 	logger := slog.New(audit)
 	engine := gin.New()
+	// 测试用身份注入：模拟认证中间件往 context 写身份（生产由 server.AuthMiddleware 做）。
+	// 明确只认头，不认请求体/query，避免测试掩盖冒用漏洞。
+	engine.Use(func(c *gin.Context) {
+		if u := c.GetHeader("X-Test-User"); u != "" {
+			c.Set(school.CtxUserID, u)
+		}
+		c.Next()
+	})
 	jiaowu.RegisterWithAuth(engine, jiaowu.NewWithAuth(doer, tickets, cipher, clock, logger))
 	return engine, tickets, clock, audit
 }
@@ -62,6 +70,7 @@ func postJSON(t *testing.T, h http.Handler, path string, body any) *httptest.Res
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Test-User", "test-user")
 	h.ServeHTTP(w, req)
 	return w
 }
@@ -120,7 +129,7 @@ func TestLoginSuccessStoresAndReturnsTicket(t *testing.T) {
 		t.Fatalf("应把票据下发给本人，实际 body=%s", w.Body.String())
 	}
 	// 存储里落的是「加密后的票据」，不应出现明文。
-	sealed, expiresAt, err := tickets.Get(nil, "u1")
+	sealed, expiresAt, err := tickets.Get(nil, "test-user")
 	if err != nil {
 		t.Fatalf("票据应入外置存储：%v", err)
 	}
@@ -147,7 +156,7 @@ func TestLoginAuditNeverContainsTicket(t *testing.T) {
 	if strings.Contains(audit.buf.String(), "SECRET-TICKET-VALUE") {
 		t.Fatalf("审计日志不得包含票据值，实际：%s", audit.buf.String())
 	}
-	if !strings.Contains(audit.buf.String(), "u2") {
+	if !strings.Contains(audit.buf.String(), "test-user") {
 		t.Fatalf("审计应记录用户标识，实际：%s", audit.buf.String())
 	}
 }
@@ -172,7 +181,7 @@ func TestLoginBadCaptchaNoTicketStored(t *testing.T) {
 	if w.Code == http.StatusOK {
 		t.Fatalf("错误验证码不应返回 200，实际 body=%s", w.Body.String())
 	}
-	if _, _, err := tickets.Get(nil, "u3"); err == nil {
+	if _, _, err := tickets.Get(nil, "test-user"); err == nil {
 		t.Fatalf("验证码错误时存储里不应落任何票据")
 	}
 }
@@ -186,17 +195,18 @@ func TestLogoutDeletesTicket(t *testing.T) {
 	postJSON(t, h, "/school/login", map[string]string{
 		"userID": "u4", "code": "1234", "uuid": "cap-4",
 	})
-	if _, _, err := tickets.Get(nil, "u4"); err != nil {
+	if _, _, err := tickets.Get(nil, "test-user"); err != nil {
 		t.Fatalf("前置：登录应落票据，%v", err)
 	}
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/school/logout?"+url.Values{"userID": {"u4"}}.Encode(), nil)
+	req := httptest.NewRequest(http.MethodDelete, "/school/logout", nil)
+	req.Header.Set("X-Test-User", "test-user")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("登出期望 200，实际 %d，body=%s", w.Code, w.Body.String())
 	}
-	if _, _, err := tickets.Get(nil, "u4"); err == nil {
+	if _, _, err := tickets.Get(nil, "test-user"); err == nil {
 		t.Fatalf("登出后票据记录应被删除")
 	}
 }

@@ -4,9 +4,9 @@ package presence
 // 写响应」，不含任何业务判断（业务判断全在 presence.go 的 Report / Decide）。
 //
 // 端点形状（选最简且可测）：
-//   - POST /school/presence   JSON 体 {"userID":"u1","mode":"direct"|"vpn"}
-//     客户端每次进入与网络切换时调用；对应架构落点草图 §5 的 Report。
-//   - GET  /school/presence?userID=u1
+//   - POST /school/presence   JSON 体 {"mode":"direct"|"vpn"}
+//     客户端每次进入与网络切换时调用；身份来自认证上下文，不接受 body 里的 userID。
+//   - GET  /school/presence
 //     返回当前判定 {"mode":"direct"|"vpn","source":"client"|"backend"}。
 //     source 让调用方与测试能直接观测「上报生效 / 陈旧回落」。
 //
@@ -17,6 +17,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"nongyu-backend-plus/internal/school"
 )
 
 const (
@@ -34,8 +36,7 @@ func Register(r gin.IRouter, svc *Service) {
 // reportRequest 是上报请求体：只收用户与模式，上报时刻由服务端 Clock 盖章，
 // 不信任客户端自带的时间（避免时钟回拨/伪造把陈旧判定绕过）。
 type reportRequest struct {
-	UserID string `json:"userID"`
-	Mode   Mode   `json:"mode"`
+	Mode Mode `json:"mode"`
 }
 
 // reportResponse 是成功上报的回执。
@@ -57,29 +58,34 @@ type decideResponse struct {
 }
 
 // reportHandler 把上报请求翻译为 Service.Report 调用。
-// 入参非法（非法 JSON / 缺字段 / 空 userID / 非法 mode）统一 400 + invalid_presence。
+// 身份只来自认证中间件写入的上下文（school.CtxUserID），请求体/query 的 userID 一律不生效。
 func reportHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID := c.GetString(school.CtxUserID)
+		if userID == "" {
+			writeError(c, http.StatusUnauthorized, "缺少已认证身份")
+			return
+		}
 		var req reportRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			writeError(c, http.StatusBadRequest, "请求体不是合法 JSON 或缺少必填字段")
 			return
 		}
-		if err := svc.Report(c.Request.Context(), ClientPresence{UserID: req.UserID, Mode: req.Mode}); err != nil {
+		if err := svc.Report(c.Request.Context(), ClientPresence{UserID: userID, Mode: req.Mode}); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, reportResponse{UserID: req.UserID, Mode: req.Mode})
+		c.JSON(http.StatusOK, reportResponse{UserID: userID, Mode: req.Mode})
 	}
 }
 
 // decideHandler 把判定请求翻译为 Service.DecideDetailed 调用。
-// GET 缺 userID 属于入参错误，返回 400；其余一律 200 + 判定结果。
+// 身份同样只来自认证上下文，不接受 query 里的 userID 覆盖。
 func decideHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.Query("userID")
+		userID := c.GetString(school.CtxUserID)
 		if userID == "" {
-			writeError(c, http.StatusBadRequest, "缺少 userID 查询参数")
+			writeError(c, http.StatusUnauthorized, "缺少已认证身份")
 			return
 		}
 		d, _ := svc.DecideDetailed(c.Request.Context(), userID)

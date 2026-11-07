@@ -38,6 +38,11 @@ type Config struct {
 	// AccelEnabled 是否启用免密换票加速路径（#17）。
 	// 门户 appid 免密能力未验证，缺省 false；真实手工验收通过前不得置 true。
 	AccelEnabled bool
+	// AuthKey 是认证令牌 HMAC 签名密钥。生产必须显式配置（强校验）。
+	// 空值表示「不挂认证中间件」，仅供本地开发与单测使用。
+	AuthKey string
+	// RateLimitPerMinute 是每用户每分钟允许的请求数。
+	RateLimitPerMinute int
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -48,11 +53,13 @@ func Load() (Config, error) {
 		AppEnv:             envOr("APP_ENV", "dev"),
 		ShutdownTimeoutSec: envIntOr("SHUTDOWN_TIMEOUT_SEC", 10),
 		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单。
-		TicketKey:      envOr("TICKET_KEY", placeholderTicketKey),
-		HTTPTimeoutSec: envIntOr("HTTP_TIMEOUT_SEC", 5),
-		HTTPAllowlist:  envOr("HTTP_ALLOWLIST", ""),
-		HTTPEnforce:    envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
-		AccelEnabled:   envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
+		TicketKey:          envOr("TICKET_KEY", placeholderTicketKey),
+		HTTPTimeoutSec:     envIntOr("HTTP_TIMEOUT_SEC", 5),
+		HTTPAllowlist:      envOr("HTTP_ALLOWLIST", ""),
+		HTTPEnforce:        envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
+		AccelEnabled:       envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
+		AuthKey:            envOr("AUTH_KEY", ""),             // 生产强校验要求非空
+		RateLimitPerMinute: envIntOr("RATE_LIMIT_PER_MINUTE", 60),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
@@ -72,6 +79,12 @@ func Load() (Config, error) {
 		}
 		if !cfg.HTTPEnforce {
 			return Config{}, fmt.Errorf("prod 环境不得关闭 HTTP_ENFORCE（出站闸口强制）")
+		}
+		if strings.TrimSpace(cfg.AuthKey) == "" {
+			return Config{}, fmt.Errorf("prod 环境必须显式配置 AUTH_KEY（认证令牌签名密钥）")
+		}
+		if cfg.RateLimitPerMinute <= 0 {
+			return Config{}, fmt.Errorf("prod 环境 RATE_LIMIT_PER_MINUTE 必须为正整数")
 		}
 	}
 	return cfg, nil

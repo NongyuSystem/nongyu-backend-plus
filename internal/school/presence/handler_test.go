@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/school"
 	"nongyu-backend-plus/internal/school/presence"
 )
 
@@ -34,6 +35,13 @@ func newEngine(t *testing.T) (http.Handler, *platform.MockTicketStore, *platform
 	clock := platform.NewMockClock(baseTime)
 	svc := presence.New(store, clock, presence.ModeDirect, testStaleAfter)
 	engine := gin.New()
+	// 测试用身份注入：模拟认证中间件往 context 写身份，只认头、不认 body/query。
+	engine.Use(func(c *gin.Context) {
+		if u := c.GetHeader("X-Test-User"); u != "" {
+			c.Set(school.CtxUserID, u)
+		}
+		c.Next()
+	})
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
@@ -52,6 +60,7 @@ func doJSON(t *testing.T, h http.Handler, method, path string, body any) *httpte
 		r = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, r)
+	req.Header.Set("X-Test-User", "test-presence-user")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -123,12 +132,12 @@ func TestHTTPReportLandsInTicketStoreAndHealthzStaysGreen(t *testing.T) {
 	h, store, clock := newEngine(t)
 
 	w := doJSON(t, h, http.MethodPost, presencePath, map[string]string{
-		"userID": "u-store-http", "mode": "vpn",
+		"userID": "test-presence-user", "mode": "vpn",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("上报应返回 200，实际 %d，body=%s", w.Code, w.Body.String())
 	}
-	sealed, expiresAt, err := store.Get(context.Background(), "u-store-http")
+	sealed, expiresAt, err := store.Get(context.Background(), "test-presence-user")
 	if err != nil {
 		t.Fatalf("上报状态应落在 TicketStore，Get 失败：%v", err)
 	}
@@ -139,7 +148,7 @@ func TestHTTPReportLandsInTicketStoreAndHealthzStaysGreen(t *testing.T) {
 	if err := json.Unmarshal(sealed, &got); err != nil {
 		t.Fatalf("存储内容应可反解：%v，sealed=%q", err, sealed)
 	}
-	if got.UserID != "u-store-http" || got.Mode != presence.ModeVPN || !got.At.Equal(clock.Now()) {
+	if got.UserID != "test-presence-user" || got.Mode != presence.ModeVPN || !got.At.Equal(clock.Now()) {
 		t.Fatalf("存储内容与上报不符：%#v（clock=%v）", got, clock.Now())
 	}
 
@@ -159,10 +168,8 @@ func TestHTTPBadRequestsAreRejected(t *testing.T) {
 		path   string
 		body   any
 	}{
-		{"非法 mode", http.MethodPost, presencePath, map[string]string{"userID": "u", "mode": "bogus"}},
-		{"空 userID", http.MethodPost, presencePath, map[string]string{"userID": "", "mode": "direct"}},
-		{"POST 缺 mode", http.MethodPost, presencePath, map[string]string{"userID": "u"}},
-		{"GET 缺 userID", http.MethodGet, presencePath, nil},
+		{"非法 mode", http.MethodPost, presencePath, map[string]string{"userID": "attacker", "mode": "bogus"}},
+		{"POST 缺 mode", http.MethodPost, presencePath, map[string]string{"userID": "attacker"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,6 +184,43 @@ func TestHTTPBadRequestsAreRejected(t *testing.T) {
 			}
 		})
 	}
+
+	// 无认证身份一律 401，且 body/query 里的 userID 不能顶替身份。
+	t.Run("无身份头", func(t *testing.T) {
+		h, _, _ := newEngine(t)
+		req := httptest.NewRequest(http.MethodPost, presencePath,
+			bytes.NewBufferString(`{"userID":"attacker","mode":"direct"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("缺认证身份应 401，实际 %d", w.Code)
+		}
+	})
+}
+
+// TestHTTPReportUsesAuthenticatedIdentity 证明身份来自认证上下文，
+// body/query 里的 userID 一律不生效（ADR 第 1 条），且 query 无法覆盖身份。
+func TestHTTPReportUsesAuthenticatedIdentity(t *testing.T) {
+	h, store, _ := newEngine(t)
+	w := doJSON(t, h, http.MethodPost, presencePath, map[string]string{
+		"userID": "attacker", "mode": "vpn",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("上报应 200，实际 %d", w.Code)
+	}
+	// 只有认证身份的键被写入，attacker 键不存在。
+	if _, _, err := store.Get(context.Background(), "attacker"); err == nil {
+		t.Fatal("body 里的 attacker userID 不应被写入存储")
+	}
+	if _, _, err := store.Get(context.Background(), "test-presence-user"); err != nil {
+		t.Fatalf("认证身份应被写入存储：%v", err)
+	}
+	// GET 带 ?userID=attacker 也不能改变判定所用的身份。
+	w = doJSON(t, h, http.MethodGet, presencePath+"?userID=attacker", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET 应 200，实际 %d", w.Code)
+	}
 }
 
 // TestHTTPMalformedJSONBodyIsRejected：请求体不是合法 JSON 也按入参错误处理。
@@ -184,6 +228,7 @@ func TestHTTPMalformedJSONBodyIsRejected(t *testing.T) {
 	h, _, _ := newEngine(t)
 	req := httptest.NewRequest(http.MethodPost, presencePath, bytes.NewBufferString("{not-json"))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Test-User", "test-presence-user")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
