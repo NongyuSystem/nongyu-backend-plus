@@ -106,7 +106,6 @@ func TestAccelFailureDoesNotStoreTicket(t *testing.T) {
 // TestRenewSchedulerPicksExpiringAndStaggers 续期调度从 ListExpiringSoon 挑候选，
 // 按用户散列错峰（同一时刻不集中），且候选来自外置存储。
 func TestRenewSchedulerPicksExpiringAndStaggers(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	tickets := platform.NewMockTicketStore()
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
 	// 3 个即将过期的用户。
@@ -115,7 +114,7 @@ func TestRenewSchedulerPicksExpiringAndStaggers(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 	}
-	sched := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	sched := jiaowu.NewRenewScheduler(tickets, clock)
 	plan, err := sched.Plan(nil, clock.Now().Add(2*time.Hour), 10)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -136,10 +135,9 @@ func TestRenewSchedulerPicksExpiringAndStaggers(t *testing.T) {
 // TestRenewPeriodIsObservedNotHardcoded 续期周期由成功/失败时刻反推，不硬编码未知 TTL；
 // 观察期有初始上限（不超出长期凭据已知窗口的余量）。
 func TestRenewPeriodIsObservedNotHardcoded(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	tickets := platform.NewMockTicketStore()
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
-	sched := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	sched := jiaowu.NewRenewScheduler(tickets, clock)
 
 	// 观测窗口初始上限 > 0，且首次失败后周期会收紧（不大于初始上限）。
 	initial := sched.ObservedPeriod()
@@ -245,7 +243,7 @@ func TestObservedPeriodDrivesTicketTTL(t *testing.T) {
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
 	cipher := platform.NewMockCipher("test-key")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sched := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	sched := jiaowu.NewRenewScheduler(tickets, clock)
 	svc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, false)
 	svc.BindRenewScheduler(sched)
 

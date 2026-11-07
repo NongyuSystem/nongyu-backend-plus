@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -407,4 +408,52 @@ func (s *Service) fallbackToCaptcha() (AccelResult, error) {
 		NeedCaptcha: true,
 		Code:        string(school.CodeTicketExpired),
 	}, nil
+}
+
+// RenewFor 是 RenewScheduler 的执行回调：对一名即将过期的用户执行一次主路径换票。
+// 它只经 Service 已有的出站闸口（s.doer.Do），不绕过 platform.HTTPDoer；
+// 成功/失败回喂观测周期，形成「换票结果 → 观测 → 下一轮候选窗口」闭环。
+// 骨架期不真的向学校重放凭据（那需要用户重新输码），因此这里做一次「探测式」换票，
+// 由上游响应决定成败；不静默重试。
+func (s *Service) RenewFor(ctx context.Context, userID string) {
+	if userID == "" {
+		return
+	}
+	tgt, err := school.Resolve(school.TargetWebvpn)
+	if err != nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		tgt.Vpn.String()+"/api/v1/cas/login?appid=portal&renew="+url.QueryEscape(userID), nil)
+	if err != nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	resp, err := s.doer.Do(ctx, req)
+	if err != nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	if resp == nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil || len(raw) == 0 || platformEnvelopeFailed(raw) {
+		s.recordLoginOutcome(false)
+		return
+	}
+	sealed, err := s.cipher.Seal(raw)
+	if err != nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	if err := s.tickets.Put(ctx, userID, sealed, s.clock.Now().Add(s.currentTicketTTL())); err != nil {
+		s.recordLoginOutcome(false)
+		return
+	}
+	s.recordLoginOutcome(true)
+	s.audit(userID, "renew", "ok")
 }

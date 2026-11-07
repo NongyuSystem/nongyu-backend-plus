@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -31,12 +32,18 @@ type Capabilities struct {
 	Clock   platform.Clock
 }
 
+// renewInterval 是定时续期扫描的间隔（保守值，避免高频打扰学校侧）。
+const renewInterval = 5 * time.Minute
+
 // App 持有一个已装配完成的进程。
 type App struct {
-	cfg    config.Config
-	engine *gin.Engine
-	server *http.Server
-	caps   Capabilities
+	cfg         config.Config
+	engine      *gin.Engine
+	server      *http.Server
+	caps        Capabilities
+	cancelRenew context.CancelFunc
+	renewDone   <-chan struct{}
+	renewOnce   sync.Once
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -58,10 +65,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
 	// #17 起用 NewWithAccel + RegisterAccel：加速开关从 cfg.AccelEnabled 读（默认 false），
 	// 端点在生产装配里真正可达；续期调度器把观测周期回喂给 Service 的写票 TTL。
-	scheduler := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	scheduler := jiaowu.NewRenewScheduler(tickets, clock)
 	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
+
+	// 定时续期循环：调度器只挑候选/错峰，真正执行换票交给 Service.RenewFor（经出站闸口）。
+	// ctx 由 App 持有，Shutdown 时 cancel + Stop，保证优雅关停、不留悬挂 goroutine。
+	renewCtx, cancelRenew := context.WithCancel(context.Background())
+	renewDone := scheduler.Run(renewCtx, renewInterval, jiaowuSvc.RenewFor)
 
 	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
 	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。
@@ -90,6 +102,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Doer:    doer,
 			Clock:   clock,
 		},
+		cancelRenew: cancelRenew,
+		renewDone:   renewDone,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 5,
 		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled)
@@ -131,9 +145,25 @@ func (a *App) Run() error {
 	return a.server.ListenAndServe()
 }
 
-// Shutdown 在给定超时内优雅关停，等待在途请求结束。
+// Shutdown 在给定超时内优雅关停：先停定时续期循环，再等待在途请求结束。
 func (a *App) Shutdown(timeout time.Duration) error {
+	a.stopRenew()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return a.server.Shutdown(ctx)
+}
+
+// stopRenew 幂等地停止定时续期循环并等待其 goroutine 退出（有上界，避免关停挂死）。
+func (a *App) stopRenew() {
+	a.renewOnce.Do(func() {
+		if a.cancelRenew != nil {
+			a.cancelRenew()
+		}
+		if a.renewDone != nil {
+			select {
+			case <-a.renewDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
+	})
 }

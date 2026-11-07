@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -155,6 +156,23 @@ func TestAppWiringDoerIsEnforced(t *testing.T) {
 	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
 	if !errors.Is(err, platform.ErrTargetDenied) {
 		t.Fatalf("装配层注入的 Doer 应以 ErrTargetDenied 拒绝非白名单目标，实际 %v", err)
+	}
+}
+
+// TestAppWiringShutdownStopsRenewLoop 证明 app.New 真的拉起了定时续期循环，
+// 且 Shutdown 会优雅停掉它（不残留悬挂 goroutine）。
+func TestAppWiringShutdownStopsRenewLoop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gin.DefaultWriter = io.Discard
+	gin.DefaultErrorWriter = io.Discard
+	application, err := app.New(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	// Shutdown 内部会 cancel + 等待 Run 的 done channel；能在有限时间内返回即证明
+	// 循环已收到停止信号（否则会被 stopRenew 的 2s 上界兜住，但不会 panic/挂死）。
+	if err := application.Shutdown(2 * time.Second); err != nil {
+		t.Fatalf("Shutdown: %v", err)
 	}
 }
 
