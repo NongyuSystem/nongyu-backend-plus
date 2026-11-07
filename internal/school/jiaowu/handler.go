@@ -20,6 +20,7 @@ import (
 // 用 GET + query 是最简且可测的形态 —— 无请求体、httptest 一行构造、返回纯 JSON。
 func Register(r gin.IRouter, svc *Service) {
 	r.GET("/school/address", addressHandler(svc))
+	r.GET("/school/fetch", fetchHandler(svc))
 }
 
 // addressResponse 是成功响应：地址 + 逻辑目标名。
@@ -53,6 +54,23 @@ func addressHandler(svc *Service) gin.HandlerFunc {
 	}
 }
 
+// fetchHandler 把 HTTP 请求翻译为 Service.Fetch 调用：成功时透出上游状态码与响应体，
+// 失败时把统一错误码映射为明确 HTTP 状态。它只做传输层适配，不含业务判断——
+// 302 / Set-Cookie / 白名单全在 GuardedDoer（实现层）处理。
+func fetchHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := school.TargetName(c.Query("target"))
+		path := c.Query("path")
+
+		result, err := svc.Fetch(c.Request.Context(), name, path)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.Data(result.Status, "application/octet-stream", result.Body)
+	}
+}
+
 // writeError 把子域错误映射为 HTTP 响应。跨子域统一的 *school.Error 用其 Code
 // 作为响应码；闸门拒绝（含 CodeTargetDenied）用 400 表达「入参不被接受」。
 // 任何非 *school.Error 的错误都不泄漏内部细节，统一 500。
@@ -60,11 +78,15 @@ func writeError(c *gin.Context, err error) {
 	var se *school.Error
 	if errors.As(err, &se) {
 		status := http.StatusInternalServerError
-		// 目标不在白名单属于调用方入参错误；其余统一错误码在 Address 里不会发生，
-		// 仍按明确状态码分流，便于后续票复用本 handler 时不误报 500。
+		// 目标不在白名单属于调用方入参错误；两类失效/禁止跟随用 4xx 明确区分，
+		// 便于客户端判断是该重新登录还是该停下（ADR-0001 第 5 条）。
 		switch se.Code {
 		case school.CodeTargetDenied:
 			status = http.StatusBadRequest
+		case school.CodeBlockedRedirect:
+			status = http.StatusBadGateway
+		case school.CodeSessionExpired:
+			status = http.StatusUnauthorized
 		}
 		c.JSON(status, errorResponse{Code: string(se.Code), Message: se.Error()})
 		return

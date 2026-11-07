@@ -1,0 +1,167 @@
+package jiaowu_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+
+	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/school/jiaowu"
+)
+
+// #14 的 HTTP 层测试：全部用假出站实现注入上游行为，不依赖真实网络。
+// 沿用 #13 的 newEngine（jiaowu.New(doer) 签名不变），额外用 SetResponder 定制上游响应。
+
+func fetchGet(t *testing.T, h http.Handler, values url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/school/fetch?"+values.Encode(), nil)
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// 构造一个带 3xx + Location 的上游响应，以及一个带 Set-Cookie 的 200 响应。
+func redirectResponse(req *http.Request, location string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusFound,
+		Status:     "302 Found",
+		Proto:      "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header:  http.Header{"Location": []string{location}},
+		Body:    http.NoBody,
+		Request: req,
+	}
+}
+
+// TestFetchNormalResponse 正常 200：结果透出，一次出站。
+func TestFetchNormalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer.SetResponse(http.StatusOK, `{"ok":true}`)
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"jiaowu"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，body=%s", w.Code, w.Body.String())
+	}
+	if got := len(doer.Requests()); got != 1 {
+		t.Fatalf("代取应恰好一次出站，实际 %d 次：%#v", got, doer.Requests())
+	}
+}
+
+// TestFetchBlockedRedirectDoesNotFollow 上游 302 指向真站 → blocked_redirect，
+// 且底层只记录到一次请求（证明没有跟随）。这是 ADR-0001 第 5 条的可观测证据。
+func TestFetchBlockedRedirectDoesNotFollow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
+		return redirectResponse(req, "https://jiaowu.sicau.edu.cn/login"), nil
+	})
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"jiaowu"}})
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体不是合法 JSON：%v，body=%s", err, w.Body.String())
+	}
+	if body.Code != "blocked_redirect" {
+		t.Fatalf("期望 blocked_redirect，实际 code=%q，body=%s", body.Code, w.Body.String())
+	}
+	if got := len(doer.Requests()); got != 1 {
+		t.Fatalf("不得跟随真站 302，底层应只记录 1 次请求，实际 %d 次：%#v", got, doer.Requests())
+	}
+}
+
+// TestFetchWebvpnLoginMapsToSessionExpired 上游 302 指向 webvpn 域 /login
+// → session_expired（与 blocked_redirect 可区分）。
+func TestFetchWebvpnLoginMapsToSessionExpired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
+		return redirectResponse(req, "https://webvpn.sicau.edu.cn/login"), nil
+	})
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"jiaowu"}})
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体不是合法 JSON：%v，body=%s", err, w.Body.String())
+	}
+	if body.Code != "session_expired" {
+		t.Fatalf("期望 session_expired，实际 code=%q，body=%s", body.Code, w.Body.String())
+	}
+}
+
+// TestFetchDoesNotLeakSetCookie 上游 Set-Cookie 不得回显给调用方
+// （票据下发由后续 #15 的 Login 单独负责）。
+func TestFetchDoesNotLeakSetCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Proto:      "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+			Header:  http.Header{"Set-Cookie": []string{"ASPSESSIONID=SECRET; Path=/"}},
+			Body:    http.NoBody,
+			Request: req,
+		}, nil
+	})
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"jiaowu"}})
+	if got := w.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("上游 Set-Cookie 不得回显，实际 %q", got)
+	}
+}
+
+// TestFetchDeniedTargetZeroOutbound 非白名单目标 → target_denied + 零出站（与 Address 一致）。
+func TestFetchDeniedTargetZeroOutbound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"https://evil.example.com/x"}})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，实际 %d，body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体不是合法 JSON：%v", err)
+	}
+	if body.Code != "target_denied" {
+		t.Fatalf("期望 target_denied，实际 %q", body.Code)
+	}
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("拒绝应在闸口、零出站，实际 %d 次", got)
+	}
+}
+
+// TestFetchResultCarriesUpstreamBody 正常响应体透出给调用方。
+func TestFetchResultCarriesUpstreamBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer.SetResponse(http.StatusOK, "hello-upstream")
+	engine := gin.New()
+	jiaowu.Register(engine, jiaowu.New(doer))
+
+	w := fetchGet(t, engine, url.Values{"target": {"jiaowu"}})
+	if !strings.Contains(w.Body.String(), "hello-upstream") {
+		t.Fatalf("上游响应体应透出，实际 body=%s", w.Body.String())
+	}
+}
