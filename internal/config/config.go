@@ -17,6 +17,14 @@ type Config struct {
 	AppEnv string
 	// ShutdownTimeoutSec 是优雅关停等待在途请求的最长秒数。
 	ShutdownTimeoutSec int
+	// TicketKey 是 Cipher 实现对票据做封装所用的密钥。
+	// 生产必须显式配置；缺项时回落到仅用于本地开发的占位值（保证无 .env 也能起服务）。
+	TicketKey string
+	// HTTPTimeoutSec 是出站请求（HTTPDoer 实现层）的单次超时秒数。
+	HTTPTimeoutSec int
+	// HTTPAllowlist 是出站目标白名单，逗号分隔的主机名列表。
+	// 完整强制策略由 HTTPDoer 实现层落地；缺项时为空（骨架期不强制）。
+	HTTPAllowlist string
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -26,10 +34,17 @@ func Load() (Config, error) {
 		Addr:               envOr("ADDR", ":8080"),
 		AppEnv:             envOr("APP_ENV", "dev"),
 		ShutdownTimeoutSec: envIntOr("SHUTDOWN_TIMEOUT_SEC", 10),
+		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单（骨架期不强制）。
+		TicketKey:      envOr("TICKET_KEY", "dev-only-placeholder-key-change-me"),
+		HTTPTimeoutSec: envIntOr("HTTP_TIMEOUT_SEC", 5),
+		HTTPAllowlist:  envOr("HTTP_ALLOWLIST", ""),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
 		return Config{}, fmt.Errorf("SHUTDOWN_TIMEOUT_SEC 必须为正整数，当前值：%d", cfg.ShutdownTimeoutSec)
+	}
+	if cfg.HTTPTimeoutSec <= 0 {
+		return Config{}, fmt.Errorf("HTTP_TIMEOUT_SEC 必须为正整数，当前值：%d", cfg.HTTPTimeoutSec)
 	}
 	return cfg, nil
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -18,33 +19,75 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Capabilities 是装配层注入给业务域的全部外部能力快照。
+// 业务域只依赖 platform 里的接口类型，不依赖具体实现；这里集中暴露便于测试与后续编排。
+type Capabilities struct {
+	Store   platform.Store
+	Tickets platform.TicketStore
+	Cipher  platform.Cipher
+	Doer    platform.HTTPDoer
+	Clock   platform.Clock
+}
+
 // App 持有一个已装配完成的进程。
 type App struct {
 	cfg    config.Config
 	engine *gin.Engine
-	store  platform.Store
 	server *http.Server
+	caps   Capabilities
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
-// 骨架期注入 MockStore；数据库层就绪后，只改这一行注入即可。
+// 骨架期注入内存/Mock 实现；数据库层 / 真实出站闸口就绪后，只改这里注入即可，业务域零改动。
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	store := platform.NewMockStore()
+	tickets := platform.NewMockTicketStore()
+	cipher := platform.NewMockCipher(cfg.TicketKey)
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
+		AllowedHosts:   parseAllowlist(cfg.HTTPAllowlist),
+		Timeout:        time.Duration(cfg.HTTPTimeoutSec) * time.Second,
+		FollowRedirect: false, // ADR-0001：绝不跟随指向真站的 302
+	})
+	clock := platform.NewRealClock()
 	engine := server.New()
 
 	a := &App{
 		cfg:    cfg,
 		engine: engine,
-		store:  store,
 		server: &http.Server{
 			Addr:              cfg.Addr,
 			Handler:           engine,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
+		caps: Capabilities{
+			Store:   store,
+			Tickets: tickets,
+			Cipher:  cipher,
+			Doer:    doer,
+			Clock:   clock,
+		},
 	}
-	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock")
+	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 4)
 	return a, nil
 }
+
+// parseAllowlist 把逗号分隔的白名单串拆成去空白、去空项的主机名列表。
+func parseAllowlist(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if h := strings.TrimSpace(p); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// Capabilities 返回装配层注入的全部外部能力（只读快照）。
+func (a *App) Capabilities() Capabilities { return a.caps }
+
+// Handler 返回已装配好的 HTTP handler，供测试与存活探针校验。
+func (a *App) Handler() http.Handler { return a.engine }
 
 // Run 阻塞监听 HTTP 请求。
 func (a *App) Run() error {
