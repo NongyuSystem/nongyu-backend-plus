@@ -15,6 +15,7 @@ import (
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/school/jiaowu"
+	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/server"
 
 	"github.com/gin-gonic/gin"
@@ -56,6 +57,18 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
 	// #13 只切 Address：doer 已接住（供后续 Fetch 票复用），本入口不发任何出站请求。
 	jiaowu.Register(engine, jiaowu.New(doer))
+
+	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
+	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。
+	// 后端配置先用常量 ModeDirect、陈旧阈值显式传 5 分钟；两者若要可配置需扩 config，
+	// 属后续 effort，本期不动 config 以免超出票范围。
+	presenceSvc := presence.New(
+		platform.NewMockTicketStore(),
+		clock,
+		presence.ModeDirect,
+		5*time.Minute,
+	)
+	presence.Register(engine, presenceSvc)
 
 	a := &App{
 		cfg:    cfg,
