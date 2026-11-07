@@ -25,6 +25,12 @@ type Config struct {
 	// HTTPAllowlist 是出站目标白名单，逗号分隔的主机名列表。
 	// 完整强制策略由 HTTPDoer 实现层落地；缺项时为空（骨架期不强制）。
 	HTTPAllowlist string
+	// HTTPEnforce 是否启用出站闸口强制（白名单/超时/302/Set-Cookie）。
+	// 缺省 false 保留骨架期 mock 行为；生产装配显式置 true。
+	HTTPEnforce bool
+	// AccelEnabled 是否启用免密换票加速路径（#17）。
+	// 门户 appid 免密能力未验证，缺省 false；真实手工验收通过前不得置 true。
+	AccelEnabled bool
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -34,10 +40,12 @@ func Load() (Config, error) {
 		Addr:               envOr("ADDR", ":8080"),
 		AppEnv:             envOr("APP_ENV", "dev"),
 		ShutdownTimeoutSec: envIntOr("SHUTDOWN_TIMEOUT_SEC", 10),
-		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单（骨架期不强制）。
+		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单。
 		TicketKey:      envOr("TICKET_KEY", "dev-only-placeholder-key-change-me"),
 		HTTPTimeoutSec: envIntOr("HTTP_TIMEOUT_SEC", 5),
 		HTTPAllowlist:  envOr("HTTP_ALLOWLIST", ""),
+		HTTPEnforce:    envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
+		AccelEnabled:   envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
@@ -68,4 +76,17 @@ func envIntOr(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envBoolOr 读取布尔环境变量（true/1/yes/on 为真），缺失或非法时返回默认值。
+func envBoolOr(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
 }

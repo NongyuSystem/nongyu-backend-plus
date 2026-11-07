@@ -68,7 +68,7 @@ func postJSON(t *testing.T, h http.Handler, path string, body any) *httptest.Res
 
 // TestCaptchaReturnsImageAndUUID 取验证码接口返回可展示图像与事务标识。
 func TestCaptchaReturnsImageAndUUID(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, "PNG-PLACEHOLDER")
 	h, _, _, _ := newAuthEngine(t, doer)
 
@@ -92,7 +92,7 @@ func TestCaptchaReturnsImageAndUUID(t *testing.T) {
 
 // TestLoginSuccessStoresAndReturnsTicket 正确验证码 → 换票成功，票据入外置存储、下发给本人。
 func TestLoginSuccessStoresAndReturnsTicket(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK, Status: "200 OK",
@@ -137,7 +137,7 @@ func TestLoginSuccessStoresAndReturnsTicket(t *testing.T) {
 
 // TestLoginAuditNeverContainsTicket 审计结构化字段中不含票据（无论明文或密文）。
 func TestLoginAuditNeverContainsTicket(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, "SECRET-TICKET-VALUE")
 	h, _, _, audit := newAuthEngine(t, doer)
 
@@ -155,7 +155,7 @@ func TestLoginAuditNeverContainsTicket(t *testing.T) {
 // TestLoginBadCaptchaNoTicketStored 验证码错误 → 可区分错误，且存储不落任何票据。
 func TestLoginBadCaptchaNoTicketStored(t *testing.T) {
 	// 上游返回「验证码错误」信号：用带 code=500 的响应体表达。
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK, Status: "200 OK",
@@ -179,7 +179,7 @@ func TestLoginBadCaptchaNoTicketStored(t *testing.T) {
 
 // TestLogoutDeletesTicket 退出登录后该用户票据记录被删除。
 func TestLogoutDeletesTicket(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, "TICKET-LOGOUT")
 	h, tickets, _, _ := newAuthEngine(t, doer)
 

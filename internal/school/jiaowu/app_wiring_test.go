@@ -115,3 +115,44 @@ func TestAppWiringHealthz(t *testing.T) {
 		t.Fatalf("响应体不符合契约，实际：%s", got)
 	}
 }
+
+// TestAppWiringAccelRouteReachable 证明 #17 的加速端点在生产装配里真正可达（B1），
+// 且默认关闭时返回「需要走主路径」（不发起免密出站）。
+func TestAppWiringAccelRouteReachable(t *testing.T) {
+	h, doer := newAppHandler(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/school/login/accel", nil)
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("加速端点应已注册（不是 404），实际 %d，body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		NeedCaptcha bool `json:"needCaptcha"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("非法 JSON：%v", err)
+	}
+	if !body.NeedCaptcha {
+		t.Fatalf("默认关闭时应要求走主路径，实际 %+v", body)
+	}
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("默认关闭时不得发起免密出站，实际 %d 次", got)
+	}
+}
+
+// TestAppWiringDoerIsEnforced 证明装配层注入的 HTTPDoer 就是守卫实例（B2）：
+// 非白名单 host 直接被拒，Capabilities().Doer 不再裸奔。
+func TestAppWiringDoerIsEnforced(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gin.DefaultWriter = io.Discard
+	gin.DefaultErrorWriter = io.Discard
+	application, err := app.New(config.Config{HTTPEnforce: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
+	if err == nil {
+		t.Fatal("装配层注入的 Doer 应拒绝非白名单目标（守卫已生效）")
+	}
+}

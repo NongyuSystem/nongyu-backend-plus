@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 )
@@ -46,14 +47,26 @@ type Cipher interface {
 
 // HTTPDoer 是「后端有没有权发外部请求」的唯一闸口。
 //
-// 实现层负责：目标白名单校验、超时、以及不跟随指向真站的 302
-// （ADR-0001 / CodeBlockedRedirect 的唯一强制点）。本票只铺接口与基础实现，
-// 完整 302 策略留后续实现票；策略形状由 DoerPolicy 预留（见 caps_mock.go）。
-// 业务域不得绕过本接口直接用 http.DefaultClient 发请求。
+// 实现层强制：目标白名单校验、超时、不跟随指向真站的 302、剥离上游 Set-Cookie
+// （ADR-0001 / 架构落点草图 §3、§7、§8 的「全系统唯一强制点」）。
+// 守卫逻辑落在 platform 的 HTTPDoer 实现里，由装配层注入同一个实例给所有业务子域；
+// 业务域只依赖本接口，不得绕过它直接用 http.DefaultClient 发请求。
+//
+// 实现层以哨兵错误表达拒绝原因，业务域用 errors.Is 映射为各自的统一错误码。
 type HTTPDoer interface {
 	// Do 执行一个已构造好的请求。请求需携带 ctx，以便实现层施加超时/取消。
 	Do(ctx context.Context, req *http.Request) (*http.Response, error)
 }
+
+// 出站闸口的哨兵错误：由 platform 实现层产出，业务域据此映射统一错误码。
+var (
+	// ErrTargetDenied 请求目标不在白名单（含上游 302 指向真站被拦下）。
+	ErrTargetDenied = errors.New("platform: outbound target denied")
+	// ErrBlockedRedirect 上游 3xx 的 Location 指向真站，禁止跟随。
+	ErrBlockedRedirect = errors.New("platform: redirect to origin blocked")
+	// ErrSessionExpired 上游 3xx 指向网关登录页，业务会话已过期。
+	ErrSessionExpired = errors.New("platform: upstream session expired")
+)
 
 // Clock 表达「取当前时间」这一外部依赖，便于测试注入固定时刻。
 type Clock interface {

@@ -18,6 +18,16 @@ import (
 // 白名单成功路径必须产出含该前缀的编码地址。
 const keyHexPrefix = "77726476706e69737468656265737421"
 
+// enforcedPolicy 是「出站闸口强制生效」的策略，用于 #14/#17 的闸口测试。
+// 白名单覆盖三个真实目标 host；Enforce=true 使 platform 实现层的
+// 白名单/超时/302/Set-Cookie 全部强制（ADR-0001 全系统唯一强制点）。
+func enforcedPolicy() platform.DoerPolicy {
+	return platform.DoerPolicy{
+		Enforce:      true,
+		AllowedHosts: []string{"jiaowu.sicau.edu.cn", "auth.sicau.edu.cn", "webvpn.sicau.edu.cn"},
+	}
+}
+
 // newEngine 用「受控的 MockHTTPDoer」起一个只挂了教务子域路由的 gin 引擎。
 // 这是 issue #13 要求的 HTTP 层唯一接缝：出站能力在这里被换成记录型假实现，
 // 以便用 Requests() 断言「零出站」。

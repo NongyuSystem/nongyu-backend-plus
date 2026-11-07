@@ -3,6 +3,7 @@ package jiaowu
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -72,7 +73,7 @@ func addressHandler(svc *Service) gin.HandlerFunc {
 
 // fetchHandler 把 HTTP 请求翻译为 Service.Fetch 调用：成功时透出上游状态码与响应体，
 // 失败时把统一错误码映射为明确 HTTP 状态。它只做传输层适配，不含业务判断——
-// 302 / Set-Cookie / 白名单全在 GuardedDoer（实现层）处理。
+// 302 / Set-Cookie / 白名单全在 platform 出站闸口（实现层）处理。
 func fetchHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		name := school.TargetName(c.Query("target"))
@@ -82,6 +83,15 @@ func fetchHandler(svc *Service) gin.HandlerFunc {
 		if err != nil {
 			writeError(c, err)
 			return
+		}
+		for k, values := range result.Headers {
+			// Set-Cookie 由闸口剥离；这里再兜底一次，绝不把 Cookie 回显给调用方。
+			if strings.EqualFold(k, "Set-Cookie") {
+				continue
+			}
+			for _, v := range values {
+				c.Writer.Header().Add(k, v)
+			}
 		}
 		c.Data(result.Status, "application/octet-stream", result.Body)
 	}

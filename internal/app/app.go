@@ -46,7 +46,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	tickets := platform.NewMockTicketStore()
 	cipher := platform.NewMockCipher(cfg.TicketKey)
 	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
-		AllowedHosts:   parseAllowlist(cfg.HTTPAllowlist),
+		Enforce:        cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
+		AllowedHosts:   outboundAllowlist(cfg.HTTPAllowlist),
 		Timeout:        time.Duration(cfg.HTTPTimeoutSec) * time.Second,
 		FollowRedirect: false, // ADR-0001：绝不跟随指向真站的 302
 	})
@@ -55,10 +56,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 
 	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
 	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
-	// #15 起用 NewWithAuth + RegisterWithAuth，把票据/加解密/时钟/审计日志一并注入，
-	// 使换票主路径（captcha/login/logout）在生产装配里真正可用；tickets 与 presence
-	// 用的独立实例隔离（#16 已拍板避免 userID 单键互相覆盖）。
-	jiaowu.RegisterWithAuth(engine, jiaowu.NewWithAuth(doer, tickets, cipher, clock, logger))
+	// #17 起用 NewWithAccel + RegisterAccel：加速开关从 cfg.AccelEnabled 读（默认 false），
+	// 端点在生产装配里真正可达；续期调度器把观测周期回喂给 Service 的写票 TTL。
+	scheduler := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
+	jiaowuSvc.BindRenewScheduler(scheduler)
+	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
 	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
 	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。
@@ -88,8 +91,21 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Clock:   clock,
 		},
 	}
-	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 4)
+	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 5,
+		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled)
 	return a, nil
+}
+
+// outboundAllowlist 合并「内建的三个真实目标 host」与配置里的额外白名单。
+// 内建项保证经 school.Resolve + Encode 产出的 webvpn 域地址一定可出站；
+// 配置项供部署时追加（如测试环境域名），改配置即时生效。
+func outboundAllowlist(extra string) []string {
+	base := []string{
+		"jiaowu.sicau.edu.cn",
+		"auth.sicau.edu.cn",
+		"webvpn.sicau.edu.cn",
+	}
+	return append(base, parseAllowlist(extra)...)
 }
 
 // parseAllowlist 把逗号分隔的白名单串拆成去空白、去空项的主机名列表。

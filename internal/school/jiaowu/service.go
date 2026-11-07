@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,12 +20,13 @@ import (
 //
 // 进程无状态：Service 没有任何可变字段，票据与上报状态全在 platform 外置能力里。
 type Service struct {
-	doer         *GuardedDoer
+	doer         platform.HTTPDoer
 	tickets      platform.TicketStore
 	cipher       platform.Cipher
 	clock        platform.Clock
 	logger       *slog.Logger
 	accelEnabled bool
+	scheduler    *RenewScheduler
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -46,7 +48,7 @@ func NewWithAuth(doer platform.HTTPDoer, tickets platform.TicketStore, cipher pl
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Service{
-		doer:         newGuardedDoer(doer),
+		doer:         doer, // platform 注入的守卫实例（全系统唯一强制点）
 		tickets:      tickets,
 		cipher:       cipher,
 		clock:        clock,
@@ -61,6 +63,32 @@ func NewWithAccel(doer platform.HTTPDoer, tickets platform.TicketStore, cipher p
 	svc := NewWithAuth(doer, tickets, cipher, clock, logger)
 	svc.accelEnabled = enabled
 	return svc
+}
+
+// BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，
+// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。
+func (s *Service) BindRenewScheduler(sched *RenewScheduler) {
+	s.scheduler = sched
+}
+
+// currentTicketTTL 返回本次写票应使用的过期窗口：绑定调度器时取观测周期，
+// 未绑定（纯单测场景）时回落到观察期初始上限。绝不硬编码未公开的 TTL。
+func (s *Service) currentTicketTTL() time.Duration {
+	if s.scheduler != nil {
+		return s.scheduler.ObservedPeriod()
+	}
+	return ticketTTL
+}
+
+func (s *Service) recordLoginOutcome(ok bool) {
+	if s.scheduler == nil {
+		return
+	}
+	if ok {
+		s.scheduler.RecordSuccess(s.clock.Now())
+	} else {
+		s.scheduler.RecordFailure(s.clock.Now())
+	}
 }
 
 // AddressResult 是 Address 的输出：逻辑目标名 + 客户端可直接使用的编码地址。
@@ -107,10 +135,12 @@ func normalizePath(path string) string {
 	return path
 }
 
-// FetchResult 是 Fetch 的输出：上游状态码与响应体（已由闸口剥掉 Set-Cookie）。
+// FetchResult 是 Fetch 的输出：上游状态码、响应体与响应头
+// （已由 platform 出站闸口剥掉 Set-Cookie 等敏感头）。
 type FetchResult struct {
-	Status int
-	Body   []byte
+	Status  int
+	Body    []byte
+	Headers http.Header
 }
 
 // Fetch 由后端经唯一出站闸口代取，并返回结果。
@@ -119,7 +149,7 @@ type FetchResult struct {
 // 时的那条路。二者共用同一个 school.Resolve 白名单闸门——未知名在触达出站之前
 // 就被以 CodeTargetDenied 拒绝，底层零请求。
 //
-// 302 / Set-Cookie 的处理全部在 GuardedDoer（实现层）完成，本方法只转述错误：
+// 302 / Set-Cookie 的处理全部在 platform 出站闸口（实现层）完成，本方法只转述错误：
 // CodeBlockedRedirect、CodeSessionExpired 由调用方（handler）映射为不同响应。
 func (s *Service) Fetch(ctx context.Context, name school.TargetName, path string) (FetchResult, error) {
 	tgt, err := school.Resolve(name)
@@ -136,7 +166,10 @@ func (s *Service) Fetch(ctx context.Context, name school.TargetName, path string
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return FetchResult{}, err
+		return FetchResult{}, mapOutboundError(err)
+	}
+	if resp == nil {
+		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 
@@ -144,14 +177,15 @@ func (s *Service) Fetch(ctx context.Context, name school.TargetName, path string
 	if err != nil {
 		return FetchResult{}, err
 	}
-	return FetchResult{Status: resp.StatusCode, Body: body}, nil
+	return FetchResult{Status: resp.StatusCode, Body: body, Headers: resp.Header.Clone()}, nil
 }
 
 // ── #15 换票主路径 ────────────────────────────────────────────────────────
 
-// ticketTTL 是换票成功后写入外置存储的过期窗口骨架期取值。真实 TTL 由统一认证侧
-// 长期凭据的已知窗口决定（见 #17 的观测驱动续期），此处只给一个可测的非零窗口。
-const ticketTTL = 9 * 24 * time.Hour
+// ticketTTL 是未绑定续期调度器时的写票窗口回落值（等同观察期初始上限）。
+// 绑定 scheduler 后，写票过期时刻一律取 currentTicketTTL()——由「成功/首次失败
+// 时刻」反推的保守周期，而非猜一个未公开的 TTL（#7 / #17 决议）。
+const ticketTTL = observationWindow
 
 // CaptchaResult 是取验证码的输出：可展示图像 + 事务标识。
 type CaptchaResult struct {
@@ -183,7 +217,10 @@ func (s *Service) Captcha(ctx context.Context, name school.TargetName) (CaptchaR
 	}
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return CaptchaResult{}, err
+		return CaptchaResult{}, mapOutboundError(err)
+	}
+	if resp == nil {
+		return CaptchaResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -219,7 +256,10 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 	}
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return LoginResult{}, err
+		return LoginResult{}, mapOutboundError(err)
+	}
+	if resp == nil {
+		return LoginResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -230,6 +270,7 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 	// 验证码错误判定：响应体含明确文案，或平台失败信封 code=500。
 	if bytes.Contains(raw, []byte("验证码错误")) || platformEnvelopeFailed(raw) {
 		s.audit(userID, "login", "captcha_error")
+		s.recordLoginOutcome(false)
 		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 	}
 
@@ -238,10 +279,11 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 	if err != nil {
 		return LoginResult{}, err
 	}
-	expiresAt := s.clock.Now().Add(ticketTTL)
+	expiresAt := s.clock.Now().Add(s.currentTicketTTL())
 	if err := s.tickets.Put(ctx, userID, sealed, expiresAt); err != nil {
 		return LoginResult{}, err
 	}
+	s.recordLoginOutcome(true)
 	s.audit(userID, "login", "ok")
 	// uuid 参与事务标识但绝不进审计，避免任何间接泄漏。
 	_ = uuid
@@ -279,6 +321,25 @@ func platformEnvelopeFailed(raw []byte) bool {
 	return env.Code == 500 || env.Status == "error"
 }
 
+// accelEnvelopeOK 判定免密换票是否真的成立：必须是 code=200 且 data 里含非空 st。
+// 一个 200 的登录页 HTML / 空 data / 失败信封都不算（N3 收紧）。
+func accelEnvelopeOK(raw []byte) bool {
+	var env struct {
+		Code int `json:"code"`
+		Data struct {
+			ST string `json:"st"`
+		} `json:"data"`
+		ST string `json:"st"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	if env.Code != 0 && env.Code != 200 {
+		return false
+	}
+	return env.Data.ST != "" || env.ST != ""
+}
+
 // ── #17 免密加速路径（可开关）+ 失败回落 ──────────────────────────────────
 
 // AccelResult 是免密加速路径的输出。NeedCaptcha=true 表示「请走主路径（输码）」，
@@ -312,15 +373,23 @@ func (s *Service) LoginWithAccel(ctx context.Context) (AccelResult, error) {
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
 		// 出站层拒绝（含闸口拦截）同样按「免密不成立」回落，不重试。
+		s.recordLoginOutcome(false)
+		return s.fallbackToCaptcha()
+	}
+	if resp == nil {
+		s.recordLoginOutcome(false)
 		return s.fallbackToCaptcha()
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		s.recordLoginOutcome(false)
 		return s.fallbackToCaptcha()
 	}
-	// 只有成功信封（非失败、非空 data）才算免密换票成立。
-	if platformEnvelopeFailed(raw) || len(raw) == 0 {
+	// 只有「含 st 的有效成功信封」才算免密换票成立；一个 200 登录页 HTML
+	// 或失败信封都不算（N3）。门户 appid 免密能力未验证，默认关闭 + 严格判定。
+	if !accelEnvelopeOK(raw) {
+		s.recordLoginOutcome(false)
 		return s.fallbackToCaptcha()
 	}
 
@@ -329,9 +398,10 @@ func (s *Service) LoginWithAccel(ctx context.Context) (AccelResult, error) {
 	if err != nil {
 		return AccelResult{}, err
 	}
-	if err := s.tickets.Put(ctx, "accel-user", sealed, s.clock.Now().Add(ticketTTL)); err != nil {
+	if err := s.tickets.Put(ctx, "accel-user", sealed, s.clock.Now().Add(s.currentTicketTTL())); err != nil {
 		return AccelResult{}, err
 	}
+	s.recordLoginOutcome(true)
 	s.audit("accel-user", "login_accel", "ok")
 	return AccelResult{NeedCaptcha: false}, nil
 }

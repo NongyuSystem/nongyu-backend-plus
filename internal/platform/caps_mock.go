@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -198,14 +199,14 @@ func xorWithKeystream(key, in []byte) []byte {
 // MockHTTPDoer
 // ---------------------------------------------------------------------------
 
-// DoerPolicy 是出站闸口的策略形状，为后续「完整 302 策略」实现票预留结构：
-//   - AllowedHosts：目标白名单，业务域只能传逻辑目标名，由实现层解析校验；
-//   - Timeout：单次请求超时；
-//   - FollowRedirect：是否跟随重定向（ADR-0001 要求绝不跟随指向真站的 302）。
-//
-// 骨架期 MockHTTPDoer 只保存/暴露这份策略，不强制执行；真正的强制点由后续
-// GuardedDoer 实现落在 Do 里（全系统唯一强制点）。
+// DoerPolicy 是出站闸口的策略，由 platform 实现层（唯一强制点）执行：
+//   - Enforce：是否启用强制。零值 = 骨架期 mock 行为（只记录/返回可配置响应），
+//     用于 #11 的契约测试；装配层显式置 true 后，白名单/超时/302/Set-Cookie 全部生效。
+//   - AllowedHosts：目标白名单；业务域只能传逻辑目标名，由实现层解析校验。
+//   - Timeout：单次请求超时（>0 时用 context.WithTimeout 施加）。
+//   - FollowRedirect：是否允许跟随重定向（ADR-0001 要求绝不跟随指向真站的 302）。
 type DoerPolicy struct {
+	Enforce        bool
 	AllowedHosts   []string
 	Timeout        time.Duration
 	FollowRedirect bool
@@ -265,24 +266,35 @@ func (m *MockHTTPDoer) Policy() DoerPolicy {
 	return clonePolicy(m.policy)
 }
 
-// Do 实现 HTTPDoer：记录请求 → 交给 responder。
+// Do 实现 HTTPDoer：这是出站请求的唯一闸口。
 //
-// 后续 GuardedDoer 将在此处（全系统唯一闸口）依次插入：
+// Enforce=false（骨架期契约测试/零值策略）：只记录请求 + 返回可配置响应，
+// 行为与 #11 一致，便于契约测试与上层单测隔离。
 //
-//  1. 白名单校验（req.URL.Host ∈ policy.AllowedHosts，否则拒绝）；
-//  2. 超时（context.WithTimeout(ctx, policy.Timeout)）；
-//  3. 不跟随指向真站的 302（policy.FollowRedirect 为 false 时，遇到 Location
-//     指向真实站点的 3xx 直接返回 CodeBlockedRedirect 对应错误）。
+// Enforce=true（装配层显式启用）：依次强制
+//  1. 白名单校验：req.URL.Hostname() 不在 AllowedHosts → ErrTargetDenied，零出站；
+//  2. 超时：Timeout > 0 时 context.WithTimeout 施加到交给 responder 的请求；
+//  3. 不跟随指向真站的 3xx：Location 非网关域 → ErrBlockedRedirect；Location 指向
+//     网关登录页 → ErrSessionExpired；两种都先关闭 resp.Body 再返回（N1）；
+//  4. 上游 Set-Cookie 一律剥离，不回显给调用方（ADR-0001 第 5 条）。
 //
-// 本票不实现这三点，但结构与配置入口已经留好。
+// 所有拒绝都恰好只触达 responder 一次（或零次），绝不静默重试。
 func (m *MockHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 	}
-	if req == nil {
+	if req == nil || req.URL == nil {
 		return nil, errors.New("platform: nil *http.Request")
+	}
+
+	m.mu.Lock()
+	pol := clonePolicy(m.policy)
+	m.mu.Unlock()
+
+	if pol.Enforce && !hostInAllowlist(req.URL.Hostname(), pol.AllowedHosts) {
+		return nil, ErrTargetDenied
 	}
 
 	snapshot := RecordedRequest{
@@ -291,18 +303,21 @@ func (m *MockHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Respons
 		Path:   req.URL.Path,
 		URL:    req.URL.String(),
 	}
-
 	m.mu.Lock()
 	m.recorded = append(m.recorded, snapshot)
 	fn := m.responder
-	pol := clonePolicy(m.policy)
 	m.mu.Unlock()
 
 	servedReq := req
 	if ctx != nil {
-		servedReq = req.WithContext(ctx)
+		c := ctx
+		if pol.Enforce && pol.Timeout > 0 {
+			var cancel context.CancelFunc
+			c, cancel = context.WithTimeout(ctx, pol.Timeout)
+			defer cancel()
+		}
+		servedReq = req.WithContext(c)
 	}
-	_ = pol // 骨架期策略仅记录/暴露，不强制；留给 GuardedDoer 使用。
 
 	var resp *http.Response
 	var err error
@@ -320,11 +335,52 @@ func (m *MockHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Respons
 	if resp.Body == nil {
 		resp.Body = io.NopCloser(strings.NewReader(""))
 	}
+
+	if pol.Enforce {
+		if isRedirectStatus(resp.StatusCode) {
+			loc := resp.Header.Get("Location")
+			target, perr := url.Parse(loc)
+			// 先关 Body 再返回，避免真 http.Client 下连接泄漏（N1）。
+			_ = resp.Body.Close()
+			if perr == nil && target.Host != "" && isGatewayHost(target.Hostname()) {
+				return nil, ErrSessionExpired
+			}
+			return nil, ErrBlockedRedirect
+		}
+		resp.Header.Del("Set-Cookie")
+	}
 	return resp, nil
+}
+
+// hostInAllowlist 判断 host 是否在白名单（大小写不敏感，忽略端口）。
+func hostInAllowlist(host string, allowlist []string) bool {
+	h := strings.ToLower(host)
+	for _, a := range allowlist {
+		if strings.EqualFold(strings.TrimSpace(a), h) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGatewayHost 判断是否为 WebVPN 网关域（3xx 指向它视为会话过期）。
+func isGatewayHost(host string) bool {
+	return strings.EqualFold(strings.ToLower(host), "webvpn.sicau.edu.cn")
+}
+
+// isRedirectStatus 只把带 Location 语义的 3xx 当重定向；304 等排除。
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }
 
 func clonePolicy(p DoerPolicy) DoerPolicy {
 	return DoerPolicy{
+		Enforce:        p.Enforce,
 		AllowedHosts:   append([]string(nil), p.AllowedHosts...),
 		Timeout:        p.Timeout,
 		FollowRedirect: p.FollowRedirect,

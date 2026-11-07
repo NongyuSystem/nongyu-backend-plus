@@ -40,7 +40,7 @@ func redirectResponse(req *http.Request, location string) *http.Response {
 // TestFetchNormalResponse 正常 200：结果透出，一次出站。
 func TestFetchNormalResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, `{"ok":true}`)
 	engine := gin.New()
 	jiaowu.Register(engine, jiaowu.New(doer))
@@ -58,7 +58,7 @@ func TestFetchNormalResponse(t *testing.T) {
 // 且底层只记录到一次请求（证明没有跟随）。这是 ADR-0001 第 5 条的可观测证据。
 func TestFetchBlockedRedirectDoesNotFollow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return redirectResponse(req, "https://jiaowu.sicau.edu.cn/login"), nil
 	})
@@ -84,7 +84,7 @@ func TestFetchBlockedRedirectDoesNotFollow(t *testing.T) {
 // → session_expired（与 blocked_redirect 可区分）。
 func TestFetchWebvpnLoginMapsToSessionExpired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return redirectResponse(req, "https://webvpn.sicau.edu.cn/login"), nil
 	})
@@ -103,17 +103,20 @@ func TestFetchWebvpnLoginMapsToSessionExpired(t *testing.T) {
 	}
 }
 
-// TestFetchDoesNotLeakSetCookie 上游 Set-Cookie 不得回显给调用方
-// （票据下发由后续 #15 的 Login 单独负责）。
+// TestFetchDoesNotLeakSetCookie 上游 Set-Cookie 不得回显给调用方，但其它响应头
+// 应正常透出（证明 Headers 通路真的生效，避免恒真断言）。
 func TestFetchDoesNotLeakSetCookie(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Proto:      "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-			Header:  http.Header{"Set-Cookie": []string{"ASPSESSIONID=SECRET; Path=/"}},
+			Header: http.Header{
+				"Set-Cookie": []string{"ASPSESSIONID=SECRET; Path=/"},
+				"X-Probe":    []string{"header-passthrough-works"},
+			},
 			Body:    http.NoBody,
 			Request: req,
 		}, nil
@@ -125,12 +128,15 @@ func TestFetchDoesNotLeakSetCookie(t *testing.T) {
 	if got := w.Header().Get("Set-Cookie"); got != "" {
 		t.Fatalf("上游 Set-Cookie 不得回显，实际 %q", got)
 	}
+	if got := w.Header().Get("X-Probe"); got != "header-passthrough-works" {
+		t.Fatalf("其它响应头应正常透出以证明 Headers 通路生效，实际 %q", got)
+	}
 }
 
 // TestFetchDeniedTargetZeroOutbound 非白名单目标 → target_denied + 零出站（与 Address 一致）。
 func TestFetchDeniedTargetZeroOutbound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	engine := gin.New()
 	jiaowu.Register(engine, jiaowu.New(doer))
 
@@ -155,7 +161,7 @@ func TestFetchDeniedTargetZeroOutbound(t *testing.T) {
 // TestFetchResultCarriesUpstreamBody 正常响应体透出给调用方。
 func TestFetchResultCarriesUpstreamBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, "hello-upstream")
 	engine := gin.New()
 	jiaowu.Register(engine, jiaowu.New(doer))

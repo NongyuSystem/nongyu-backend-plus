@@ -18,6 +18,8 @@ import (
 const (
 	// observationWindow 是观察期初始上限：9 天（10 天长期凭据窗口留 1 天余量）。
 	observationWindow = 9 * 24 * time.Hour
+	// minObservedPeriod 是周期下界，防止反复失败把周期压到接近零。
+	minObservedPeriod = time.Hour
 	// staggerSlots 是把候选散列到的错峰槽位数。
 	staggerSlots = 16
 )
@@ -85,21 +87,30 @@ func (s *RenewScheduler) RecordSuccess(at time.Time) {
 			s.observed = d
 		}
 	}
+	if s.observed < minObservedPeriod {
+		s.observed = minObservedPeriod
+	}
 	if s.observed > observationWindow {
 		s.observed = observationWindow
 	}
 	s.lastOK = at
 }
 
-// RecordFailure 记录首次失败时刻；此后周期保守收紧（至少缩短一半、且不超过
-// 观察期初始上限），避免在同一失效点反复尝试。
+// PlanningWindow 返回本次续期扫描的候选窗口：以现在为基准、向前看一个观测周期。
+// Plan 消费它，使「观测反推」真正参与挑选候选，而不是死配置。
+func (s *RenewScheduler) PlanningWindow(now time.Time) time.Time {
+	return now.Add(s.ObservedPeriod())
+}
+
+// RecordFailure 记录首次失败时刻；此后周期保守收紧（至少缩短一半、夹在
+// [minObservedPeriod, observationWindow] 内），避免在同一失效点反复尝试。
 func (s *RenewScheduler) RecordFailure(at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastFail = at
 	s.observed = s.observed / 2
-	if s.observed <= 0 {
-		s.observed = time.Hour
+	if s.observed < minObservedPeriod {
+		s.observed = minObservedPeriod
 	}
 	if s.observed > observationWindow {
 		s.observed = observationWindow

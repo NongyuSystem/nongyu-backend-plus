@@ -1,6 +1,7 @@
 package jiaowu_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -41,7 +42,7 @@ func accelPost(t *testing.T, h http.Handler) *httptest.ResponseRecorder {
 // TestAccelDisabledBehavesLikeMainPath 开关关闭（默认）→ 行为与主路径一致：
 // 不尝试免密、零出站，直接给出「需要用户输码」的结果。
 func TestAccelDisabledBehavesLikeMainPath(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	h, _, _ := newAccelEngine(t, doer, false)
 
 	w := accelPost(t, h)
@@ -65,7 +66,7 @@ func TestAccelDisabledBehavesLikeMainPath(t *testing.T) {
 // TestAccelFailureFallsBackWithoutRetryStorm 开关打开但免密换票失败 →
 // 自动回落主路径，返回 ticket_expired 引导；且绝不静默重试刷屏（恰好一次出站）。
 func TestAccelFailureFallsBackWithoutRetryStorm(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	// 上游返回「未登录」——这是实测里门户 appid 免密未验证时最常见的失败形态。
 	doer.SetResponse(http.StatusOK, `{"code":500,"msg":"未登录","data":null}`)
 	h, _, _ := newAccelEngine(t, doer, true)
@@ -91,7 +92,7 @@ func TestAccelFailureFallsBackWithoutRetryStorm(t *testing.T) {
 
 // TestAccelFailureDoesNotStoreTicket 免密失败时不落任何票据。
 func TestAccelFailureDoesNotStoreTicket(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponse(http.StatusOK, `{"code":500,"msg":"未登录","data":null}`)
 	h, tickets, _ := newAccelEngine(t, doer, true)
 
@@ -104,7 +105,7 @@ func TestAccelFailureDoesNotStoreTicket(t *testing.T) {
 // TestRenewSchedulerPicksExpiringAndStaggers 续期调度从 ListExpiringSoon 挑候选，
 // 按用户散列错峰（同一时刻不集中），且候选来自外置存储。
 func TestRenewSchedulerPicksExpiringAndStaggers(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	tickets := platform.NewMockTicketStore()
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
 	// 3 个即将过期的用户。
@@ -134,7 +135,7 @@ func TestRenewSchedulerPicksExpiringAndStaggers(t *testing.T) {
 // TestRenewPeriodIsObservedNotHardcoded 续期周期由成功/失败时刻反推，不硬编码未知 TTL；
 // 观察期有初始上限（不超出长期凭据已知窗口的余量）。
 func TestRenewPeriodIsObservedNotHardcoded(t *testing.T) {
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	tickets := platform.NewMockTicketStore()
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
 	sched := jiaowu.NewRenewScheduler(tickets, clock, doer)
@@ -153,5 +154,55 @@ func TestRenewPeriodIsObservedNotHardcoded(t *testing.T) {
 	sched.RecordSuccess(clock.Now().Add(1 * time.Hour))
 	if sched.ObservedPeriod() <= 0 {
 		t.Fatalf("记录成功时刻后周期仍应为正")
+	}
+	// Plan 消费观测周期：PlanningWindow 应随周期收紧而前移，且候选确实来自外置存储。
+	before := sched.PlanningWindow(clock.Now())
+	if !before.After(clock.Now()) {
+		t.Fatalf("PlanningWindow 应落在当前时刻之后，实际 %v", before)
+	}
+	if err := tickets.Put(nil, "u-observed", []byte("sealed"), clock.Now().Add(30*time.Minute)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	plan, err := sched.Plan(nil, before, 10)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	found := false
+	for _, item := range plan {
+		if item.UserID == "u-observed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Plan 应挑出观测窗口内的候选，实际 %+v", plan)
+	}
+}
+
+// TestObservedPeriodDrivesTicketTTL 证明写票 TTL 由观测周期决定，而非硬编码常量：
+// 绑定 scheduler 后，收紧观测周期会让新写票据的过期时刻同步前移（B1 闭环）。
+func TestObservedPeriodDrivesTicketTTL(t *testing.T) {
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
+	doer.SetResponse(http.StatusOK, "TICKET-OBSERVED")
+	tickets := platform.NewMockTicketStore()
+	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
+	cipher := platform.NewMockCipher("test-key")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sched := jiaowu.NewRenewScheduler(tickets, clock, doer)
+	svc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, false)
+	svc.BindRenewScheduler(sched)
+
+	// 收紧观测周期后，写票过期时刻应显著早于初始 9 天窗口。
+	for i := 0; i < 8; i++ {
+		sched.RecordFailure(clock.Now())
+	}
+	if _, err := svc.Login(context.Background(), "u-ttl", "1234", "cap-ttl"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	_, expiresAt, err := tickets.Get(nil, "u-ttl")
+	if err != nil {
+		t.Fatalf("票据应落库：%v", err)
+	}
+	if window := expiresAt.Sub(clock.Now()); window >= 9*24*time.Hour {
+		t.Fatalf("写票窗口应受观测周期收紧影响，实际仍为 %v（9 天硬编码未打通）", window)
 	}
 }
