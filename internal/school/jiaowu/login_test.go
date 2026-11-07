@@ -210,3 +210,37 @@ func TestLogoutDeletesTicket(t *testing.T) {
 		t.Fatalf("登出后票据记录应被删除")
 	}
 }
+
+// TestAuditCoversAddressFetchCaptcha 证明「代请求」类入口也记审计（ADR 第 4 条），
+// 且审计只记 userID/action/result/target 四个结构化字段，不含票据或响应体。
+func TestAuditCoversAddressFetchCaptcha(t *testing.T) {
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
+	doer.SetResponse(http.StatusOK, "upstream-payload")
+	h, _, _, audit := newAuthEngine(t, doer)
+
+	for _, path := range []string{
+		"/school/address?target=jiaowu",
+		"/school/fetch?target=jiaowu",
+		"/school/captcha?target=auth",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Test-User", "test-user")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code == http.StatusNotFound {
+			t.Fatalf("%s 应已注册", path)
+		}
+	}
+	log := audit.buf.String()
+	for _, action := range []string{"address", "fetch", "captcha"} {
+		if !strings.Contains(log, "action="+action) {
+			t.Fatalf("审计应记录 action=%s，实际日志：%s", action, log)
+		}
+	}
+	if !strings.Contains(log, "userID=test-user") {
+		t.Fatalf("审计应记录已认证身份，实际：%s", log)
+	}
+	if strings.Contains(log, "upstream-payload") {
+		t.Fatalf("审计不得记录上游响应体，实际：%s", log)
+	}
+}

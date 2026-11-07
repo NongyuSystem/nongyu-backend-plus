@@ -193,12 +193,13 @@ func (c *MockCipher) Open(sealed []byte) ([]byte, error) {
 //     用于 #11 的契约测试；装配层显式置 true 后，白名单/超时/302/Set-Cookie 全部生效。
 //   - AllowedHosts：目标白名单；业务域只能传逻辑目标名，由实现层解析校验。
 //   - Timeout：单次请求超时（>0 时用 context.WithTimeout 施加）。
-//   - FollowRedirect：是否允许跟随重定向（ADR-0001 要求绝不跟随指向真站的 302）。
+//
+// 注意：不提供「允许跟随重定向」开关。ADR-0001 第 5 条的安全不变量在 Enforce=true
+// 时由实现层**无条件拦截** 3xx 保证（任何 Location 都不跟随），该行为不可被配置弱化。
 type DoerPolicy struct {
-	Enforce        bool
-	AllowedHosts   []string
-	Timeout        time.Duration
-	FollowRedirect bool
+	Enforce      bool
+	AllowedHosts []string
+	Timeout      time.Duration
 }
 
 // RecordedRequest 是一次 Do 调用的可观察快照，供测试断言「收到了什么请求」，
@@ -369,10 +370,9 @@ func isRedirectStatus(status int) bool {
 
 func clonePolicy(p DoerPolicy) DoerPolicy {
 	return DoerPolicy{
-		Enforce:        p.Enforce,
-		AllowedHosts:   append([]string(nil), p.AllowedHosts...),
-		Timeout:        p.Timeout,
-		FollowRedirect: p.FollowRedirect,
+		Enforce:      p.Enforce,
+		AllowedHosts: append([]string(nil), p.AllowedHosts...),
+		Timeout:      p.Timeout,
 	}
 }
 

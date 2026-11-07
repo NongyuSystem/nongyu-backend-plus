@@ -106,9 +106,10 @@ type AddressResult struct {
 //
 // path 是可选查询条件（形如 /xxx 或 /xxx?k=v），以明文挂在编码地址后面；它只能
 // 成为白名单 host 上的路径，无法替换目标 host —— 结构性 SSRF 保证仍然成立。
-func (s *Service) Address(_ context.Context, name school.TargetName, path string) (AddressResult, error) {
+func (s *Service) Address(_ context.Context, userID string, name school.TargetName, path string) (AddressResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
+		s.audit(userID, "address", "target_denied")
 		return AddressResult{}, err
 	}
 
@@ -118,9 +119,11 @@ func (s *Service) Address(_ context.Context, name school.TargetName, path string
 	raw := tgt.Direct.String() + normalizePath(path)
 	encoded, err := school.Encode(raw)
 	if err != nil {
+		s.audit(userID, "address", "encode_error")
 		return AddressResult{}, err
 	}
 
+	s.audit(userID, "address", "ok")
 	return AddressResult{Target: string(tgt.Name), Address: encoded}, nil
 }
 
@@ -152,9 +155,10 @@ type FetchResult struct {
 //
 // 302 / Set-Cookie 的处理全部在 platform 出站闸口（实现层）完成，本方法只转述错误：
 // CodeBlockedRedirect、CodeSessionExpired 由调用方（handler）映射为不同响应。
-func (s *Service) Fetch(ctx context.Context, name school.TargetName, path string) (FetchResult, error) {
+func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetName, path string) (FetchResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
+		s.audit(userID, "fetch", "target_denied")
 		return FetchResult{}, err
 	}
 
@@ -167,17 +171,21 @@ func (s *Service) Fetch(ctx context.Context, name school.TargetName, path string
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
+		s.audit(userID, "fetch", "outbound_error")
 		return FetchResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
+		s.audit(userID, "fetch", "nil_response")
 		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		s.audit(userID, "fetch", "read_error")
 		return FetchResult{}, err
 	}
+	s.audit(userID, "fetch", "ok")
 	return FetchResult{Status: resp.StatusCode, Body: body, Headers: resp.Header.Clone()}, nil
 }
 
@@ -207,9 +215,10 @@ type captchaPayload struct {
 
 // Captcha 取验证码图并返回给客户端展示。上游响应体即图像内容（骨架期用假实现注入），
 // 事务标识由后端生成，客户端提交时原样回传。
-func (s *Service) Captcha(ctx context.Context, name school.TargetName) (CaptchaResult, error) {
+func (s *Service) Captcha(ctx context.Context, userID string, name school.TargetName) (CaptchaResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
+		s.audit(userID, "captcha", "target_denied")
 		return CaptchaResult{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.Vpn.String()+"/api/v1/captcha", nil)
@@ -218,9 +227,11 @@ func (s *Service) Captcha(ctx context.Context, name school.TargetName) (CaptchaR
 	}
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
+		s.audit(userID, "captcha", "outbound_error")
 		return CaptchaResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
+		s.audit(userID, "captcha", "nil_response")
 		return CaptchaResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
@@ -233,6 +244,7 @@ func (s *Service) Captcha(ctx context.Context, name school.TargetName) (CaptchaR
 		// 上游给的是裸图像字节（骨架期假实现），包成可展示的图像字段。
 		p.Image = string(raw)
 	}
+	s.audit(userID, "captcha", "ok")
 	return CaptchaResult{UUID: "cap-" + string(name), Image: p.Image}, nil
 }
 

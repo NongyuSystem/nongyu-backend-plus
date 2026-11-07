@@ -213,9 +213,8 @@ func TestMockCipher_SealOpenRoundTrip(t *testing.T) {
 
 func TestMockHTTPDoer_RecordsAndResponds(t *testing.T) {
 	d := platform.NewMockHTTPDoer(platform.DoerPolicy{
-		AllowedHosts:   []string{"jiaowu.example.edu.cn"},
-		Timeout:        3 * time.Second,
-		FollowRedirect: false,
+		AllowedHosts: []string{"jiaowu.example.edu.cn"},
+		Timeout:      3 * time.Second,
 	})
 	d.SetResponse(http.StatusTeapot, "hello")
 
@@ -278,7 +277,7 @@ func TestMockHTTPDoer_RecordsAndResponds(t *testing.T) {
 	if len(p.AllowedHosts) != 1 || p.AllowedHosts[0] != "jiaowu.example.edu.cn" {
 		t.Fatalf("AllowedHosts 不符：%+v", p.AllowedHosts)
 	}
-	if p.Timeout != 3*time.Second || p.FollowRedirect {
+	if p.Timeout != 3*time.Second {
 		t.Fatalf("策略不符：%+v", p)
 	}
 }

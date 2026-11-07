@@ -59,7 +59,7 @@ func addressHandler(svc *Service) gin.HandlerFunc {
 		name := school.TargetName(c.Query("target"))
 		path := c.Query("path")
 
-		result, err := svc.Address(c.Request.Context(), name, path)
+		result, err := svc.Address(c.Request.Context(), c.GetString(school.CtxUserID), name, path)
 		if err != nil {
 			writeError(c, err)
 			return
@@ -79,7 +79,7 @@ func fetchHandler(svc *Service) gin.HandlerFunc {
 		name := school.TargetName(c.Query("target"))
 		path := c.Query("path")
 
-		result, err := svc.Fetch(c.Request.Context(), name, path)
+		result, err := svc.Fetch(c.Request.Context(), c.GetString(school.CtxUserID), name, path)
 		if err != nil {
 			writeError(c, err)
 			return
@@ -128,7 +128,7 @@ func captchaHandler(svc *Service) gin.HandlerFunc {
 		if name == "" {
 			name = school.TargetAuth
 		}
-		result, err := svc.Captcha(c.Request.Context(), name)
+		result, err := svc.Captcha(c.Request.Context(), c.GetString(school.CtxUserID), name)
 		if err != nil {
 			writeError(c, err)
 			return

@@ -53,10 +53,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	tickets := platform.NewMockTicketStore()
 	cipher := platform.NewMockCipher(cfg.TicketKey)
 	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
-		Enforce:        cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
-		AllowedHosts:   outboundAllowlist(cfg.HTTPAllowlist),
-		Timeout:        time.Duration(cfg.HTTPTimeoutSec) * time.Second,
-		FollowRedirect: false, // ADR-0001：绝不跟随指向真站的 302
+		Enforce:      cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
+		AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
+		Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
+		// 不跟随真站 302 是 ADR-0001 的无条件安全不变量，由实现层强制执行、不可配置。
 	})
 	clock := platform.NewRealClock()
 	engine := server.New()
