@@ -2,6 +2,7 @@ package jiaowu_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -152,7 +153,37 @@ func TestAppWiringDoerIsEnforced(t *testing.T) {
 		t.Fatalf("app.New: %v", err)
 	}
 	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
-	if err == nil {
-		t.Fatal("装配层注入的 Doer 应拒绝非白名单目标（守卫已生效）")
+	if !errors.Is(err, platform.ErrTargetDenied) {
+		t.Fatalf("装配层注入的 Doer 应以 ErrTargetDenied 拒绝非白名单目标，实际 %v", err)
 	}
+}
+
+// TestAppWiringLoadDefaultsEnforceGateway 用 config.Load() 的**真实默认值**装配，
+// 断言生产入口（main.go 走 Load）的闸口确实是强制的——堵住「零值 Config 不强制」
+// 与「Load 默认强制」不一致时无人能测出的回归缝（复验补强项 ①）。
+func TestAppWiringLoadDefaultsEnforceGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gin.DefaultWriter = io.Discard
+	gin.DefaultErrorWriter = io.Discard
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if !cfg.HTTPEnforce {
+		t.Fatal("Load() 应默认启用出站闸口强制")
+	}
+	application, err := app.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
+	if !errors.Is(err, platform.ErrTargetDenied) {
+		t.Fatalf("经 Load() 默认配置装配后闸口应强制，实际 %v", err)
+	}
+	// 合法目标（内建白名单）应放行。
+	resp, err := application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://webvpn.sicau.edu.cn/x", nil))
+	if err != nil {
+		t.Fatalf("内建白名单目标应放行，实际 %v", err)
+	}
+	resp.Body.Close()
 }

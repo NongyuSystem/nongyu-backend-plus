@@ -321,23 +321,19 @@ func platformEnvelopeFailed(raw []byte) bool {
 	return env.Code == 500 || env.Status == "error"
 }
 
-// accelEnvelopeOK 判定免密换票是否真的成立：必须是 code=200 且 data 里含非空 st。
-// 一个 200 的登录页 HTML / 空 data / 失败信封都不算（N3 收紧）。
+// accelEnvelopeOK 判定免密换票是否真的成立：必须 code=200 且 data.st 非空。
+// 一个 200 的登录页 HTML / 空 data / 失败信封 / 非 200 都不算（N3 收紧）。
 func accelEnvelopeOK(raw []byte) bool {
 	var env struct {
 		Code int `json:"code"`
 		Data struct {
 			ST string `json:"st"`
 		} `json:"data"`
-		ST string `json:"st"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return false
 	}
-	if env.Code != 0 && env.Code != 200 {
-		return false
-	}
-	return env.Data.ST != "" || env.ST != ""
+	return env.Code == 200 && env.Data.ST != ""
 }
 
 // ── #17 免密加速路径（可开关）+ 失败回落 ──────────────────────────────────

@@ -1,6 +1,7 @@
 package jiaowu_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -175,6 +176,63 @@ func TestRenewPeriodIsObservedNotHardcoded(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Plan 应挑出观测窗口内的候选，实际 %+v", plan)
+	}
+}
+
+// TestAccelSuccessStoresEnvelope 覆盖加速路径的**成功分支**（此前零覆盖）：
+// 上游返回 code=200 且 data.st 非空的有效换票信封时，才落票据、不需要用户输码。
+// 同时验证 200 登录页 HTML 与 code:500 失败信封都回落（收紧后的判定）。
+func TestAccelSuccessStoresEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
+	doer.SetResponse(http.StatusOK, `{"code":200,"data":{"st":"ST-REAL","callbackUrl":"https://webvpn.sicau.edu.cn/"}}`)
+	h, tickets, clock := newAccelEngine(t, doer, true)
+
+	w := accelPost(t, h)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		NeedCaptcha bool `json:"needCaptcha"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("非法 JSON：%v", err)
+	}
+	if body.NeedCaptcha {
+		t.Fatalf("有效换票信封应视为加速成功，不应要求输码，实际 %+v", body)
+	}
+	sealed, expiresAt, err := tickets.Get(nil, "accel-user")
+	if err != nil {
+		t.Fatalf("加速成功应落加密票据：%v", err)
+	}
+	if bytes.Contains(sealed, []byte("ST-REAL")) {
+		t.Fatalf("存储里应是密文，不得出现明文票据")
+	}
+	if !expiresAt.After(clock.Now()) {
+		t.Fatalf("过期时刻应晚于当前时刻")
+	}
+}
+
+func TestAccelLoginPageHTMLFallsBack(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
+	// 200 但不是换票信封：登录页 HTML，必须回落而非误判成功。
+	doer.SetResponse(http.StatusOK, "<html><body>login</body></html>")
+	h, tickets, _ := newAccelEngine(t, doer, true)
+
+	w := accelPost(t, h)
+	var body struct {
+		Code        string `json:"code"`
+		NeedCaptcha bool   `json:"needCaptcha"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("非法 JSON：%v", err)
+	}
+	if body.Code != "ticket_expired" || !body.NeedCaptcha {
+		t.Fatalf("登录页 HTML 应回落并引导输码，实际 %+v", body)
+	}
+	if _, _, err := tickets.Get(nil, "accel-user"); err == nil {
+		t.Fatalf("非换票信封不应落票据")
 	}
 }
 
