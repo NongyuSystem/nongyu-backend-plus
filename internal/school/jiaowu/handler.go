@@ -23,6 +23,13 @@ func Register(r gin.IRouter, svc *Service) {
 	r.GET("/school/fetch", fetchHandler(svc))
 }
 
+// RegisterAccel 在 RegisterWithAuth 之外挂 #17 的免密加速路径端点。
+// 装配层与测试用它；Register / RegisterWithAuth 保持各自原有形态不变。
+func RegisterAccel(r gin.IRouter, svc *Service) {
+	RegisterWithAuth(r, svc)
+	r.POST("/school/login/accel", accelHandler(svc))
+}
+
 // RegisterWithAuth 在 Register 的两条入口之外，额外挂载 #15 换票主路径的三条路由。
 // 装配层与测试若需要票据能力就用它；Register 保持 #13/#14 的原样形态不变。
 func RegisterWithAuth(r gin.IRouter, svc *Service) {
@@ -154,5 +161,18 @@ func logoutHandler(svc *Service) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+// accelHandler 免密加速路径的 HTTP 适配层：只转述 LoginWithAccel 的结果。
+// 失败回落（ticket_expired + needCaptcha）是业务层决定，这里不做任何重试。
+func accelHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result, err := svc.LoginWithAccel(c.Request.Context())
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	}
 }

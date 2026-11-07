@@ -19,11 +19,12 @@ import (
 //
 // 进程无状态：Service 没有任何可变字段，票据与上报状态全在 platform 外置能力里。
 type Service struct {
-	doer    *GuardedDoer
-	tickets platform.TicketStore
-	cipher  platform.Cipher
-	clock   platform.Clock
-	logger  *slog.Logger
+	doer         *GuardedDoer
+	tickets      platform.TicketStore
+	cipher       platform.Cipher
+	clock        platform.Clock
+	logger       *slog.Logger
+	accelEnabled bool
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -45,12 +46,21 @@ func NewWithAuth(doer platform.HTTPDoer, tickets platform.TicketStore, cipher pl
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Service{
-		doer:    newGuardedDoer(doer),
-		tickets: tickets,
-		cipher:  cipher,
-		clock:   clock,
-		logger:  logger,
+		doer:         newGuardedDoer(doer),
+		tickets:      tickets,
+		cipher:       cipher,
+		clock:        clock,
+		logger:       logger,
+		accelEnabled: false, // ADR-0001 / #7：门户 appid 免密换票未验证，加速路径默认关闭
 	}
+}
+
+// NewWithAccel 在 NewWithAuth 的全套能力之上设定「免密加速路径」开关。
+// enabled=false（默认）时 LoginWithAccel 的行为与主路径完全一致。
+func NewWithAccel(doer platform.HTTPDoer, tickets platform.TicketStore, cipher platform.Cipher, clock platform.Clock, logger *slog.Logger, enabled bool) *Service {
+	svc := NewWithAuth(doer, tickets, cipher, clock, logger)
+	svc.accelEnabled = enabled
+	return svc
 }
 
 // AddressResult 是 Address 的输出：逻辑目标名 + 客户端可直接使用的编码地址。
@@ -267,4 +277,68 @@ func platformEnvelopeFailed(raw []byte) bool {
 		return false
 	}
 	return env.Code == 500 || env.Status == "error"
+}
+
+// ── #17 免密加速路径（可开关）+ 失败回落 ──────────────────────────────────
+
+// AccelResult 是免密加速路径的输出。NeedCaptcha=true 表示「请走主路径（输码）」，
+// 是本票交付的核心行为——门户 appid 免密能力未被实测证实，失败即回落到它。
+type AccelResult struct {
+	NeedCaptcha bool   `json:"needCaptcha"`
+	Code        string `json:"code,omitempty"`
+}
+
+// LoginWithAccel 尝试免密续期；开关关闭或免密失败时都回落到账密+验证码主路径。
+//
+// 关键约束（ADR-0001 / #7 决议）：
+//   - 默认关闭；关掉时行为与主路径完全一致（零出站、要求输码）；
+//   - 开关打开但失败 → 返回 CodeTicketExpired 引导用户重新输码，**绝不静默重试刷屏**
+//     （全程恰好一次出站）；不落任何票据；
+//   - 本票交付的是「回落行为」，不是「免密能力已支持」。真实门户换票能力保留为
+//     手工验收项，未通过前不得写成已支持。
+func (s *Service) LoginWithAccel(ctx context.Context) (AccelResult, error) {
+	if !s.accelEnabled {
+		return AccelResult{NeedCaptcha: true}, nil
+	}
+
+	tgt, err := school.Resolve(school.TargetWebvpn)
+	if err != nil {
+		return AccelResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.Vpn.String()+"/api/v1/cas/login?appid=portal", nil)
+	if err != nil {
+		return AccelResult{}, err
+	}
+	resp, err := s.doer.Do(ctx, req)
+	if err != nil {
+		// 出站层拒绝（含闸口拦截）同样按「免密不成立」回落，不重试。
+		return s.fallbackToCaptcha()
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return s.fallbackToCaptcha()
+	}
+	// 只有成功信封（非失败、非空 data）才算免密换票成立。
+	if platformEnvelopeFailed(raw) || len(raw) == 0 {
+		return s.fallbackToCaptcha()
+	}
+
+	// 成功：票据密封后按用户键控落库（加速路径不下发给客户端，由主路径统一负责）。
+	sealed, err := s.cipher.Seal(raw)
+	if err != nil {
+		return AccelResult{}, err
+	}
+	if err := s.tickets.Put(ctx, "accel-user", sealed, s.clock.Now().Add(ticketTTL)); err != nil {
+		return AccelResult{}, err
+	}
+	s.audit("accel-user", "login_accel", "ok")
+	return AccelResult{NeedCaptcha: false}, nil
+}
+
+func (s *Service) fallbackToCaptcha() (AccelResult, error) {
+	return AccelResult{
+		NeedCaptcha: true,
+		Code:        string(school.CodeTicketExpired),
+	}, nil
 }
