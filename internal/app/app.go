@@ -14,6 +14,7 @@ import (
 
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/server"
 
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	})
 	clock := platform.NewRealClock()
 	engine := server.New()
+
+	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
+	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
+	// #13 只切 Address：doer 已接住（供后续 Fetch 票复用），本入口不发任何出站请求。
+	jiaowu.Register(engine, jiaowu.New(doer))
 
 	a := &App{
 		cfg:    cfg,
