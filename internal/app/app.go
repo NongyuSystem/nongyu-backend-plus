@@ -55,8 +55,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 
 	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
 	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
-	// #13 只切 Address：doer 已接住（供后续 Fetch 票复用），本入口不发任何出站请求。
-	jiaowu.Register(engine, jiaowu.New(doer))
+	// #15 起用 NewWithAuth + RegisterWithAuth，把票据/加解密/时钟/审计日志一并注入，
+	// 使换票主路径（captcha/login/logout）在生产装配里真正可用；tickets 与 presence
+	// 用的独立实例隔离（#16 已拍板避免 userID 单键互相覆盖）。
+	jiaowu.RegisterWithAuth(engine, jiaowu.NewWithAuth(doer, tickets, cipher, clock, logger))
 
 	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
 	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。

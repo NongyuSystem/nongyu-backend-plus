@@ -23,6 +23,15 @@ func Register(r gin.IRouter, svc *Service) {
 	r.GET("/school/fetch", fetchHandler(svc))
 }
 
+// RegisterWithAuth 在 Register 的两条入口之外，额外挂载 #15 换票主路径的三条路由。
+// 装配层与测试若需要票据能力就用它；Register 保持 #13/#14 的原样形态不变。
+func RegisterWithAuth(r gin.IRouter, svc *Service) {
+	Register(r, svc)
+	r.GET("/school/captcha", captchaHandler(svc))
+	r.POST("/school/login", loginHandler(svc))
+	r.DELETE("/school/logout", logoutHandler(svc))
+}
+
 // addressResponse 是成功响应：地址 + 逻辑目标名。
 type addressResponse struct {
 	Target  string `json:"target"`
@@ -92,4 +101,58 @@ func writeError(c *gin.Context, err error) {
 		return
 	}
 	c.JSON(http.StatusInternalServerError, errorResponse{Code: "internal_error", Message: "内部错误"})
+}
+
+// ── #15 换票主路径的 HTTP 适配层 ──────────────────────────────────────────
+
+func captchaHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := school.TargetName(c.Query("target"))
+		if name == "" {
+			name = school.TargetAuth
+		}
+		result, err := svc.Captcha(c.Request.Context(), name)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+type loginRequest struct {
+	UserID string `json:"userID"`
+	Code   string `json:"code"`
+	UUID   string `json:"uuid"`
+}
+
+func loginHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var in loginRequest
+		if err := c.ShouldBindJSON(&in); err != nil {
+			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
+			return
+		}
+		result, err := svc.Login(c.Request.Context(), in.UserID, in.Code, in.UUID)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func logoutHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.Query("userID")
+		if userID == "" {
+			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "缺少 userID"})
+			return
+		}
+		if err := svc.Logout(c.Request.Context(), userID); err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
 }
