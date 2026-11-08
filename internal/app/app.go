@@ -31,6 +31,7 @@ type Capabilities struct {
 	Cipher  platform.Cipher
 	Doer    platform.HTTPDoer
 	Clock   platform.Clock
+	Cache   *platform.RedisCache // 未配置 Redis 时为 nil
 }
 
 // renewInterval 是定时续期扫描的间隔（保守值，避免高频打扰学校侧）。
@@ -45,7 +46,10 @@ type App struct {
 	cancelRenew context.CancelFunc
 	renewDone   <-chan struct{}
 	renewOnce   sync.Once
+	flushDone   <-chan struct{}
 	closeStore  func() error
+	cache       *platform.RedisCache
+	logger      *slog.Logger
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -80,6 +84,30 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 
 	cipher := platform.NewMockCipher(cfg.TicketKey)
+
+	// 通用缓存层：穿透/雪崩/击穿/降级回灌四类防护都在实现里。
+	// 只有配了 Redis 才启用；未配置时 cache 为 nil，业务侧按「无缓存直接命中」处理。
+	var cache *platform.RedisCache
+	if cfg.RedisAddr != "" {
+		rc, err := platform.NewRedisCache(platform.RedisOptions{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
+			Prefix:   cfg.RedisPrefix,
+		}, platform.CacheOptions{
+			DefaultTTL:      time.Duration(cfg.CacheDefaultTTLSec) * time.Second,
+			JitterRatio:     cfg.CacheJitterRatio,
+			NotFoundTTL:     time.Duration(cfg.CacheNotFoundTTLSec) * time.Second,
+			RebuildTimeout:  2 * time.Second,
+			FallbackEnabled: true,
+			FlushRatePerSec: cfg.CacheFlushRatePerSec,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("缓存层（Redis）初始化失败：%w", err)
+		}
+		cache = rc
+	}
+
 	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
 		Enforce:      cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
 		AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
@@ -112,6 +140,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	renewCtx, cancelRenew := context.WithCancel(context.Background())
 	renewDone := scheduler.Run(renewCtx, renewInterval, jiaowuSvc.RenewFor)
 
+	// 缓存回灌循环：Redis 不可用期间写入内存的条目，在恢复后按限速（每秒 N 条）
+	// 慢慢同步回 Redis，避免恢复瞬间把 Redis 打满。无缓存时退化为空循环。
+	var flushDone <-chan struct{}
+	if cache != nil {
+		flushDone = runCacheFlusher(renewCtx, cache, logger)
+	}
+
 	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
 	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。
 	// 后端配置先用常量 ModeDirect、陈旧阈值显式传 5 分钟；两者若要可配置需扩 config，
@@ -138,14 +173,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Cipher:  cipher,
 			Doer:    doer,
 			Clock:   clock,
+			Cache:   cache,
 		},
 		cancelRenew: cancelRenew,
 		renewDone:   renewDone,
+		flushDone:   flushDone,
 		closeStore:  closeTickets,
+		logger:      logger,
 	}
-	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 5,
+	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 6,
 		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled,
-		"authEnabled", cfg.AuthKey != "")
+		"authEnabled", cfg.AuthKey != "", "cacheEnabled", cache != nil)
 	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
 	// 避免有人用字面量 Config 起服务时静默开放（prod 由 config.Load 强校验拦住）。
 	if cfg.AuthKey == "" {
@@ -153,6 +191,44 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			"reason", "AUTH_KEY 为空")
 	}
 	return a, nil
+}
+
+// runCacheFlusher 是缓存回灌循环：每秒调一次 FlushOnce，调用频次 × 每次条数 = 限速。
+// Redis 仍不可用时 FlushOnce 返回错误，这里只记一次日志并继续（不刷屏、不重试风暴）。
+func runCacheFlusher(ctx context.Context, cache *platform.RedisCache, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		failing := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if cache.PendingBackfill() == 0 {
+					if failing {
+						logger.Info("缓存回灌：积压已清空")
+						failing = false
+					}
+					continue
+				}
+				n, err := cache.FlushOnce(ctx)
+				if err != nil {
+					if !failing {
+						logger.Warn("缓存回灌受阻（Redis 仍不可用），保留积压下轮再试", "err", err)
+						failing = true
+					}
+					continue
+				}
+				if n > 0 {
+					logger.Info("缓存回灌进度", "flushed", n, "pending", cache.PendingBackfill())
+				}
+			}
+		}
+	}()
+	return done
 }
 
 // outboundAllowlist 合并「内建的三个真实目标 host」与配置里的额外白名单。
@@ -214,6 +290,20 @@ func (a *App) stopRenew() {
 			case <-a.renewDone:
 			case <-time.After(2 * time.Second):
 			}
+		}
+		// 等缓存回灌循环退出（同一 ctx，cancel 后应立即返回）。
+		if a.flushDone != nil {
+			select {
+			case <-a.flushDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		// 关停前再冲一次积压，尽量不丢降级期间写入的内存条目。
+		if a.cache != nil {
+			if n, err := a.cache.FlushOnce(context.Background()); err == nil && n > 0 && a.logger != nil {
+				a.logger.Info("关停前最后一次缓存回灌", "flushed", n)
+			}
+			_ = a.cache.Close()
 		}
 	})
 }

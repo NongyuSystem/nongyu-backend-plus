@@ -52,6 +52,14 @@ type Config struct {
 	RedisDB int
 	// RedisPrefix 是票据键名前缀，便于多环境隔离。
 	RedisPrefix string
+	// CacheDefaultTTLSec 是缓存正常值的默认存活秒数。
+	CacheDefaultTTLSec int
+	// CacheJitterRatio 是 TTL 抖动比例（防雪崩），0~1。
+	CacheJitterRatio float64
+	// CacheNotFoundTTLSec 是「查无此物」空值缓存的存活秒数（防穿透）。
+	CacheNotFoundTTLSec int
+	// CacheFlushRatePerSec 是降级恢复后回灌内存数据到 Redis 的每秒限速（防打垮）。
+	CacheFlushRatePerSec int
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -62,17 +70,21 @@ func Load() (Config, error) {
 		AppEnv:             envOr("APP_ENV", "dev"),
 		ShutdownTimeoutSec: envIntOr("SHUTDOWN_TIMEOUT_SEC", 10),
 		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单。
-		TicketKey:          envOr("TICKET_KEY", placeholderTicketKey),
-		HTTPTimeoutSec:     envIntOr("HTTP_TIMEOUT_SEC", 5),
-		HTTPAllowlist:      envOr("HTTP_ALLOWLIST", ""),
-		HTTPEnforce:        envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
-		AccelEnabled:       envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
-		AuthKey:            envOr("AUTH_KEY", ""),             // 生产强校验要求非空
-		RateLimitPerMinute: envIntOr("RATE_LIMIT_PER_MINUTE", 60),
-		RedisAddr:          envOr("REDIS_ADDR", ""),
-		RedisPassword:      envOr("REDIS_PASSWORD", ""),
-		RedisDB:            envIntOr("REDIS_DB", 0),
-		RedisPrefix:        envOr("REDIS_PREFIX", "nongyu:"),
+		TicketKey:            envOr("TICKET_KEY", placeholderTicketKey),
+		HTTPTimeoutSec:       envIntOr("HTTP_TIMEOUT_SEC", 5),
+		HTTPAllowlist:        envOr("HTTP_ALLOWLIST", ""),
+		HTTPEnforce:          envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
+		AccelEnabled:         envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
+		AuthKey:              envOr("AUTH_KEY", ""),             // 生产强校验要求非空
+		RateLimitPerMinute:   envIntOr("RATE_LIMIT_PER_MINUTE", 60),
+		RedisAddr:            envOr("REDIS_ADDR", ""),
+		RedisPassword:        envOr("REDIS_PASSWORD", ""),
+		RedisDB:              envIntOr("REDIS_DB", 0),
+		RedisPrefix:          envOr("REDIS_PREFIX", "nongyu:"),
+		CacheDefaultTTLSec:   envIntOr("CACHE_DEFAULT_TTL_SEC", 300),
+		CacheJitterRatio:     envFloatOr("CACHE_JITTER_RATIO", 0.2),
+		CacheNotFoundTTLSec:  envIntOr("CACHE_NOT_FOUND_TTL_SEC", 15),
+		CacheFlushRatePerSec: envIntOr("CACHE_FLUSH_RATE_PER_SEC", 100),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
@@ -134,6 +146,19 @@ func envIntOr(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envFloatOr 读取浮点环境变量，缺失或非法时返回默认值。
+func envFloatOr(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }
 
 // envBoolOr 读取布尔环境变量（true/1/yes/on 为真），缺失或非法时返回默认值。
