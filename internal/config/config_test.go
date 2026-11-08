@@ -30,6 +30,7 @@ func TestLoad_AcceptsStrongKeyInProduction(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")
 	t.Setenv("AUTH_KEY", "a-real-auth-signing-key-for-tests")
 	t.Setenv("TICKET_KEY", "a-32-byte-minimum-secret-key-here-abcdefg")
+	t.Setenv("REDIS_ADDR", "127.0.0.1:6379")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("强密钥应通过：%v", err)
@@ -68,5 +69,16 @@ func TestLoad_RejectsMissingAuthKeyInProduction(t *testing.T) {
 	t.Setenv("TICKET_KEY", "a-32-byte-minimum-secret-key-here-abcdefg")
 	if _, err := config.Load(); err == nil {
 		t.Fatal("prod 环境必须配置 AUTH_KEY")
+	}
+}
+
+// 生产不得用进程内存存票据（重启即丢），必须配 REDIS_ADDR。
+func TestLoad_RejectsMissingRedisInProduction(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("AUTH_KEY", "a-real-auth-signing-key-for-tests")
+	t.Setenv("TICKET_KEY", "a-32-byte-minimum-secret-key-here-abcdefg")
+	t.Setenv("REDIS_ADDR", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("prod 环境必须配置 REDIS_ADDR")
 	}
 }

@@ -43,6 +43,15 @@ type Config struct {
 	AuthKey string
 	// RateLimitPerMinute 是每用户每分钟允许的请求数。
 	RateLimitPerMinute int
+	// RedisAddr 是票据存储的 Redis 地址（形如 127.0.0.1:6379）。
+	// 为空时回落到进程内存实现（仅本地开发；进程重启即丢票，不能上生产）。
+	RedisAddr string
+	// RedisPassword 是 Redis 密码。
+	RedisPassword string
+	// RedisDB 是 Redis 逻辑库编号。
+	RedisDB int
+	// RedisPrefix 是票据键名前缀，便于多环境隔离。
+	RedisPrefix string
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -60,6 +69,10 @@ func Load() (Config, error) {
 		AccelEnabled:       envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
 		AuthKey:            envOr("AUTH_KEY", ""),             // 生产强校验要求非空
 		RateLimitPerMinute: envIntOr("RATE_LIMIT_PER_MINUTE", 60),
+		RedisAddr:          envOr("REDIS_ADDR", ""),
+		RedisPassword:      envOr("REDIS_PASSWORD", ""),
+		RedisDB:            envIntOr("REDIS_DB", 0),
+		RedisPrefix:        envOr("REDIS_PREFIX", "nongyu:"),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
@@ -85,6 +98,9 @@ func Load() (Config, error) {
 		}
 		if cfg.RateLimitPerMinute <= 0 {
 			return Config{}, fmt.Errorf("prod 环境 RATE_LIMIT_PER_MINUTE 必须为正整数")
+		}
+		if strings.TrimSpace(cfg.RedisAddr) == "" {
+			return Config{}, fmt.Errorf("prod 环境必须配置 REDIS_ADDR（票据需外置持久，内存实现重启即丢）")
 		}
 	}
 	return cfg, nil

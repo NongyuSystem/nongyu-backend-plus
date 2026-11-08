@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -44,13 +45,40 @@ type App struct {
 	cancelRenew context.CancelFunc
 	renewDone   <-chan struct{}
 	renewOnce   sync.Once
+	closeStore  func() error
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
 // 骨架期注入内存/Mock 实现；数据库层 / 真实出站闸口就绪后，只改这里注入即可，业务域零改动。
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	store := platform.NewMockStore()
-	tickets := platform.NewMockTicketStore()
+
+	// 票据存储：配了 REDIS_ADDR 就用外置持久实现（生产必须），否则回落到进程内存（仅本地开发）。
+	var tickets platform.TicketStore
+	var closeTickets func() error
+	if cfg.RedisAddr != "" {
+		redisStore, err := platform.NewRedisTicketStore(platform.RedisOptions{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
+			Prefix:   cfg.RedisPrefix,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("票据存储（Redis）初始化失败：%w", err)
+		}
+		// 启动期探测：连不上就拒绝启动，避免带着坏依赖上线。
+		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := redisStore.Ping(pingCtx); err != nil {
+			return nil, fmt.Errorf("票据存储（Redis）不可达 %s：%w", cfg.RedisAddr, err)
+		}
+		tickets = redisStore
+		closeTickets = redisStore.Close
+	} else {
+		tickets = platform.NewMockTicketStore()
+		logger.Warn("票据存储使用进程内存实现：重启即丢票，仅限本地开发/测试", "hint", "配置 REDIS_ADDR 以启用外置持久")
+	}
+
 	cipher := platform.NewMockCipher(cfg.TicketKey)
 	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
 		Enforce:      cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
@@ -113,6 +141,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		},
 		cancelRenew: cancelRenew,
 		renewDone:   renewDone,
+		closeStore:  closeTickets,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 5,
 		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled,
@@ -166,7 +195,12 @@ func (a *App) Shutdown(timeout time.Duration) error {
 	a.stopRenew()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return a.server.Shutdown(ctx)
+	err := a.server.Shutdown(ctx)
+	// 释放外置存储连接池（Redis 未配置时 closeStore 为空）。
+	if a.closeStore != nil {
+		_ = a.closeStore()
+	}
+	return err
 }
 
 // stopRenew 幂等地停止定时续期循环并等待其 goroutine 退出（有上界，避免关停挂死）。
