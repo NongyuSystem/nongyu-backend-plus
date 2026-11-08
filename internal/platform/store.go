@@ -32,3 +32,16 @@ func IsNotFound(err error) bool {
 	_, ok := err.(*notFoundError)
 	return ok
 }
+
+// ErrAlreadyExists 表示唯一约束冲突（如学号已被占用、登录方式已绑定）。
+var ErrAlreadyExists = &alreadyExistsError{}
+
+type alreadyExistsError struct{}
+
+func (e *alreadyExistsError) Error() string { return "platform: already exists" }
+
+// IsAlreadyExists 判断错误是否为唯一约束冲突。
+func IsAlreadyExists(err error) bool {
+	_, ok := err.(*alreadyExistsError)
+	return ok
+}
