@@ -150,10 +150,10 @@ type LoginMethodRepo interface {
 
 // SessionStore 是会话的持久化能力。Postgres 为权威，实现可另加 Redis 副本。
 type SessionStore interface {
-	// Create 写入一条会话。
-	Create(ctx context.Context, s Session) error
-	// ByID 读会话；不存在返回 ErrNotFound。
-	ByID(ctx context.Context, id string) (Session, error)
+	// CreateSession 写入一条会话。
+	CreateSession(ctx context.Context, s Session) error
+	// SessionByID 读会话；不存在返回 ErrNotFound。
+	SessionByID(ctx context.Context, id string) (Session, error)
 	// Revoke 吊销一条会话（幂等）。
 	Revoke(ctx context.Context, id string) error
 	// RevokeByUserScope 吊销某用户在某 scope 下的全部有效会话，返回受影响条数。
