@@ -109,7 +109,7 @@ type AddressResult struct {
 func (s *Service) Address(_ context.Context, userID string, name school.TargetName, path string) (AddressResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "address", "target_denied")
+		s.audit(userID, "address", "target_denied", string(name))
 		return AddressResult{}, err
 	}
 
@@ -119,11 +119,11 @@ func (s *Service) Address(_ context.Context, userID string, name school.TargetNa
 	raw := tgt.Direct.String() + normalizePath(path)
 	encoded, err := school.Encode(raw)
 	if err != nil {
-		s.audit(userID, "address", "encode_error")
+		s.audit(userID, "address", "encode_error", string(tgt.Name))
 		return AddressResult{}, err
 	}
 
-	s.audit(userID, "address", "ok")
+	s.audit(userID, "address", "ok", string(tgt.Name))
 	return AddressResult{Target: string(tgt.Name), Address: encoded}, nil
 }
 
@@ -158,7 +158,7 @@ type FetchResult struct {
 func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetName, path string) (FetchResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "fetch", "target_denied")
+		s.audit(userID, "fetch", "target_denied", string(name))
 		return FetchResult{}, err
 	}
 
@@ -171,21 +171,21 @@ func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetNa
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		s.audit(userID, "fetch", "outbound_error")
+		s.audit(userID, "fetch", "outbound_error", string(tgt.Name))
 		return FetchResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
-		s.audit(userID, "fetch", "nil_response")
+		s.audit(userID, "fetch", "nil_response", string(tgt.Name))
 		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		s.audit(userID, "fetch", "read_error")
+		s.audit(userID, "fetch", "read_error", string(tgt.Name))
 		return FetchResult{}, err
 	}
-	s.audit(userID, "fetch", "ok")
+	s.audit(userID, "fetch", "ok", string(tgt.Name))
 	return FetchResult{Status: resp.StatusCode, Body: body, Headers: resp.Header.Clone()}, nil
 }
 
@@ -218,7 +218,7 @@ type captchaPayload struct {
 func (s *Service) Captcha(ctx context.Context, userID string, name school.TargetName) (CaptchaResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "captcha", "target_denied")
+		s.audit(userID, "captcha", "target_denied", string(name))
 		return CaptchaResult{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.Vpn.String()+"/api/v1/captcha", nil)
@@ -227,11 +227,11 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 	}
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		s.audit(userID, "captcha", "outbound_error")
+		s.audit(userID, "captcha", "outbound_error", string(tgt.Name))
 		return CaptchaResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
-		s.audit(userID, "captcha", "nil_response")
+		s.audit(userID, "captcha", "nil_response", string(tgt.Name))
 		return CaptchaResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
@@ -244,7 +244,7 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 		// 上游给的是裸图像字节（骨架期假实现），包成可展示的图像字段。
 		p.Image = string(raw)
 	}
-	s.audit(userID, "captcha", "ok")
+	s.audit(userID, "captcha", "ok", string(tgt.Name))
 	return CaptchaResult{UUID: "cap-" + string(name), Image: p.Image}, nil
 }
 
@@ -282,7 +282,7 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 
 	// 验证码错误判定：响应体含明确文案，或平台失败信封 code=500。
 	if bytes.Contains(raw, []byte("验证码错误")) || platformEnvelopeFailed(raw) {
-		s.audit(userID, "login", "captcha_error")
+		s.audit(userID, "login", "captcha_error", string(school.TargetAuth))
 		s.recordLoginOutcome(false)
 		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 	}
@@ -297,7 +297,7 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 		return LoginResult{}, err
 	}
 	s.recordLoginOutcome(true)
-	s.audit(userID, "login", "ok")
+	s.audit(userID, "login", "ok", string(school.TargetAuth))
 	// uuid 参与事务标识但绝不进审计，避免任何间接泄漏。
 	_ = uuid
 	return LoginResult{Ticket: ticket, ExpiresAt: expiresAt}, nil
@@ -308,17 +308,19 @@ func (s *Service) Logout(ctx context.Context, userID string) error {
 	if err := s.tickets.Delete(ctx, userID); err != nil {
 		return err
 	}
-	s.audit(userID, "logout", "ok")
+	s.audit(userID, "logout", "ok", string(school.TargetAuth))
 	return nil
 }
 
 // audit 只写结构化字段，绝不把票据/密文/验证码/事务标识放进任何字段。
-func (s *Service) audit(userID, action, result string) {
+// target 必须是被访问的真实逻辑目标名（jiaowu / auth / webvpn），否则「谁、何时、
+// 访问了哪个目标、结果如何」这条审计链会失真（ADR-0001 第 4 条）。
+func (s *Service) audit(userID, action, result, target string) {
 	s.logger.Info("school.audit",
 		slog.String("userID", userID),
 		slog.String("action", action),
 		slog.String("result", result),
-		slog.String("target", "auth"),
+		slog.String("target", target),
 	)
 }
 
@@ -411,7 +413,7 @@ func (s *Service) LoginWithAccel(ctx context.Context) (AccelResult, error) {
 		return AccelResult{}, err
 	}
 	s.recordLoginOutcome(true)
-	s.audit("accel-user", "login_accel", "ok")
+	s.audit("accel-user", "login_accel", "ok", string(school.TargetWebvpn))
 	return AccelResult{NeedCaptcha: false}, nil
 }
 
@@ -467,5 +469,5 @@ func (s *Service) RenewFor(ctx context.Context, userID string) {
 		return
 	}
 	s.recordLoginOutcome(true)
-	s.audit(userID, "renew", "ok")
+	s.audit(userID, "renew", "ok", string(school.TargetWebvpn))
 }

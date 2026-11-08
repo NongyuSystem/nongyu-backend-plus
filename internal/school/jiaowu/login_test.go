@@ -243,4 +243,11 @@ func TestAuditCoversAddressFetchCaptcha(t *testing.T) {
 	if strings.Contains(log, "upstream-payload") {
 		t.Fatalf("审计不得记录上游响应体，实际：%s", log)
 	}
+	// 目标逻辑名必须真实：address/fetch 打的是 jiaowu，captcha 打的是 auth。
+	if !strings.Contains(log, "target=jiaowu") {
+		t.Fatalf("审计应记录真实目标逻辑名 jiaowu，实际：%s", log)
+	}
+	if !strings.Contains(log, "target=auth") {
+		t.Fatalf("captcha 审计应记录目标 auth，实际：%s", log)
+	}
 }
