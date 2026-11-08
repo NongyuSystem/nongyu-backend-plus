@@ -47,6 +47,12 @@ func NewRedisTicketStore(opts RedisOptions) (*RedisTicketStore, error) {
 		Addr:     opts.Addr,
 		Password: opts.Password,
 		DB:       opts.DB,
+		// 快速失败：坏依赖不应把请求拖到秒级（否则降级/报错都太慢）。
+		MaxRetries:   1,
+		DialTimeout:  500 * time.Millisecond,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+		PoolTimeout:  500 * time.Millisecond,
 	})
 	return &RedisTicketStore{client: client, prefix: opts.Prefix}, nil
 }
