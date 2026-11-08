@@ -115,7 +115,14 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		renewDone:   renewDone,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 5,
-		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled)
+		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled,
+		"authEnabled", cfg.AuthKey != "")
+	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
+	// 避免有人用字面量 Config 起服务时静默开放（prod 由 config.Load 强校验拦住）。
+	if cfg.AuthKey == "" {
+		logger.Warn("认证中间件未启用：所有业务端点无身份校验，仅限本地开发/测试使用",
+			"reason", "AUTH_KEY 为空")
+	}
 	return a, nil
 }
 
