@@ -60,6 +60,10 @@ type Config struct {
 	CacheNotFoundTTLSec int
 	// CacheFlushRatePerSec 是降级恢复后回灌内存数据到 Redis 的每秒限速（防打垮）。
 	CacheFlushRatePerSec int
+	// CacheBreakerThreshold 是 Redis 连续失败多少次后打开熔断（快速失败）。
+	CacheBreakerThreshold int
+	// CacheBreakerCooldownSec 是熔断冷却秒数，期满转半开探测。
+	CacheBreakerCooldownSec int
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -70,21 +74,23 @@ func Load() (Config, error) {
 		AppEnv:             envOr("APP_ENV", "dev"),
 		ShutdownTimeoutSec: envIntOr("SHUTDOWN_TIMEOUT_SEC", 10),
 		// 缺项有安全默认值：占位密钥 + 5 秒超时 + 空白名单。
-		TicketKey:            envOr("TICKET_KEY", placeholderTicketKey),
-		HTTPTimeoutSec:       envIntOr("HTTP_TIMEOUT_SEC", 5),
-		HTTPAllowlist:        envOr("HTTP_ALLOWLIST", ""),
-		HTTPEnforce:          envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
-		AccelEnabled:         envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
-		AuthKey:              envOr("AUTH_KEY", ""),             // 生产强校验要求非空
-		RateLimitPerMinute:   envIntOr("RATE_LIMIT_PER_MINUTE", 60),
-		RedisAddr:            envOr("REDIS_ADDR", ""),
-		RedisPassword:        envOr("REDIS_PASSWORD", ""),
-		RedisDB:              envIntOr("REDIS_DB", 0),
-		RedisPrefix:          envOr("REDIS_PREFIX", "nongyu:"),
-		CacheDefaultTTLSec:   envIntOr("CACHE_DEFAULT_TTL_SEC", 300),
-		CacheJitterRatio:     envFloatOr("CACHE_JITTER_RATIO", 0.2),
-		CacheNotFoundTTLSec:  envIntOr("CACHE_NOT_FOUND_TTL_SEC", 15),
-		CacheFlushRatePerSec: envIntOr("CACHE_FLUSH_RATE_PER_SEC", 100),
+		TicketKey:               envOr("TICKET_KEY", placeholderTicketKey),
+		HTTPTimeoutSec:          envIntOr("HTTP_TIMEOUT_SEC", 5),
+		HTTPAllowlist:           envOr("HTTP_ALLOWLIST", ""),
+		HTTPEnforce:             envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
+		AccelEnabled:            envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
+		AuthKey:                 envOr("AUTH_KEY", ""),             // 生产强校验要求非空
+		RateLimitPerMinute:      envIntOr("RATE_LIMIT_PER_MINUTE", 60),
+		RedisAddr:               envOr("REDIS_ADDR", ""),
+		RedisPassword:           envOr("REDIS_PASSWORD", ""),
+		RedisDB:                 envIntOr("REDIS_DB", 0),
+		RedisPrefix:             envOr("REDIS_PREFIX", "nongyu:"),
+		CacheDefaultTTLSec:      envIntOr("CACHE_DEFAULT_TTL_SEC", 300),
+		CacheJitterRatio:        envFloatOr("CACHE_JITTER_RATIO", 0.2),
+		CacheNotFoundTTLSec:     envIntOr("CACHE_NOT_FOUND_TTL_SEC", 15),
+		CacheFlushRatePerSec:    envIntOr("CACHE_FLUSH_RATE_PER_SEC", 100),
+		CacheBreakerThreshold:   envIntOr("CACHE_BREAKER_THRESHOLD", 5),
+		CacheBreakerCooldownSec: envIntOr("CACHE_BREAKER_COOLDOWN_SEC", 5),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {

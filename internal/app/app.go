@@ -95,12 +95,14 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			DB:       cfg.RedisDB,
 			Prefix:   cfg.RedisPrefix,
 		}, platform.CacheOptions{
-			DefaultTTL:      time.Duration(cfg.CacheDefaultTTLSec) * time.Second,
-			JitterRatio:     cfg.CacheJitterRatio,
-			NotFoundTTL:     time.Duration(cfg.CacheNotFoundTTLSec) * time.Second,
-			RebuildTimeout:  2 * time.Second,
-			FallbackEnabled: true,
-			FlushRatePerSec: cfg.CacheFlushRatePerSec,
+			DefaultTTL:       time.Duration(cfg.CacheDefaultTTLSec) * time.Second,
+			JitterRatio:      cfg.CacheJitterRatio,
+			NotFoundTTL:      time.Duration(cfg.CacheNotFoundTTLSec) * time.Second,
+			RebuildTimeout:   2 * time.Second,
+			FallbackEnabled:  true,
+			FlushRatePerSec:  cfg.CacheFlushRatePerSec,
+			BreakerThreshold: cfg.CacheBreakerThreshold,
+			BreakerCooldown:  time.Duration(cfg.CacheBreakerCooldownSec) * time.Second,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("缓存层（Redis）初始化失败：%w", err)

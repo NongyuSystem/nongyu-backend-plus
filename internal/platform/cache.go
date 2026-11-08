@@ -85,6 +85,10 @@ type CacheOptions struct {
 	FallbackEnabled bool
 	// FlushRatePerSec 是恢复后回灌内存数据到 Redis 的限速（每秒条数），防恢复瞬间压垮。
 	FlushRatePerSec int
+	// BreakerThreshold 是连续失败多少次后打开熔断（<=0 用默认 5）。
+	BreakerThreshold int
+	// BreakerCooldown 是熔断打开后的冷却时长，期满转半开探测（<=0 用默认 5s）。
+	BreakerCooldown time.Duration
 }
 
 const (
@@ -116,6 +120,8 @@ type RedisCache struct {
 
 	rndMu sync.Mutex
 	rnd   *rand.Rand
+
+	breaker *breaker
 }
 
 type fallbackEntry struct {
@@ -169,6 +175,7 @@ func NewRedisCache(opts RedisOptions, copts CacheOptions) (*RedisCache, error) {
 		pending:  make(map[string]struct{}),
 		sf:       make(map[string]*sfCall),
 		rnd:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		breaker:  newBreaker(copts.BreakerThreshold, copts.BreakerCooldown),
 	}, nil
 }
 
@@ -196,37 +203,59 @@ func (c *RedisCache) jitteredTTL(base time.Duration) time.Duration {
 	return ttl
 }
 
-// Get 读缓存：Redis 优先，不可用时读内存兜底。
+// Get 读缓存：Redis 优先，不可用或已熔断时读内存兜底。
 func (c *RedisCache) Get(ctx context.Context, key string) ([]byte, error) {
+	if !c.breaker.allow() {
+		// 熔断打开：直接走降级，不触碰 Redis（快速失败）。
+		if c.opts.FallbackEnabled {
+			return c.getFromFallback(key)
+		}
+		return nil, fmt.Errorf("platform: 缓存已熔断（key=%s）", key)
+	}
+
 	raw, err := c.client.Get(ctx, c.fullKey(key)).Bytes()
 	if err == redis.Nil {
+		c.breaker.onSuccess()
 		return nil, nil
 	}
 	if err != nil {
+		c.breaker.onFailure()
 		if c.opts.FallbackEnabled {
 			return c.getFromFallback(key)
 		}
 		return nil, err
 	}
+	c.breaker.onSuccess()
 	if string(raw) == emptyMarker {
 		return nil, nil
 	}
 	return raw, nil
 }
 
-// Set 写缓存：ttl<=0 表示用 DefaultTTL（仍会加抖动）。Redis 失败时按配置降级到内存。
+// Set 写缓存：ttl<=0 表示用 DefaultTTL（仍会加抖动）。熔断或失败时按配置降级到内存。
 func (c *RedisCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	if ttl <= 0 {
 		ttl = c.opts.DefaultTTL
 	}
 	ttl = c.jitteredTTL(ttl)
+
+	if !c.breaker.allow() {
+		if c.opts.FallbackEnabled {
+			c.setFallback(key, value, ttl)
+			return nil
+		}
+		return fmt.Errorf("platform: 缓存已熔断（key=%s）", key)
+	}
+
 	if err := c.client.Set(ctx, c.fullKey(key), value, ttl).Err(); err != nil {
+		c.breaker.onFailure()
 		if c.opts.FallbackEnabled {
 			c.setFallback(key, value, ttl)
 			return nil
 		}
 		return err
 	}
+	c.breaker.onSuccess()
 	return nil
 }
 
