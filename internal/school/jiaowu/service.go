@@ -28,6 +28,8 @@ type Service struct {
 	logger       *slog.Logger
 	accelEnabled bool
 	scheduler    *RenewScheduler
+	// audit_store 是可选的审计持久化通道；为 nil 时只写 slog。
+	audit_store platform.AuditStore
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -66,8 +68,12 @@ func NewWithAccel(doer platform.HTTPDoer, tickets platform.TicketStore, cipher p
 	return svc
 }
 
-// BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，
-// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。
+// BindAuditStore 接入审计持久化通道（PG）。未接入时审计只写 slog。
+func (s *Service) BindAuditStore(store platform.AuditStore) {
+	s.audit_store = store
+}
+
+// BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。
 func (s *Service) BindRenewScheduler(sched *RenewScheduler) {
 	s.scheduler = sched
 }
@@ -106,10 +112,10 @@ type AddressResult struct {
 //
 // path 是可选查询条件（形如 /xxx 或 /xxx?k=v），以明文挂在编码地址后面；它只能
 // 成为白名单 host 上的路径，无法替换目标 host —— 结构性 SSRF 保证仍然成立。
-func (s *Service) Address(_ context.Context, userID string, name school.TargetName, path string) (AddressResult, error) {
+func (s *Service) Address(ctx context.Context, userID string, name school.TargetName, path string) (AddressResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "address", "target_denied", string(name))
+		s.audit(ctx, userID, "address", "target_denied", string(name))
 		return AddressResult{}, err
 	}
 
@@ -119,11 +125,11 @@ func (s *Service) Address(_ context.Context, userID string, name school.TargetNa
 	raw := tgt.Direct.String() + normalizePath(path)
 	encoded, err := school.Encode(raw)
 	if err != nil {
-		s.audit(userID, "address", "encode_error", string(tgt.Name))
+		s.audit(ctx, userID, "address", "encode_error", string(tgt.Name))
 		return AddressResult{}, err
 	}
 
-	s.audit(userID, "address", "ok", string(tgt.Name))
+	s.audit(ctx, userID, "address", "ok", string(tgt.Name))
 	return AddressResult{Target: string(tgt.Name), Address: encoded}, nil
 }
 
@@ -158,7 +164,7 @@ type FetchResult struct {
 func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetName, path string) (FetchResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "fetch", "target_denied", string(name))
+		s.audit(ctx, userID, "fetch", "target_denied", string(name))
 		return FetchResult{}, err
 	}
 
@@ -171,21 +177,21 @@ func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetNa
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		s.audit(userID, "fetch", "outbound_error", string(tgt.Name))
+		s.audit(ctx, userID, "fetch", "outbound_error", string(tgt.Name))
 		return FetchResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
-		s.audit(userID, "fetch", "nil_response", string(tgt.Name))
+		s.audit(ctx, userID, "fetch", "nil_response", string(tgt.Name))
 		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		s.audit(userID, "fetch", "read_error", string(tgt.Name))
+		s.audit(ctx, userID, "fetch", "read_error", string(tgt.Name))
 		return FetchResult{}, err
 	}
-	s.audit(userID, "fetch", "ok", string(tgt.Name))
+	s.audit(ctx, userID, "fetch", "ok", string(tgt.Name))
 	return FetchResult{Status: resp.StatusCode, Body: body, Headers: resp.Header.Clone()}, nil
 }
 
@@ -218,7 +224,7 @@ type captchaPayload struct {
 func (s *Service) Captcha(ctx context.Context, userID string, name school.TargetName) (CaptchaResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
-		s.audit(userID, "captcha", "target_denied", string(name))
+		s.audit(ctx, userID, "captcha", "target_denied", string(name))
 		return CaptchaResult{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.Vpn.String()+"/api/v1/captcha", nil)
@@ -227,11 +233,11 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 	}
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		s.audit(userID, "captcha", "outbound_error", string(tgt.Name))
+		s.audit(ctx, userID, "captcha", "outbound_error", string(tgt.Name))
 		return CaptchaResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
-		s.audit(userID, "captcha", "nil_response", string(tgt.Name))
+		s.audit(ctx, userID, "captcha", "nil_response", string(tgt.Name))
 		return CaptchaResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
@@ -244,7 +250,7 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 		// 上游给的是裸图像字节（骨架期假实现），包成可展示的图像字段。
 		p.Image = string(raw)
 	}
-	s.audit(userID, "captcha", "ok", string(tgt.Name))
+	s.audit(ctx, userID, "captcha", "ok", string(tgt.Name))
 	return CaptchaResult{UUID: "cap-" + string(name), Image: p.Image}, nil
 }
 
@@ -282,7 +288,7 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 
 	// 验证码错误判定：响应体含明确文案，或平台失败信封 code=500。
 	if bytes.Contains(raw, []byte("验证码错误")) || platformEnvelopeFailed(raw) {
-		s.audit(userID, "login", "captcha_error", string(school.TargetAuth))
+		s.audit(ctx, userID, "login", "captcha_error", string(school.TargetAuth))
 		s.recordLoginOutcome(false)
 		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 	}
@@ -297,7 +303,7 @@ func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginRe
 		return LoginResult{}, err
 	}
 	s.recordLoginOutcome(true)
-	s.audit(userID, "login", "ok", string(school.TargetAuth))
+	s.audit(ctx, userID, "login", "ok", string(school.TargetAuth))
 	// uuid 参与事务标识但绝不进审计，避免任何间接泄漏。
 	_ = uuid
 	return LoginResult{Ticket: ticket, ExpiresAt: expiresAt}, nil
@@ -308,20 +314,40 @@ func (s *Service) Logout(ctx context.Context, userID string) error {
 	if err := s.tickets.Delete(ctx, userID); err != nil {
 		return err
 	}
-	s.audit(userID, "logout", "ok", string(school.TargetAuth))
+	s.audit(ctx, userID, "logout", "ok", string(school.TargetAuth))
 	return nil
 }
 
 // audit 只写结构化字段，绝不把票据/密文/验证码/事务标识放进任何字段。
 // target 必须是被访问的真实逻辑目标名（jiaowu / auth / webvpn），否则「谁、何时、
 // 访问了哪个目标、结果如何」这条审计链会失真（ADR-0001 第 4 条）。
-func (s *Service) audit(userID, action, result, target string) {
+//
+// 两条通道：slog 供 stdout→采集器→ES 检索；AuditStore 供 PG 结构化留存。
+// 审计是旁路，写库失败/丢弃绝不影响业务（AuditStore 实现内部吞掉错误并计数）。
+func (s *Service) audit(ctx context.Context, userID, action, result, target string) {
 	s.logger.Info("school.audit",
 		slog.String("userID", userID),
 		slog.String("action", action),
 		slog.String("result", result),
 		slog.String("target", target),
 	)
+	if s.audit_store == nil {
+		return
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(school.CtxRequestID).(string); ok {
+			reqID = v
+		}
+	}
+	_ = s.audit_store.Append(ctx, platform.AuditEntry{
+		RequestID:  reqID,
+		UserID:     userID,
+		Action:     action,
+		Target:     target,
+		Result:     result,
+		OccurredAt: s.clock.Now(),
+	})
 }
 
 // platformEnvelopeFailed 判定统一认证平台的失败信封（code=500 / status=error）。
@@ -413,7 +439,7 @@ func (s *Service) LoginWithAccel(ctx context.Context) (AccelResult, error) {
 		return AccelResult{}, err
 	}
 	s.recordLoginOutcome(true)
-	s.audit("accel-user", "login_accel", "ok", string(school.TargetWebvpn))
+	s.audit(ctx, "accel-user", "login_accel", "ok", string(school.TargetWebvpn))
 	return AccelResult{NeedCaptcha: false}, nil
 }
 
@@ -469,5 +495,5 @@ func (s *Service) RenewFor(ctx context.Context, userID string) {
 		return
 	}
 	s.recordLoginOutcome(true)
-	s.audit(userID, "renew", "ok", string(school.TargetWebvpn))
+	s.audit(ctx, userID, "renew", "ok", string(school.TargetWebvpn))
 }

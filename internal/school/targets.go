@@ -7,6 +7,10 @@ import "net/url"
 // 认证中间件写入、业务 handler 只读；请求体/query 里的 userID 一律不生效。
 const CtxUserID = "authenticatedUserID"
 
+// CtxRequestID 是一次请求链路的追踪号（即「审计流水号」）的上下文键。
+// 由框架层中间件写入，业务域只读；审计记录靠它把一次请求的多个动作串起来。
+const CtxRequestID = "requestID"
+
 // ── 逻辑目标名 ────────────────────────────────────────────────────────────
 //
 // 调用方只能传 TargetName，不能传 URL —— 这是 ADR-0001 第 1 条的结构性保证：

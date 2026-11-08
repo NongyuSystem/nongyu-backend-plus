@@ -49,6 +49,7 @@ type App struct {
 	flushDone   <-chan struct{}
 	closeStore  func() error
 	cache       *platform.RedisCache
+	pgAudit     *platform.PGAuditStore
 	logger      *slog.Logger
 }
 
@@ -119,6 +120,34 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	clock := platform.NewRealClock()
 	engine := server.New()
 
+	// 请求追踪号：每个请求一个审计流水号，写入 context 与 X-Request-Id 响应头。
+	// 必须最先挂，后续所有 handler 与审计都能拿到它。
+	engine.Use(server.RequestIDMiddleware())
+
+	// 审计持久层（Postgres）：配了 DATABASE_URL 才启用，否则审计只写 slog。
+	var auditStore platform.AuditStore
+	var pgAudit *platform.PGAuditStore
+	if cfg.DatabaseURL != "" {
+		st, err := platform.NewPGAuditStore(platform.PGOptions{
+			DSN:         cfg.DatabaseURL,
+			BufferSize:  2048,
+			BatchSize:   64,
+			FlushPeriod: time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("审计存储（Postgres）初始化失败：%w", err)
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := st.Ping(pingCtx); err != nil {
+			return nil, fmt.Errorf("审计存储（Postgres）不可达：%w", err)
+		}
+		auditStore = st
+		pgAudit = st
+	} else {
+		logger.Warn("审计持久层未启用：审计只写 stdout", "hint", "配置 DATABASE_URL 以落库到 Postgres")
+	}
+
 	// 认证与限流：AuthKey 非空时挂到所有业务路由之前（gin 的 Use 必须先于路由注册）。
 	// 身份只从已验签的 Bearer token 写入 context，业务域不再信任请求体/query 的 userID。
 	// 空 AuthKey 仅供本地开发/单测；prod 由 config.Load 强校验要求非空。
@@ -135,6 +164,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	scheduler := jiaowu.NewRenewScheduler(tickets, clock)
 	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
 	jiaowuSvc.BindRenewScheduler(scheduler)
+	jiaowuSvc.BindAuditStore(auditStore)
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
 	// 定时续期循环：调度器只挑候选/错峰，真正执行换票交给 Service.RenewFor（经出站闸口）。
@@ -181,6 +211,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		renewDone:   renewDone,
 		flushDone:   flushDone,
 		closeStore:  closeTickets,
+		cache:       cache,
+		pgAudit:     pgAudit,
 		logger:      logger,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 6,
@@ -306,6 +338,18 @@ func (a *App) stopRenew() {
 				a.logger.Info("关停前最后一次缓存回灌", "flushed", n)
 			}
 			_ = a.cache.Close()
+		}
+		// 审计：关停前把缓冲中的记录落库（审计是旁路，失败不影响退出）。
+		if a.pgAudit != nil {
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := a.pgAudit.Flush(flushCtx); err != nil && a.logger != nil {
+				a.logger.Warn("关停前审计落库失败", "err", err)
+			}
+			flushCancel()
+			if dropped := a.pgAudit.Dropped(); dropped > 0 && a.logger != nil {
+				a.logger.Warn("本次运行有审计记录被丢弃（审计是旁路，不影响业务）", "dropped", dropped)
+			}
+			_ = a.pgAudit.Close()
 		}
 	})
 }

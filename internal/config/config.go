@@ -64,6 +64,9 @@ type Config struct {
 	CacheBreakerThreshold int
 	// CacheBreakerCooldownSec 是熔断冷却秒数，期满转半开探测。
 	CacheBreakerCooldownSec int
+	// DatabaseURL 是 Postgres 连接串（审计流水等结构化数据）。
+	// 为空时不启用持久层，审计只写 slog。
+	DatabaseURL string
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -91,6 +94,7 @@ func Load() (Config, error) {
 		CacheFlushRatePerSec:    envIntOr("CACHE_FLUSH_RATE_PER_SEC", 100),
 		CacheBreakerThreshold:   envIntOr("CACHE_BREAKER_THRESHOLD", 5),
 		CacheBreakerCooldownSec: envIntOr("CACHE_BREAKER_COOLDOWN_SEC", 5),
+		DatabaseURL:             envOr("DATABASE_URL", ""),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {
