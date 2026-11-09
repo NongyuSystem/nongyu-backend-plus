@@ -47,18 +47,26 @@ type SchoolCredential struct {
 }
 
 // SchoolIdentity 是学校确认后的结果。
-// 注意：学院/专业/班级/年级**不在**这里——统一身份认证不下发这些，
-// 需要另取（见 knowledge: 从川农教务 bjiben.asp 抓学籍）。
+//
+// 数据来自**两个源**（实测确认，见知识库「川农统一身份认证的身份证号是掩码」）：
+//   - 统一身份认证：学号、姓名、所属单位（= 学院）、掩码证件号（只可取后四位）
+//   - 教务 bjiben.asp：专业、班级、年级（认证不下发这三项）
 type SchoolIdentity struct {
 	StudentNo string
 	Name      string
-	// IDCardNo 是身份证号明文，由调用方立即加密，不得留存原文。
-	IDCardNo string
-	// College/Major/ClassName/Grade 若认证链路顺带抓到了就填，抓不到留空。
-	College   string
+	// College 取自认证结果的「所属单位」；没有时才回落教务抓取值。
+	College string
+	// IDCardSuffix4 是从掩码证件号（如 650****2614）取出的后四位。
+	IDCardSuffix4 string
+
+	// 以下三项只有教务源提供，抓取失败时为空。
 	Major     string
 	ClassName string
 	Grade     string
+
+	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级。
+	// 此时**登录照常成功**（维护者决定），由客户端提示用户，下次登录重试。
+	ProfileIncomplete bool
 }
 
 // Secrets 是加解密能力（密码镜像与身份证各用一把独立密钥，由装配层注入两个实例）。
@@ -76,7 +84,6 @@ type Service struct {
 	school      SchoolAuthenticator
 	mailCodes   *platform.RedisMailCodeStore
 	passwordBox Secrets // 密码镜像密钥
-	idcardBox   Secrets // 身份证密钥
 	clock       platform.Clock
 	userSvc     *identityuser.Service
 	mailer      Mailer
@@ -90,9 +97,8 @@ type Options struct {
 	Methods   platform.LoginMethodRepo
 	School    SchoolAuthenticator
 	MailCodes *platform.RedisMailCodeStore
-	// PasswordBox 与 IDCardBox 必须是两个**不同的** Secrets 实例（独立密钥）。
+	// PasswordBox 是密码镜像的加密能力（ADR-0002 修订后不再需要身份证密钥）。
 	PasswordBox Secrets
-	IDCardBox   Secrets
 	Clock       platform.Clock
 	UserService *identityuser.Service
 	// Mailer 投递邮箱验证码；SMTP 实现在配置齐全后注入。
@@ -114,7 +120,6 @@ func New(o Options) *Service {
 		school:      o.School,
 		mailCodes:   o.MailCodes,
 		passwordBox: o.PasswordBox,
-		idcardBox:   o.IDCardBox,
 		clock:       o.Clock,
 		userSvc:     o.UserService,
 		mailer:      o.Mailer,
@@ -129,6 +134,8 @@ type Result struct {
 	IsNew   bool
 	// NeedSchoolAuth 为真时表示：该登录方式找不到用户，必须先完成学校认证。
 	NeedSchoolAuth bool
+	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级（登录仍成功）。
+	ProfileIncomplete bool
 }
 
 // LoginBySchool 走学校统一身份认证登录。
@@ -156,27 +163,15 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 		return Result{}, identity.NewError(identity.CodeUserDisabled, "账号已被禁用")
 	}
 
-	// 身份证号：立即加密，明文不留存。
-	var sealedID []byte
-	suffix4 := ""
-	if ident.IDCardNo != "" {
-		suffix4 = last4(ident.IDCardNo)
-		if s.idcardBox != nil {
-			sealedID, err = s.idcardBox.Seal([]byte(ident.IDCardNo))
-			if err != nil {
-				return Result{}, identity.WrapError(identity.CodeInternal, "加密身份证失败", err)
-			}
-		}
-	}
-
+	// 身份证号：系统只能拿到掩码（650****2614）里的后四位，完整号拿不到。
+	// 因此不存完整号、不需要加密（ADR-0002 修订后的决定）。
 	prof, err := s.userSvc.SyncSchoolProfile(ctx, u.ID, identityuser.SchoolProfile{
 		Name:          ident.Name,
 		College:       ident.College,
 		Major:         ident.Major,
 		ClassName:     ident.ClassName,
 		Grade:         ident.Grade,
-		IDCardSealed:  sealedID,
-		IDCardSuffix4: suffix4,
+		IDCardSuffix4: ident.IDCardSuffix4,
 	})
 	if err != nil {
 		return Result{}, err
@@ -184,17 +179,14 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 
 	// 密码镜像：只在「确实用了学校账密」时写入。其它学校方式（微信/短信）不写。
 	if cred.Method == "password" && cred.Password != "" && s.passwordBox != nil {
-		if err := s.mirrorPassword(ctx, u.ID, cred.Password); err != nil {
-			// 镜像失败不阻断登录：学生仍可用学校认证登录。
-			// 但必须记下来（由调用方写审计），所以不作为错误返回。
-			_ = err
-		}
+		// 镜像失败不阻断登录：学生仍可用学校认证登录。
+		_ = s.mirrorPassword(ctx, u.ID, cred.Password)
 	}
 
 	// 绑定/刷新 school 登录方式（标识用学号）。
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginSchool, u.StudentNo, nil)
 
-	return Result{User: u, Profile: prof, IsNew: isNew}, nil
+	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete}, nil
 }
 
 // LoginByPassword 走农屿账密登录。

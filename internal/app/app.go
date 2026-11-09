@@ -206,7 +206,6 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Clock:       clock,
 				UserService: identityUserSvc,
 				PasswordBox: platform.NewMockCipher(cfg.TicketKey + ":password"),
-				IDCardBox:   platform.NewMockCipher(cfg.TicketKey + ":idcard"),
 			})
 		}
 	} else {

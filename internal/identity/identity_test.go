@@ -80,13 +80,13 @@ func setup(t *testing.T) fixtures {
 	userSvc := identityuser.New(store, store)
 	// 两把独立密钥（ADR-0002 要求）。
 	pwBox := platform.NewMockCipher(pwdKey)
-	idBox := platform.NewMockCipher(idKey)
 
 	school := &fakeSchool{byStudent: map[string]login.SchoolIdentity{
 		"202311001": {
 			StudentNo: "202311001", Name: "Yao Yifei",
-			IDCardNo: "510101200501011234",
-			College:  "信息工程学院", Major: "数据科学与大数据技术",
+			// 认证只给掩码证件号，故直接给后四位（实测：650****2614）
+			IDCardSuffix4: "2614",
+			College:       "信息工程学院", Major: "数据科学与大数据技术",
 			ClassName: "大数据202503", Grade: "2025",
 		},
 	}}
@@ -94,8 +94,8 @@ func setup(t *testing.T) fixtures {
 	loginSvc := login.New(login.Options{
 		Users: store, Profiles: store, Methods: store,
 		School:      school,
-		PasswordBox: pwBox, IDCardBox: idBox,
-		Clock: clock, UserService: userSvc,
+		PasswordBox: pwBox,
+		Clock:       clock, UserService: userSvc,
 		Initials: login.DefaultInitializer{},
 	})
 	sessionSvc := session.New(store, store, clock)
@@ -146,12 +146,12 @@ func TestLogin_SchoolCreatesUserOthersDoNot(t *testing.T) {
 	if res.Profile.Name != "Yao Yifei" || res.Profile.College != "信息工程学院" {
 		t.Fatalf("画像未同步：%+v", res.Profile)
 	}
-	if res.Profile.IDCardSuffix4 != "1234" {
-		t.Fatalf("身份证后四位应派生为 1234，实际 %q", res.Profile.IDCardSuffix4)
+	if res.Profile.IDCardSuffix4 != "2614" {
+		t.Fatalf("身份证后四位应派生为 2614，实际 %q", res.Profile.IDCardSuffix4)
 	}
-	// 身份证必须加密存放，不得是明文。
-	if string(res.Profile.IDCardSealed) == "510101200501011234" {
-		t.Fatal("身份证号不得明文落库")
+	// 完整身份证号拿不到（实测是掩码），因此不得有任何完整号落库。
+	if len(res.Profile.IDCardSealed) != 0 {
+		t.Fatal("不应存储完整身份证号（系统只能拿到掩码）")
 	}
 }
 
@@ -225,7 +225,7 @@ func TestLogin_ByIDCard(t *testing.T) {
 	}
 
 	// 拉丁名 "Yao Yifei" 按词取首字母 → "YY"
-	res, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "1234", "yy")
+	res, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "2614", "yy")
 	if err != nil {
 		t.Fatalf("LoginByIDCard: %v", err)
 	}
@@ -238,11 +238,11 @@ func TestLogin_ByIDCard(t *testing.T) {
 		t.Fatalf("后四位错应 bad_credentials，实际 %v", err)
 	}
 	// 首字母错 → bad_credentials
-	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "1234", "abc"); identity.CodeOf(err) != identity.CodeBadCredentials {
+	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "2614", "abc"); identity.CodeOf(err) != identity.CodeBadCredentials {
 		t.Fatalf("首字母错应 bad_credentials，实际 %v", err)
 	}
 	// 用户不存在 → need_school_auth
-	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311999", "1234", "yy"); identity.CodeOf(err) != identity.CodeNeedSchoolAuth {
+	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311999", "2614", "yy"); identity.CodeOf(err) != identity.CodeNeedSchoolAuth {
 		t.Fatalf("未注册学号应 need_school_auth，实际 %v", err)
 	}
 }
