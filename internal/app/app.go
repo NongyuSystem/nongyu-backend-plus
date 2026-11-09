@@ -119,12 +119,34 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		cache = rc
 	}
 
-	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{
-		Enforce:      cfg.HTTPEnforce, // 出站闸口强制总开关（生产 Load() 默认 true）
-		AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
-		Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
-		// 不跟随真站 302 是 ADR-0001 的无条件安全不变量，由实现层强制执行、不可配置。
-	})
+	// 出站 Doer：HTTPEnforce=true（config.Load() 默认 true）→ 真实实现 RealHTTPDoer，
+	// 真的发网络请求；false → 保留骨架期 MockHTTPDoer（#11 契约测试 / 上层单测隔离用）。
+	//
+	// 注意（避免后人误读）：HTTPEnforce 这**一个**开关在当前装配层同时决定了两件事——
+	//   ① 是否强制安全策略（白名单 / 不跟随重定向 / 超时 / 响应体上限）；
+	//   ② 是否使用真实网络出站。
+	// 这两件事在语义上其实是**正交**的（理论上可以「强制策略 + 走 mock」，或「真实网络
+	// + 不强制」），但 config.Config 目前只有 HTTPEnforce 这一个字段，装配层也就只有这一个
+	// 判据可用。作为本票（#22）的最小改动，这里让二者共用该开关是可接受的折中；不要据此
+	// 推断「Enforce 的语义就等于真实网络」——Enforce 本义只是「强制安全策略」。后续若要把
+	// 两者解耦，应在 config 增加独立字段（例如 HTTPUseRealDoer），而不是复用 Enforce。
+	//
+	// MockHTTPDoer 本身与其测试（caps_gateway_test.go 等）原样保留，零改动。
+	var doer platform.HTTPDoer
+	outboundDoer := "mock"
+	if cfg.HTTPEnforce {
+		doer = platform.NewRealHTTPDoer(platform.RealHTTPDoerOptions{
+			AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
+			Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
+		})
+		outboundDoer = "real"
+	} else {
+		doer = platform.NewMockHTTPDoer(platform.DoerPolicy{
+			Enforce:      false, // 骨架期：零值策略，只记录 + 返回可配置响应
+			AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
+			Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
+		})
+	}
 	clock := platform.NewRealClock()
 	engine := server.New()
 
@@ -397,7 +419,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger:        logger,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 6,
-		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled,
+		"outboundEnforce", cfg.HTTPEnforce, "outboundDoer", outboundDoer,
+		"accelEnabled", cfg.AccelEnabled,
 		"authEnabled", cfg.AuthKey != "", "cacheEnabled", cache != nil)
 	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
 	// 避免有人用字面量 Config 起服务时静默开放（prod 由 config.Load 强校验拦住）。

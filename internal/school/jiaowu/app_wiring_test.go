@@ -1,6 +1,7 @@
 package jiaowu_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -221,10 +222,30 @@ func TestAppWiringShutdownStopsRenewLoop(t *testing.T) {
 // TestAppWiringLoadDefaultsEnforceGateway 用 config.Load() 的**真实默认值**装配，
 // 断言生产入口（main.go 走 Load）的闸口确实是强制的——堵住「零值 Config 不强制」
 // 与「Load 默认强制」不一致时无人能测出的回归缝（复验补强项 ①）。
+//
+// 换真实 Doer（#22）后，合法目标不能再打真站 webvpn.sicau.edu.cn（那会变成外部网络
+// 调用）。改为起本地 httptest 靶子，并把它的 host 通过 HTTP_ALLOWLIST 追加进白名单，
+// 仍用 config.Load() 的真实默认值装配。evil.example.com 仍必须返回 ErrTargetDenied
+// ——这条断言不能弱化，该测试的存在意义就是守住这条缝。
 func TestAppWiringLoadDefaultsEnforceGateway(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	gin.DefaultWriter = io.Discard
 	gin.DefaultErrorWriter = io.Discard
+
+	const realBody = "LOCAL-TARGET-REAL-BODY-22"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, realBody)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("解析靶子 URL 失败：%v", err)
+	}
+	// 把本地靶子 host 追加进出站白名单（config.Load 会读 HTTP_ALLOWLIST）。
+	t.Setenv("HTTP_ALLOWLIST", u.Hostname())
+
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
@@ -236,14 +257,38 @@ func TestAppWiringLoadDefaultsEnforceGateway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
-	_, err = application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://evil.example.com/x", nil))
-	if !errors.Is(err, platform.ErrTargetDenied) {
-		t.Fatalf("经 Load() 默认配置装配后闸口应强制，实际 %v", err)
+
+	// 生产装配（HTTPEnforce 默认 true）应注入 *真实* 实现，而非骨架期 Mock。
+	if _, ok := application.Capabilities().Doer.(*platform.RealHTTPDoer); !ok {
+		t.Fatalf("Load() 默认配置应注入 *platform.RealHTTPDoer，实际 %T", application.Capabilities().Doer)
 	}
-	// 合法目标（内建白名单）应放行。
-	resp, err := application.Capabilities().Doer.Do(nil, httptest.NewRequest(http.MethodGet, "https://webvpn.sicau.edu.cn/x", nil))
+
+	// 守缝断言（不可弱化）：非白名单 host 直接拒绝、零出站。
+	// 真实 client 会拒绝带 RequestURI 的 httptest.NewRequest，故一律用 NewRequestWithContext。
+	evilReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://evil.example.com/x", nil)
 	if err != nil {
-		t.Fatalf("内建白名单目标应放行，实际 %v", err)
+		t.Fatalf("构造 evil 请求失败：%v", err)
 	}
-	resp.Body.Close()
+	_, err = application.Capabilities().Doer.Do(context.Background(), evilReq)
+	if !errors.Is(err, platform.ErrTargetDenied) {
+		t.Fatalf("经 Load() 默认配置装配后闸口应强制，evil.example.com 应返回 ErrTargetDenied，实际 %v", err)
+	}
+
+	// 合法目标（追加进白名单的本地靶子）：真实出站并拿到真实 body，而非 mock 的 200 空响应。
+	legalReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/probe", nil)
+	if err != nil {
+		t.Fatalf("构造合法请求失败：%v", err)
+	}
+	resp, err := application.Capabilities().Doer.Do(context.Background(), legalReq)
+	if err != nil {
+		t.Fatalf("白名单内目标应放行并真实出站，实际 %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取靶子响应体失败：%v", err)
+	}
+	if string(body) != realBody {
+		t.Fatalf("应拿到靶子真实 body，实际 %q", body)
+	}
 }
