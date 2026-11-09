@@ -137,7 +137,7 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 		if cred.UserID != 0 {
 			userID = strconv.FormatInt(cred.UserID, 10)
 		}
-		fresh, err := s.tgt.EnsureFresh(ctx, userID, tgt)
+		fresh, err := s.tgt.EnsureFresh(ctx, userID, cred)
 		if err != nil {
 			return RawAcademic{}, err
 		}
@@ -193,11 +193,9 @@ type TicketResult struct {
 
 // exchangeTicketOnly 只换票，不建会话、不抓学籍。
 //
-// 供 TGTManager 续期使用：只要拿到新 tgt 即可，不必每次都跑完整链路。
-func (s *JiaowuSource) exchangeTicketOnly(ctx context.Context, tgt string) (TicketResult, error) {
-	// 续期时手上只有 tgt 本身；真实环境仍需整套 cookie，
-	// 因此续期能力依赖调用方把 cookie 一并保管（见 TGTManager 的说明）。
-	st, newTGT, err := s.exchangeTicket(ctx, tgt, "")
+// cookieHeader 必须是**整套**同域 cookie（实测单枚 tgt 会返回 code=500 未登录）。
+func (s *JiaowuSource) exchangeTicketOnly(ctx context.Context, tgt, cookieHeader string) (TicketResult, error) {
+	st, newTGT, err := s.exchangeTicket(ctx, tgt, cookieHeader)
 	if err != nil {
 		return TicketResult{}, err
 	}

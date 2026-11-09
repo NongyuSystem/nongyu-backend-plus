@@ -73,11 +73,18 @@ type tgtSaverBridge struct {
 }
 
 // Save 实现 login.TGTSaver。
-func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt string) error {
+func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt, cookieHeader string) error {
 	if b.mgr == nil {
 		return nil
 	}
-	return b.mgr.Save(ctx, strconv.FormatInt(userID, 10), tgt)
+	// 整套 cookie 里必须含 go-admin-tgt；客户端可能只交了 tgt 值而没交完整头，
+	// 这时补上 tgt 本身，保证至少有一份可续期的最小凭据。
+	cred := schoolauth.Credential{RawCookie: cookieHeader}
+	full := cred.FullCookieHeader(tgt)
+	return b.mgr.Save(ctx, strconv.FormatInt(userID, 10), schoolauth.TGTBundle{
+		TGT:          tgt,
+		CookieHeader: full,
+	})
 }
 
 // 编译期断言。

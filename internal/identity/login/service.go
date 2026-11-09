@@ -200,8 +200,10 @@ func New(o Options) *Service {
 // 为什么放在登录子域：只有这里同时知道「是谁」（userID）与「用了哪份学校凭据」。
 // 由装配层把 schoolauth.TGTManager 适配成这个接口注入，业务域不 import school。
 type TGTSaver interface {
-	// Save 按用户保管 tgt（实现方负责加密与过期）。
-	Save(ctx context.Context, userID int64, tgt string) error
+	// Save 按用户保管整套登录态（tgt + 配套 cookie）。
+	// cookieHeader 是客户端交来的整套同域 cookie：实测换票必须带全套，
+	// 只存单枚 tgt 会导致续期失败（见 Spec #18 M5）。
+	Save(ctx context.Context, userID int64, tgt, cookieHeader string) error
 }
 
 // Result 是一次登录的结果。
@@ -281,7 +283,7 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 	// 保管学校会话凭据：现在才知道 userID，正好按用户存下来。
 	// 失败不阻断登录（只是后续取学籍时需要客户端重交凭据）。
 	if s.tgtSaver != nil && cred.GoAdminTgt != "" {
-		_ = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt)
+		_ = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt, cred.CookieHeader)
 	}
 
 	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr}, nil
