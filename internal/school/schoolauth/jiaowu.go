@@ -298,6 +298,65 @@ func (s *JiaowuSource) exchangeTicketFull(ctx context.Context, tgt, cookieHeader
 	return ticket.ST, ticket.TGT, ticket.User, nil
 }
 
+// FetchPage 用 tgt 取**任意**教务页面，返回原始 body。
+//
+// 用途：学院/身份证/家庭地址/性别/考号等字段不在换票响应里，只在教务档案页；
+// 各字段的确切页面需要逐个探明，所以先提供一个通用取页能力，探明后直接接解析。
+//
+// path 必须是**以 / 开头的站内路径**。拒绝绝对 URL 与协议相对 URL（防 SSRF）：
+// 只允许在本源下取页，不允许借 tgt 去请求别的主机。
+func (s *JiaowuSource) FetchPage(ctx context.Context, cred Credential, path string) ([]byte, error) {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return nil, fmt.Errorf("schoolauth: 页面路径必须是以 / 开头的站内路径，收到 %q", path)
+	}
+	// 路径里不得藏协议（防 "https://..." 绕过上面的前缀判断之外的情况）
+	if strings.Contains(path, "://") {
+		return nil, fmt.Errorf("schoolauth: 页面路径不得含协议，收到 %q", path)
+	}
+
+	tgt := cookieValue(cred, goAdminTgtCookie)
+	if s.tgt != nil {
+		userID := ""
+		if cred.UserID != 0 {
+			userID = strconv.FormatInt(cred.UserID, 10)
+		}
+		fresh, err := s.tgt.EnsureFresh(ctx, userID, cred)
+		if err != nil {
+			return nil, err
+		}
+		tgt = fresh
+	}
+	if strings.TrimSpace(tgt) == "" {
+		return nil, fmt.Errorf("schoolauth: 缺少 %s（需客户端在统一身份认证登录后交来）", goAdminTgtCookie)
+	}
+
+	st, _, err := s.exchangeTicket(ctx, tgt, cred.FullCookieHeader(tgt))
+	if err != nil {
+		return nil, err
+	}
+	sessionCookies, err := s.establishSession(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.jiaowuBase+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("accept", "text/html,*/*")
+	req.Header.Set("Cookie", sessionCookies)
+
+	resp, err := s.doer.Do(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("schoolauth: 取页面失败：%w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("schoolauth: 页面 %s 返回 %d", path, resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxJiaowuBody))
+}
+
 // ExchangeForIdentity 用 tgt 换票并返回身份（实现 TicketExchanger，#28）。
 //
 // 换票响应本就带 user，所以这是「取身份」最短的一条路：
