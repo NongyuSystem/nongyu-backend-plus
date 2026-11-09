@@ -25,6 +25,7 @@ package schoolauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -191,6 +192,16 @@ type TicketResult struct {
 	TGT string
 }
 
+// 换票失败的语义分类（供上层区分「用户需重登」与「基础设施故障」）。
+var (
+	// ErrTicketRejected 表示学校侧**明确拒绝**了这组凭据（业务码非 200）。
+	// 这是用户需要重新登录的场景。
+	ErrTicketRejected = errors.New("schoolauth: 学校侧拒绝凭据")
+	// ErrTicketInfra 表示换票过程的基础设施故障（网络不可达、响应非法、解密失败等）。
+	// 这不是用户的错，重登也无用，应排查网络/协议。
+	ErrTicketInfra = errors.New("schoolauth: 换票基础设施故障")
+)
+
 // exchangeTicketOnly 只换票，不建会话、不抓学籍。
 //
 // cookieHeader 必须是**整套**同域 cookie（实测单枚 tgt 会返回 code=500 未登录）。
@@ -222,7 +233,7 @@ func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt, cookieHeader str
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return "", "", fmt.Errorf("schoolauth: 换票请求失败：%w", err)
+		return "", "", fmt.Errorf("%w：换票请求失败：%v", ErrTicketInfra, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -231,30 +242,30 @@ func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt, cookieHeader str
 		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("schoolauth: 换票返回 %d", resp.StatusCode)
+		return "", "", fmt.Errorf("%w：换票返回 %d", ErrTicketInfra, resp.StatusCode)
 	}
 
 	// 换票响应与 ywtb 同构：requestId + 加密 data。
 	var env ywtbEnvelope
 	if err := jsonUnmarshal(raw, &env); err != nil {
-		return "", "", fmt.Errorf("schoolauth: 换票响应解析失败：%w", err)
+		return "", "", fmt.Errorf("%w：换票响应解析失败：%v", ErrTicketInfra, err)
 	}
 	if env.Code != 200 {
-		return "", "", fmt.Errorf("schoolauth: 换票业务码 %d（%s）", env.Code, env.Msg)
+		return "", "", fmt.Errorf("%w：换票业务码 %d（%s）", ErrTicketRejected, env.Code, env.Msg)
 	}
 	plain, err := DecryptYWTB(env.RequestID, env.Data)
 	if err != nil {
-		return "", "", fmt.Errorf("schoolauth: 换票响应解密失败：%w", err)
+		return "", "", fmt.Errorf("%w：换票响应解密失败：%v", ErrTicketInfra, err)
 	}
 	var ticket struct {
 		ST  string `json:"st"`
 		TGT string `json:"tgt"`
 	}
 	if err := jsonUnmarshal(plain, &ticket); err != nil {
-		return "", "", fmt.Errorf("schoolauth: 票据解析失败：%w", err)
+		return "", "", fmt.Errorf("%w：票据解析失败：%v", ErrTicketInfra, err)
 	}
 	if ticket.ST == "" {
-		return "", "", fmt.Errorf("schoolauth: 换票未返回 service ticket")
+		return "", "", fmt.Errorf("%w：换票未返回 service ticket", ErrTicketInfra)
 	}
 	return ticket.ST, ticket.TGT, nil
 }

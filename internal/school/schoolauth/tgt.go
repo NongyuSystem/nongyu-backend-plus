@@ -197,9 +197,12 @@ func (m *TGTManager) refreshWith(ctx context.Context, userID string, b TGTBundle
 	}
 	res, err := m.source.exchangeTicketOnly(ctx, b.TGT, b.CookieHeader)
 	if err != nil {
-		// 换票失败按「学校侧拒绝凭据」归类：这是用户需要重登的场景。
-		// 用 %w 同时保留底层原因，便于排查具体是业务码、网络还是解析问题。
-		return "", fmt.Errorf("%w：%v", ErrCredentialRejected, err)
+		// 按底层语义分流（#25）：只有「学校侧明确拒绝」才归为凭据失效、要求用户重登；
+		// 网络/解析/解密等基础设施故障不能被误标成「需重登」——那会误导排查方向。
+		if errors.Is(err, ErrTicketRejected) {
+			return "", fmt.Errorf("%w：%v", ErrCredentialRejected, err)
+		}
+		return "", fmt.Errorf("schoolauth: 续期失败（基础设施问题，重登无用）：%w", err)
 	}
 	// 换了新 tgt：滚动保存（cookieHeader 保留，只替换 tgt 值）。
 	if userID != "" && res.TGT != "" {
