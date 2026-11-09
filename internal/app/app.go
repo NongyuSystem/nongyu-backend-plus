@@ -48,6 +48,17 @@ type Capabilities struct {
 // renewInterval 是定时续期扫描的间隔（保守值，避免高频打扰学校侧）。
 const renewInterval = 5 * time.Minute
 
+// schoolForTest 是**仅供本包测试**注入假学校认证源的钩子。
+//
+// 为什么需要它：#26 门槛 4 要求验证一条完整 HTTP 链路
+// 「POST /identity/login → 拿令牌 → 用令牌访问受保护端点 200」。
+// 真实链路要打学校统一身份认证（需实时验证码、账号，且离线网络不通），
+// 无法在自动化测试里复现。用这个钩子注入假源，就能把**本服务自己的编排
+// 与鉴权**测完整，同时不碰任何真实学校网络。
+//
+// 生产路径：默认 nil，装配时完全走 schoolAuthAdapter，行为零变化。
+var schoolForTest identitylogin.SchoolAuthenticator
+
 // App 持有一个已装配完成的进程。
 type App struct {
 	cfg         config.Config
@@ -340,6 +351,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 
 		// 登录子域：密码镜像与身份证必须用**两把独立密钥**（ADR-0002 第 2 条二修）。
 		if cfg.TicketKey != "" {
+			// schoolForTest 仅供本包测试注入假的学校认证源（默认 nil，生产行为不变）。
+			// 有了它，端到端 HTTP 链路测试才能在不打真实学校网络的前提下跑通
+			// 「取验证码 → 提交 → 拿令牌 → 访问受保护端点」这条链（#26 门槛 4）。
+			schoolAdapter := schoolAuthAdapter
+			if schoolForTest != nil {
+				schoolAdapter = schoolForTest
+			}
 			identityLoginSvc = identitylogin.New(identitylogin.Options{
 				Users:       st,
 				Profiles:    st,
@@ -351,7 +369,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				PasswordBox: platform.NewAESCipher(cfg.TicketKey + ":password"),
 				IDCardBox:   platform.NewAESCipher(cfg.TicketKey + ":idcard"),
 				// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
-				School: schoolAuthAdapter,
+				School: schoolAdapter,
 				// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
 				TGTSaver: tgtSaverBridge{mgr: tgtMgr},
 			})
