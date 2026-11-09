@@ -86,7 +86,7 @@ type Service struct {
 	passwordBox Secrets // 密码镜像密钥
 	clock       platform.Clock
 	userSvc     *identityuser.Service
-	mailer      Mailer
+	mailer      platform.Mailer
 	initials    PinyinInitializer
 }
 
@@ -102,7 +102,7 @@ type Options struct {
 	Clock       platform.Clock
 	UserService *identityuser.Service
 	// Mailer 投递邮箱验证码；SMTP 实现在配置齐全后注入。
-	Mailer Mailer
+	Mailer platform.Mailer
 	// Initials 计算姓名拼音首字母；nil 时用 DefaultInitializer（仅支持拉丁字母）。
 	Initials PinyinInitializer
 }
@@ -295,11 +295,6 @@ func (s *Service) LoginByIDCard(ctx context.Context, studentNo, suffix4, nameIni
 
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginIDCard, u.StudentNo, nil)
 	return Result{User: u, Profile: p}, nil
-}
-
-// Mailer 是验证码的投递能力（SMTP 实现，维护者已定；发信账号上服务器时再配）。
-type Mailer interface {
-	SendMailCode(ctx context.Context, to, code string) error
 }
 
 // SendMailCode 为一个**已绑定**的邮箱发送验证码，返回是否真的发出。

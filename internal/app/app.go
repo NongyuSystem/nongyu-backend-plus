@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/config"
+	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	identitysession "nongyu-backend-plus/internal/identity/session"
 	identityuser "nongyu-backend-plus/internal/identity/user"
@@ -154,6 +155,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("审计持久层未启用：审计只写 stdout", "hint", "配置 DATABASE_URL 以落库到 Postgres")
 	}
 
+	// 令牌签发/验签器：登录成功后用它把 session_id 包成客户端可用的令牌。
+	// AuthKey 为空时（仅本地开发）不签发令牌，登录接口会因此不可用。
+	var tokenIssuer *server.TokenVerifier
+	if cfg.AuthKey != "" {
+		tokenIssuer = server.NewTokenVerifier(cfg.AuthKey, clock)
+	}
+
 	// 身份域持久层：与审计共用同一个 Postgres（库 nongyu），但连接池独立。
 	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
 	var identityStore *platform.PGIdentityStore
@@ -197,12 +205,52 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			}
 		}
 
-		// 登录子域：密码镜像与身份证必须用两把**独立**密钥（ADR-0002 第 2 条）。
+		// 邮件投递：配了 SMTP_HOST 就用真实发信，否则回落到日志实现（仅本地调试）。
+		var mailer platform.Mailer
+		if cfg.SMTPHost != "" {
+			smtpMailer, err := platform.NewSMTPMailer(platform.MailOptions{
+				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+				Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+				From: cfg.SMTPFrom, Insecure: cfg.SMTPInsecure,
+			}, logger)
+			if err != nil {
+				return nil, fmt.Errorf("SMTP 发信初始化失败：%w", err)
+			}
+			mailer = smtpMailer
+			logger.Info("邮件验证码使用 SMTP 发信", "host", cfg.SMTPHost, "port", cfg.SMTPPort)
+		} else {
+			mailer = &platform.LogMailer{Logger: logger}
+			logger.Warn("未配置 SMTP_HOST：验证码只写日志，仅限本地开发")
+		}
+
+		// 邮箱验证码存储需要 Redis；没有 Redis 时该登录方式不可用。
+		var mailCodes *platform.RedisMailCodeStore
+		if cfg.RedisAddr != "" {
+			if mc, err := platform.NewRedisMailCodeStore(platform.RedisOptions{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+				Prefix:   cfg.RedisPrefix,
+			}); err == nil {
+				pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := mc.Ping(pingCtx); err == nil {
+					mailCodes = mc
+				} else {
+					logger.Warn("验证码存储（Redis）不可用，邮箱验证码登录将不可用", "err", err)
+					_ = mc.Close()
+				}
+				cancel()
+			}
+		}
+
+		// 登录子域：密码镜像用独立密钥（ADR-0002 修订后不再需要身份证密钥）。
 		if cfg.TicketKey != "" {
 			identityLoginSvc = identitylogin.New(identitylogin.Options{
 				Users:       st,
 				Profiles:    st,
 				Methods:     st,
+				MailCodes:   mailCodes,
+				Mailer:      mailer,
 				Clock:       clock,
 				UserService: identityUserSvc,
 				PasswordBox: platform.NewMockCipher(cfg.TicketKey + ":password"),
@@ -219,7 +267,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 身份域不可用时退化为旧的自包含令牌中间件，并在日志里显式告警——
 	// 那种模式下吊销不生效，只适合本地开发。
 	if cfg.AuthKey != "" {
-		verifier := server.NewTokenVerifier(cfg.AuthKey, clock)
+		verifier := tokenIssuer
 		limiter := server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
 		if identityStore != nil {
 			resolver := server.NewSessionStoreResolver(identityStore, identityStore, clock)
@@ -241,18 +289,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc.BindAuditStore(auditStore)
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
-	// 身份域路由：登录 / 用户画像 / 登出。
-	// 登录与登出端点本身由鉴权中间件放行（登出需要有效会话才有意义），
-	// 画像端点必须已认证——身份全部来自 context，不读请求体里的 userID。
+	// 身份域路由：登录/登出走编排层 flow（它负责「登录成功后签发会话」），
+	// 画像读取与修改走 user 子域。身份全部来自 context，不读请求体里的 userID。
 	if identityStore != nil {
-		if identityLoginSvc != nil {
-			identitylogin.Register(engine, identityLoginSvc)
+		if identityLoginSvc != nil && identitySessionSvc != nil && identityUserSvc != nil {
+			flowSvc := identityflow.New(identityLoginSvc, identitySessionSvc, identityUserSvc, clock)
+			identityflow.Register(engine, flowSvc, tokenIssuer)
 		}
 		if identityUserSvc != nil {
 			identityuser.Register(engine, identityUserSvc, server.CurrentUserID, identityStore)
-		}
-		if identitySessionSvc != nil {
-			identitysession.Register(engine, identitySessionSvc, server.CurrentSessionID)
 		}
 	}
 

@@ -67,6 +67,14 @@ type Config struct {
 	// DatabaseURL 是 Postgres 连接串（审计流水等结构化数据）。
 	// 为空时不启用持久层，审计只写 slog。
 	DatabaseURL string
+
+	// SMTP 发信配置（全部来自环境变量；未配置 SMTP_HOST 时回落到日志实现）。
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPInsecure bool
 }
 
 // Load 从环境变量装配 Config，并做最小校验。
@@ -95,6 +103,12 @@ func Load() (Config, error) {
 		CacheBreakerThreshold:   envIntOr("CACHE_BREAKER_THRESHOLD", 5),
 		CacheBreakerCooldownSec: envIntOr("CACHE_BREAKER_COOLDOWN_SEC", 5),
 		DatabaseURL:             envOr("DATABASE_URL", ""),
+		SMTPHost:                envOr("SMTP_HOST", ""),
+		SMTPPort:                envIntOr("SMTP_PORT", 587),
+		SMTPUsername:            envOr("SMTP_USERNAME", ""),
+		SMTPPassword:            envOr("SMTP_PASSWORD", ""),
+		SMTPFrom:                envOr("SMTP_FROM", ""),
+		SMTPInsecure:            envBoolOr("SMTP_INSECURE", false),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {

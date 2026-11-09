@@ -23,6 +23,11 @@ import (
 //   - 必须有超时，否则 SMTP 挂起会把登录线程拖死；
 //   - 收件地址进日志前做部分掩码，避免日志成为通讯录泄漏面。
 
+// Mailer 是邮件投递能力。身份域的「邮箱验证码」登录依赖它。
+type Mailer interface {
+	SendMailCode(ctx context.Context, to, code string) error
+}
+
 // MailOptions 是 SMTP 配置（由 config 层从环境变量装配）。
 type MailOptions struct {
 	Host     string
