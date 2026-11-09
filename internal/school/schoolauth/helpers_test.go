@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -35,3 +37,9 @@ type nopCloser struct{ io.Reader }
 func (nopCloser) Close() error { return nil }
 
 func ioNopCloser(s string) io.ReadCloser { return nopCloser{strings.NewReader(s)} }
+
+// encodeGBK 把字符串按 GBK 编码，用于构造真实的 GBK 页面样本。
+func encodeGBK(s string) ([]byte, error) {
+	enc := simplifiedchinese.GBK.NewEncoder()
+	return enc.Bytes([]byte(s))
+}

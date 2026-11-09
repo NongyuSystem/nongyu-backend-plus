@@ -27,6 +27,12 @@ func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCrede
 		RawCookie:   in.CookieHeader,
 		BearerToken: in.BearerToken,
 	}
+	// 教务换票需要 go-admin-tgt（auth 域 cookie）。
+	if in.GoAdminTgt != "" {
+		cred.Cookies = append(cred.Cookies, schoolauth.SessionCookie{
+			Name: "go-admin-tgt", Value: in.GoAdminTgt,
+		})
+	}
 	for _, c := range in.Cookies {
 		cred.Cookies = append(cred.Cookies, schoolauth.SessionCookie{Name: c.Name, Value: c.Value})
 	}

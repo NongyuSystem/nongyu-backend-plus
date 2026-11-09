@@ -47,9 +47,11 @@ type loginReq struct {
 	Phone        string `json:"phone"`
 	Code         string `json:"code"`
 	WechatCode   string `json:"wechatCode"`
-	// school：客户端已完成登录，交上来的凭据
+	// school：客户端已完成学校登录，交上来的凭据
 	Ticket string `json:"ticket"`
 	Cookie string `json:"cookie"`
+	// GoAdminTgt 是统一身份认证的全局登录态 cookie；教务取数（专业/班级/年级）需要它。
+	GoAdminTgt string `json:"goAdminTgt"`
 
 	// mailcode
 	Email string `json:"email"`
@@ -90,6 +92,7 @@ func loginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 			SchoolCred: login.SchoolCredential{
 				Method: req.SchoolMethod, StudentNo: req.StudentNo, Password: req.Password,
 				Phone: req.Phone, Code: req.Code, WechatCode: req.WechatCode,
+				CookieHeader: req.Cookie, GoAdminTgt: req.GoAdminTgt,
 			},
 			StudentNo:     req.StudentNo,
 			Password:      req.Password,

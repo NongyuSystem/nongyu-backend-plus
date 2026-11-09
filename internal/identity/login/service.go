@@ -50,6 +50,10 @@ type SchoolCredential struct {
 	// BearerToken 是 ywtb 访问令牌（形如 `用户ID|随机串`）。
 	// 实测：只带 cookie 在真实环境 401，必须同时带它。
 	BearerToken string
+	// GoAdminTgt 是统一身份认证的全局登录态 cookie（10 天有效）。
+	// 教务换票需要它：后端用它换一张教务 service ticket，再抓 bjiben.asp 取学籍。
+	// 由客户端在 auth 域登录后交来。
+	GoAdminTgt string
 
 	// ── 形态二：直接凭据 ──
 	StudentNo  string

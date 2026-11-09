@@ -168,7 +168,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 教务那一路（专业/班级/年级）暂未接，失败只标记画像不完整，不阻断登录。
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
 	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: doer}); err == nil {
-		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
+		// 教务源：专业/班级/年级来自 bjiben.asp（GBK 老页面）。
+		// 需要客户端交来 go-admin-tgt（auth 域 cookie），因此构造失败不阻断启动。
+		var academicSrc schoolauth.AcademicSource
+		if jwSrc, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
+			academicSrc = jwSrc
+		} else {
+			logger.Warn("教务取数源构造失败，专业/班级/年级将不可用", "err", err)
+		}
+		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc, Academic: academicSrc}); err == nil {
 			schoolAuthAdapter = schoolauthBridge{a: a}
 		} else {
 			logger.Warn("学校认证适配器构造失败，学校认证登录将不可用", "err", err)
