@@ -145,6 +145,14 @@ func (s *Service) Logout(ctx context.Context, sessionID string) error {
 	return s.sessions.Revoke(ctx, sessionID)
 }
 
+// LogoutAll 吊销某用户在某 scope 下的全部会话（「退掉全部设备」）。
+//
+// 与 Logout 的区别：Logout 只按 sessionID 吊销当前这一台；LogoutAll 按
+// userID + scope 清场，用于用户主动「退出所有设备」或改密后强制下线。
+func (s *Service) LogoutAll(ctx context.Context, userID int64, scope platform.SessionScope) (int, error) {
+	return s.sessions.RevokeAll(ctx, userID, scope)
+}
+
 // SendMailCode 发送邮箱验证码。
 func (s *Service) SendMailCode(ctx context.Context, email string) error {
 	return s.login.SendMailCode(ctx, email)

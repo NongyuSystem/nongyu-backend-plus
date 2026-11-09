@@ -245,6 +245,10 @@ func TestAppWiringLoadDefaultsEnforceGateway(t *testing.T) {
 	}
 	// 把本地靶子 host 追加进出站白名单（config.Load 会读 HTTP_ALLOWLIST）。
 	t.Setenv("HTTP_ALLOWLIST", u.Hostname())
+	// 本用例只测「Load() 默认强制出站闸口」，与认证无关。
+	// #21 起 dev 下 AUTH_KEY 为空必须显式开 ALLOW_INSECURE_DEV 才允许装配，
+	// 这里按新口径显式开启，不改变本测试原本要守的断言。
+	t.Setenv("ALLOW_INSECURE_DEV", "true")
 
 	cfg, err := config.Load()
 	if err != nil {

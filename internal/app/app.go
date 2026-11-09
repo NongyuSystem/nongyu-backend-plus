@@ -70,6 +70,20 @@ type App struct {
 // New 完成全部装配，返回可直接 Run 的 App。
 // 骨架期注入内存/Mock 实现；数据库层 / 真实出站闸口就绪后，只改这里注入即可，业务域零改动。
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
+	// #21 M3：认证默认开启。
+	// 生产环境 AUTH_KEY 为空由 config.Load() 强校验拦住（不在此重写）。
+	// 此处补 dev 侧的显式开关：真实 dev/prod 装配（AppEnv 非空）时，AUTH_KEY 为空
+	// 且未显式开启 AllowInsecureDev → 拒绝装配，避免「所有业务端点无身份校验」悄悄发生。
+	// AppEnv 为 dev/prod 时才是真实装配；test 或空串表示调用方直接构造 Config{}（单测注入），
+	// 跳过此校验以保持既有测试可用。
+	env := strings.ToLower(strings.TrimSpace(cfg.AppEnv))
+	isRealEnv := env == "dev" || env == "prod" || env == "production"
+	if isRealEnv && strings.TrimSpace(cfg.AuthKey) == "" && !cfg.AllowInsecureDev {
+		return nil, fmt.Errorf("app: AUTH_KEY 为空且未开启 ALLOW_INSECURE_DEV：认证中间件不会挂载，所有业务端点将无身份校验；生产必须配置 AUTH_KEY，dev 需显式开启 ALLOW_INSECURE_DEV")
+	}
+	if isRealEnv && strings.TrimSpace(cfg.AuthKey) == "" && cfg.AllowInsecureDev {
+		logger.Warn("ALLOW_INSECURE_DEV 已开启：AUTH_KEY 为空，认证中间件未挂载，所有业务端点无身份校验；仅限本地开发")
+	}
 	// 迁移（issue #23 / Spec M4）：配了 DATABASE_URL 时，启动即把 migrations/*.sql
 	// 幂等执行一遍。必须排在**所有 Postgres 仓储构造之前**——PGAuditStore 的
 	// Ping、PGIdentityStore 的 Ping 都只探测连通性、不建表，业务查询要求表已存在。
@@ -110,7 +124,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("票据存储使用进程内存实现：重启即丢票，仅限本地开发/测试", "hint", "配置 REDIS_ADDR 以启用外置持久")
 	}
 
-	cipher := platform.NewMockCipher(cfg.TicketKey)
+	// 票据主密钥用的是真实 AES-256-GCM（NewAESCipher 是 NewMockCipher 的真名别名，
+	// 见 #21 M9：骨架期命名误导，装配层新代码一律用 NewAESCipher）。
+	cipher := platform.NewAESCipher(cfg.TicketKey)
 
 	// 通用缓存层：穿透/雪崩/击穿/降级回灌四类防护都在实现里。
 	// 只有配了 Redis 才启用；未配置时 cache 为 nil，业务侧按「无缓存直接命中」处理。
@@ -218,7 +234,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			if cfg.TicketKey != "" && tickets != nil {
 				if mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
 					Store:  tickets,
-					Cipher: platform.NewMockCipher(cfg.TicketKey + ":tgt"),
+					Cipher: platform.NewAESCipher(cfg.TicketKey + ":tgt"),
 					Source: jwSrc,
 					Clock:  clock,
 				}); err == nil {
@@ -333,8 +349,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Mailer:      mailer,
 				Clock:       clock,
 				UserService: identityUserSvc,
-				PasswordBox: platform.NewMockCipher(cfg.TicketKey + ":password"),
-				IDCardBox:   platform.NewMockCipher(cfg.TicketKey + ":idcard"),
+				PasswordBox: platform.NewAESCipher(cfg.TicketKey + ":password"),
+				IDCardBox:   platform.NewAESCipher(cfg.TicketKey + ":idcard"),
 				// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
 				School: schoolAuthAdapter,
 				// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
@@ -413,11 +429,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	a := &App{
 		cfg:    cfg,
 		engine: engine,
-		server: &http.Server{
-			Addr:              cfg.Addr,
-			Handler:           engine,
-			ReadHeaderTimeout: 5 * time.Second,
-		},
+		server: NewHTTPServer(cfg.Addr, engine,
+			time.Duration(cfg.HTTPReadTimeoutSec)*time.Second,
+			time.Duration(cfg.HTTPWriteTimeoutSec)*time.Second,
+			time.Duration(cfg.HTTPIdleTimeoutSec)*time.Second),
 		caps: Capabilities{
 			Tickets: tickets,
 			Cipher:  cipher,

@@ -41,6 +41,16 @@ type Config struct {
 	// AuthKey 是认证令牌 HMAC 签名密钥。生产必须显式配置（强校验）。
 	// 空值表示「不挂认证中间件」，仅供本地开发与单测使用。
 	AuthKey string
+	// AllowInsecureDev 是**仅 dev 生效**的显式开关：开启后允许 AUTH_KEY 为空时
+	// 仍不挂认证中间件（仅限本地开发，会打显眼 WARN）。
+	// 生产环境此开关无效（prod 下 AUTH_KEY 为空一律由 Load() 强校验拦住）。
+	// 缺此项时 dev 下 AUTH_KEY 为空会在 app.New 阶段被拒绝装配，避免「无认证」悄悄发生。
+	AllowInsecureDev bool
+	// HTTPReadTimeoutSec / HTTPWriteTimeoutSec / HTTPIdleTimeoutSec 是入站 HTTP 服务器的
+	// 读、写、空闲超时（秒）。零值由 app.NewHTTPServer 回落到安全默认值。
+	HTTPReadTimeoutSec  int
+	HTTPWriteTimeoutSec int
+	HTTPIdleTimeoutSec  int
 	// RateLimitPerMinute 是每用户每分钟允许的请求数。
 	RateLimitPerMinute int
 	// RedisAddr 是票据存储的 Redis 地址（形如 127.0.0.1:6379）。
@@ -91,6 +101,10 @@ func Load() (Config, error) {
 		HTTPEnforce:             envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
 		AccelEnabled:            envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
 		AuthKey:                 envOr("AUTH_KEY", ""),             // 生产强校验要求非空
+		AllowInsecureDev:        envBoolOr("ALLOW_INSECURE_DEV", false),
+		HTTPReadTimeoutSec:      envIntOr("HTTP_READ_TIMEOUT_SEC", 15),
+		HTTPWriteTimeoutSec:     envIntOr("HTTP_WRITE_TIMEOUT_SEC", 30),
+		HTTPIdleTimeoutSec:      envIntOr("HTTP_IDLE_TIMEOUT_SEC", 90),
 		RateLimitPerMinute:      envIntOr("RATE_LIMIT_PER_MINUTE", 60),
 		RedisAddr:               envOr("REDIS_ADDR", ""),
 		RedisPassword:           envOr("REDIS_PASSWORD", ""),
