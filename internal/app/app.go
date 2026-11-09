@@ -30,8 +30,14 @@ import (
 
 // Capabilities 是装配层注入给业务域的全部外部能力快照。
 // 业务域只依赖 platform 里的接口类型，不依赖具体实现；这里集中暴露便于测试与后续编排。
+//
+// 关于 Store（issue #23）：早先这里有一个 platform.Store 字段，装的是
+// NewMockStore() 的进程内存实现。核查确认它**没有任何消费者**——业务域从不读
+// Capabilities.Store，真正承载票据的是 Tickets、承载用户/会话/审计的是下面按
+// DATABASE_URL 装配的 Postgres 仓储。把它留在快照里只会让「store=mock」看起来
+// 像是真实装配状态（票里点名的误导）。因此移除该字段；MockStore/Mock 实现仍保留
+// 在 platform 包里供骨架期其它用途，不再由装配层注入。
 type Capabilities struct {
-	Store   platform.Store
 	Tickets platform.TicketStore
 	Cipher  platform.Cipher
 	Doer    platform.HTTPDoer
@@ -64,7 +70,19 @@ type App struct {
 // New 完成全部装配，返回可直接 Run 的 App。
 // 骨架期注入内存/Mock 实现；数据库层 / 真实出站闸口就绪后，只改这里注入即可，业务域零改动。
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
-	store := platform.NewMockStore()
+	// 迁移（issue #23 / Spec M4）：配了 DATABASE_URL 时，启动即把 migrations/*.sql
+	// 幂等执行一遍。必须排在**所有 Postgres 仓储构造之前**——PGAuditStore 的
+	// Ping、PGIdentityStore 的 Ping 都只探测连通性、不建表，业务查询要求表已存在。
+	// Migrate 自带小连接池、执行完即关；search_path 由 DSN 透传，测试隔离同样生效。
+	// 失败即拒绝启动：带着半成品 schema 上线比直接失败更危险。
+	if cfg.DatabaseURL != "" {
+		migCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := platform.Migrate(migCtx, cfg.DatabaseURL)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("启动迁移失败：%w", err)
+		}
+	}
 
 	// 票据存储：配了 REDIS_ADDR 就用外置持久实现（生产必须），否则回落到进程内存（仅本地开发）。
 	var tickets platform.TicketStore
@@ -401,7 +419,6 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		caps: Capabilities{
-			Store:   store,
 			Tickets: tickets,
 			Cipher:  cipher,
 			Doer:    doer,
@@ -418,10 +435,27 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		sessionCache:  sessionCache,
 		logger:        logger,
 	}
-	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 6,
+	// 启动日志（issue #23）：字段必须说真话，不再写死 "store","mock"。
+	// 早先那个 mock 只被塞进 Capabilities.Store 且无任何消费者，写死 mock 会让人
+	// 误判「用户/会话/票据都没落库」。现在逐项报告真实装配：
+	//   - store  = 身份/审计的持久后端：配了 DATABASE_URL 是 postgres，否则 none；
+	//   - tickets= 票据后端：配了 REDIS_ADDR 是 redis（外置持久），否则 memory（重启即丢）；
+	//   - 其余字段同样取自真实装配变量，而非字面量常量。
+	storeBackend := "none"
+	if cfg.DatabaseURL != "" {
+		storeBackend = "postgres"
+	}
+	ticketsBackend := "memory"
+	if cfg.RedisAddr != "" {
+		ticketsBackend = "redis"
+	}
+	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv,
+		"store", storeBackend, "tickets", ticketsBackend,
 		"outboundEnforce", cfg.HTTPEnforce, "outboundDoer", outboundDoer,
 		"accelEnabled", cfg.AccelEnabled,
-		"authEnabled", cfg.AuthKey != "", "cacheEnabled", cache != nil)
+		"authEnabled", cfg.AuthKey != "", "cacheEnabled", cache != nil,
+		"identityEnabled", identityStore != nil, "auditEnabled", pgAudit != nil,
+		"sessionCacheEnabled", sessionCache != nil)
 	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
 	// 避免有人用字面量 Config 起服务时静默开放（prod 由 config.Load 强校验拦住）。
 	if cfg.AuthKey == "" {
