@@ -9,6 +9,7 @@ package app
 
 import (
 	"context"
+	"strconv"
 
 	"nongyu-backend-plus/internal/identity/login"
 	"nongyu-backend-plus/internal/school/schoolauth"
@@ -20,12 +21,17 @@ type schoolauthBridge struct {
 }
 
 // Authenticate 把 login 的凭据翻译成 schoolauth 的凭据，调用后把结果翻译回来。
+//
+// 注意：这里**还不知道农屿 userID**（登录正在确认身份的过程中），
+// 因此 tgt 保管此时只能先以「客户端本次交来的」为准；
+// 登录成功、有了 userID 之后再落库（由 flow 层在成功路径调用 TGTManager.Save）。
 func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCredential) (login.SchoolIdentity, error) {
 	// 只支持 cookie/token 形态：客户端完成学校登录后交凭据上来。
 	// 其它形态（直接给学校账密）需要服务端发起 CAS 流程，当前未实现。
 	cred := schoolauth.Credential{
 		RawCookie:   in.CookieHeader,
 		BearerToken: in.BearerToken,
+		UserID:      in.UserID,
 	}
 	// 教务换票需要 go-admin-tgt（auth 域 cookie）。
 	if in.GoAdminTgt != "" {
@@ -57,3 +63,22 @@ func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCrede
 
 // 编译期断言：桥接必须满足身份域的接口。
 var _ login.SchoolAuthenticator = schoolauthBridge{}
+
+// tgtSaverBridge 把 schoolauth.TGTManager 适配成 login.TGTSaver。
+//
+// 为什么需要桥：login 子域要知道「按用户保管凭据」这个能力，但不能 import school；
+// schoolauth 也不该知道 identity 的接口。翻译放在装配层。
+type tgtSaverBridge struct {
+	mgr *schoolauth.TGTManager
+}
+
+// Save 实现 login.TGTSaver。
+func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt string) error {
+	if b.mgr == nil {
+		return nil
+	}
+	return b.mgr.Save(ctx, strconv.FormatInt(userID, 10), tgt)
+}
+
+// 编译期断言。
+var _ login.TGTSaver = tgtSaverBridge{}

@@ -167,11 +167,28 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 认证走 ywtb getUserInfo（Bearer + laravel_session cookie），
 	// 教务那一路（专业/班级/年级）暂未接，失败只标记画像不完整，不阻断登录。
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
+	// tgt 保管器：登录成功后按用户保存，之后取学籍不必再让客户端交凭据。
+	var tgtMgr *schoolauth.TGTManager
 	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: doer}); err == nil {
 		// 教务源：专业/班级/年级来自 bjiben.asp（GBK 老页面）。
-		// 需要客户端交来 go-admin-tgt（auth 域 cookie），因此构造失败不阻断启动。
 		var academicSrc schoolauth.AcademicSource
 		if jwSrc, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
+			// tgt 保管：换票响应会带回新 tgt，服务端加密存 9 天并滚动续期，
+			// 客户端只需首次登录时交一次，之后不必反复传凭据。
+			if cfg.TicketKey != "" && tickets != nil {
+				if mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
+					Store:  tickets,
+					Cipher: platform.NewMockCipher(cfg.TicketKey + ":tgt"),
+					Source: jwSrc,
+					Clock:  clock,
+				}); err == nil {
+					jwSrc.WithTGT(mgr)
+					tgtMgr = mgr
+					logger.Info("已启用 tgt 保管：换票续期由服务端自动完成")
+				} else {
+					logger.Warn("tgt 保管未启用，每次取学籍需客户端提供凭据", "err", err)
+				}
+			}
 			academicSrc = jwSrc
 		} else {
 			logger.Warn("教务取数源构造失败，专业/班级/年级将不可用", "err", err)
@@ -280,6 +297,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				IDCardBox:   platform.NewMockCipher(cfg.TicketKey + ":idcard"),
 				// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
 				School: schoolAuthAdapter,
+				// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
+				TGTSaver: tgtSaverBridge{mgr: tgtMgr},
 			})
 		}
 	} else {

@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"nongyu-backend-plus/internal/platform"
@@ -68,6 +69,14 @@ type JiaowuSource struct {
 	authBase     string
 	jiaowuBase   string
 	allowedHosts []string
+	// tgt 是可选的 tgt 保管器；接上后优先用它（不必每次让客户端重交凭据）。
+	tgt *TGTManager
+}
+
+// WithTGT 接上 tgt 保管器：优先用服务端保管的 tgt，客户端凭据只在缺省时作为兜底。
+func (s *JiaowuSource) WithTGT(m *TGTManager) *JiaowuSource {
+	s.tgt = m
+	return s
 }
 
 // NewJiaowuSource 构造教务取数源。
@@ -99,7 +108,22 @@ func NewJiaowuSource(o JiaowuOptions) (*JiaowuSource, error) {
 //
 // 凭据需要 go-admin-tgt（由客户端在 auth 域登录后交来）。
 func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawAcademic, error) {
+	// 取一个可用的 tgt：
+	//   - 接上 TGTManager 时：优先用服务端保管的（未临期直接用，临期自动换票续期）；
+	//     客户端交来的只作为兜底。
+	//   - 没接 TGTManager 时：必须由客户端每次提供。
 	tgt := cookieValue(cred, goAdminTgtCookie)
+	if s.tgt != nil {
+		userID := ""
+		if cred.UserID != 0 {
+			userID = strconv.FormatInt(cred.UserID, 10)
+		}
+		fresh, err := s.tgt.EnsureFresh(ctx, userID, tgt)
+		if err != nil {
+			return RawAcademic{}, err
+		}
+		tgt = fresh
+	}
 	if tgt == "" {
 		return RawAcademic{}, fmt.Errorf("schoolauth: 缺少 %s（需客户端在统一身份认证登录后交来）", goAdminTgtCookie)
 	}
@@ -133,6 +157,25 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 		Grade:        acc.Grade,
 		RefreshedTGT: refreshedTGT,
 	}, nil
+}
+
+// TicketResult 是一次换票的产物。
+type TicketResult struct {
+	// ST 是给教务的 service ticket。
+	ST string
+	// TGT 是响应里带回的**新** go-admin-tgt（实测存在），可用于滚动续期。
+	TGT string
+}
+
+// exchangeTicketOnly 只换票，不建会话、不抓学籍。
+//
+// 供 TGTManager 续期使用：只要拿到新 tgt 即可，不必每次都跑完整链路。
+func (s *JiaowuSource) exchangeTicketOnly(ctx context.Context, tgt string) (TicketResult, error) {
+	st, newTGT, err := s.exchangeTicket(ctx, tgt)
+	if err != nil {
+		return TicketResult{}, err
+	}
+	return TicketResult{ST: st, TGT: newTGT}, nil
 }
 
 // exchangeTicket 用 go-admin-tgt 换一张教务的 service ticket。

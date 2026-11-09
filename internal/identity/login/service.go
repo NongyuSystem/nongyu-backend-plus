@@ -54,6 +54,9 @@ type SchoolCredential struct {
 	// 教务换票需要它：后端用它换一张教务 service ticket，再抓 bjiben.asp 取学籍。
 	// 由客户端在 auth 域登录后交来。
 	GoAdminTgt string
+	// UserID 是这份凭据归属的农屿用户；供服务端按用户保管 tgt。
+	// 首次登录时还不知道（为零），此时只能用本次交来的凭据做一次性取数。
+	UserID int64
 
 	// ── 形态二：直接凭据 ──
 	StudentNo  string
@@ -145,6 +148,8 @@ type Service struct {
 	userSvc     *identityuser.Service
 	mailer      platform.Mailer
 	initials    PinyinInitializer
+	// tgtSaver 可选：登录成功后把学校会话凭据按用户保管，供后续免密取学籍。
+	tgtSaver TGTSaver
 }
 
 // Options 是构造参数。
@@ -164,6 +169,8 @@ type Options struct {
 	Mailer platform.Mailer
 	// Initials 计算姓名拼音首字母；nil 时用 DefaultInitializer（仅支持拉丁字母）。
 	Initials PinyinInitializer
+	// TGTSaver 可选：登录成功后保管学校会话凭据（tgt）。
+	TGTSaver TGTSaver
 }
 
 // New 构造登录子域服务。
@@ -184,7 +191,17 @@ func New(o Options) *Service {
 		userSvc:     o.UserService,
 		mailer:      o.Mailer,
 		initials:    initials,
+		tgtSaver:    o.TGTSaver,
 	}
+}
+
+// TGTSaver 是「登录成功后把学校会话凭据保管起来」的能力。
+//
+// 为什么放在登录子域：只有这里同时知道「是谁」（userID）与「用了哪份学校凭据」。
+// 由装配层把 schoolauth.TGTManager 适配成这个接口注入，业务域不 import school。
+type TGTSaver interface {
+	// Save 按用户保管 tgt（实现方负责加密与过期）。
+	Save(ctx context.Context, userID int64, tgt string) error
 }
 
 // Result 是一次登录的结果。
@@ -260,6 +277,12 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 
 	// 绑定/刷新 school 登录方式（标识用学号）。
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginSchool, u.StudentNo, nil)
+
+	// 保管学校会话凭据：现在才知道 userID，正好按用户存下来。
+	// 失败不阻断登录（只是后续取学籍时需要客户端重交凭据）。
+	if s.tgtSaver != nil && cred.GoAdminTgt != "" {
+		_ = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt)
+	}
 
 	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr}, nil
 }

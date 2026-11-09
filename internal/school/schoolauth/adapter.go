@@ -49,6 +49,10 @@ type Credential struct {
 	// BearerToken 是 ywtb 的访问令牌，形如 `<用户ID>|<随机串>`。
 	// **不是** XSRF-TOKEN，也不是纯 cookie——实测只带 cookie 会 401。
 	BearerToken string
+	// UserID 是这份凭据归属的农屿用户（用于按用户保管 tgt）。
+	// 零值表示「还不知道是谁」——此时无法使用服务端保管的 tgt，
+	// 只能用本次交来的凭据做一次性取数。
+	UserID int64
 }
 
 // String 实现 fmt.Stringer，**故意不输出 cookie 值**，防止被日志打印出去。
