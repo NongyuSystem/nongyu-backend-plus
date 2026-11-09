@@ -16,6 +16,7 @@ package schoolauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +29,19 @@ import (
 // 复用 TicketStore 而不是新造接口：它本来就是「按 userID 存一段加密字节 + 过期时刻」，
 // 形状完全吻合，且已有 Redis 实现与过期索引。
 type TGTStore = platform.TicketStore
+
+// 续期失败的两类原因，必须由调用方可区分（#25 / #20）：
+//
+//   - ErrCredentialRejected：学校侧拒绝了这组凭据（业务码非 200 / 未登录）。
+//     这是**用户需要重新登录**的场景，提示里要讲清「需客户端重交凭据」。
+//   - ErrMissingCookie：本地保管记录里没有配套 cookie。这是**代码或数据 bug**
+//     （骨架期只存了裸 tgt 的旧记录），不该让用户去重登，而应修记录/修代码。
+//
+// 两者对应的运维动作完全不同，混成一句「续期失败」会误导排查。
+var (
+	ErrCredentialRejected = errors.New("schoolauth: 学校侧拒绝了保管的凭据（需客户端重新交凭据）")
+	ErrMissingCookie      = errors.New("schoolauth: 保管记录缺少整套会话 cookie（代码/数据问题，非用户需重登）")
+)
 
 // TGTCipher 是加解密能力（与密码镜像用不同密钥）。
 type TGTCipher interface {
@@ -179,11 +193,13 @@ func (m *TGTManager) EnsureFresh(ctx context.Context, userID string, fallback Cr
 // 可识别的错误，而不是静默只带 tgt 去撞 code=500。
 func (m *TGTManager) refreshWith(ctx context.Context, userID string, b TGTBundle) (string, error) {
 	if strings.TrimSpace(b.CookieHeader) == "" {
-		return "", fmt.Errorf("schoolauth: 保管记录缺少整套会话 cookie，无法续期（需客户端重新交凭据）")
+		return "", fmt.Errorf("%w：无法续期，需修保管记录或代码", ErrMissingCookie)
 	}
 	res, err := m.source.exchangeTicketOnly(ctx, b.TGT, b.CookieHeader)
 	if err != nil {
-		return "", err
+		// 换票失败按「学校侧拒绝凭据」归类：这是用户需要重登的场景。
+		// 用 %w 同时保留底层原因，便于排查具体是业务码、网络还是解析问题。
+		return "", fmt.Errorf("%w：%v", ErrCredentialRejected, err)
 	}
 	// 换了新 tgt：滚动保存（cookieHeader 保留，只替换 tgt 值）。
 	if userID != "" && res.TGT != "" {

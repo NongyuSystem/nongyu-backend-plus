@@ -1,19 +1,11 @@
 package schoolauth
 
-// 本文件把适配器接到身份域的接口上，而不让 schoolauth import identity。
+// 本文件把适配器的结果接到身份域需要的形状上，而不让 schoolauth 直接 import identity。
 //
 // 做法：用**泛型化的小接口**做桥——装配层把 login.SchoolCredential 的字段
-// 用参数形式传进来，适配器不依赖 identity 包的具体类型。
-//
-// 这样 school 与 identity 两个域之间没有直接 import，
-// 桥接逻辑放在装配层（internal/app），符合「业务域不互相 import」的约束。
-
-import (
-	"context"
-	"fmt"
-
-	"nongyu-backend-plus/internal/platform"
-)
+// 以参数形式传进来，适配器不依赖 identity 包的具体类型。
+// 这样 school 与 identity 两个域之间没有直接 import；桥接逻辑放在装配层
+// （internal/app），符合「业务域不互相 import」的约束。
 
 // DomainIdentity 是身份域能接受的身份形状。
 // 由装配层把 schoolauth.Identity 映射成 identity/login.SchoolIdentity。
@@ -45,74 +37,14 @@ func (i Identity) AsDomain() DomainIdentity {
 	}
 }
 
-// httpSource 是基于 HTTPDoer 的 AuthSource / AcademicSource 骨架实现。
+// 已删除（#25 / Spec M10）：原 httpSource / HTTPSourceOptions / NewHTTPSource 骨架实现。
 //
-// **当前为骨架**：真实抓取需要实测确认
-//   - 用整套 cookie 请求哪个地址能拿到账户信息；
-//   - 请求教务 bjiben.asp 前是否需要先用 cookie 换教务会话。
+// 删除理由：
+//  1. **零生产消费者**：全仓 grep 确认只有它自己的测试在用；装配层实际注入的是
+//     YWTBSource（ywtb.go，基于 Bearer + laravel_session 的真实协议）。
+//  2. **它是「等实测确认后再填」的占位**：ParseIdentity / ParseAcademic 需外部注入，
+//     而真实协议早已通过 ywtb 与教务三跳链路实测确认并落地，占位已无意义。
+//  3. **注释与代码曾长期不一致**（标着「当前为骨架」），留在仓库里只会误导后续接手者
+//     以为「还有一条待补的第二取数路径」。
 //
-// 因此这里只实现「发请求 + 校验状态码」的骨架，解析函数留成可注入的
-// ParseIdentity / ParseAcademic，实测确认结构后填进去即可，
-// 不必改动调用方与测试。
-type httpSource struct {
-	doer          platform.HTTPDoer
-	identityURL   string
-	academicURL   string
-	parseIdentity func([]byte) (RawIdentity, error)
-	parseAcademic func([]byte) (RawAcademic, error)
-}
-
-// HTTPSourceOptions 是 HTTP 源实现的构造参数。
-type HTTPSourceOptions struct {
-	Doer          platform.HTTPDoer
-	IdentityURL   string
-	AcademicURL   string
-	ParseIdentity func([]byte) (RawIdentity, error)
-	ParseAcademic func([]byte) (RawAcademic, error)
-}
-
-// NewHTTPSource 构造基于 HTTPDoer 的双源实现（同时满足 AuthSource 与 AcademicSource）。
-func NewHTTPSource(o HTTPSourceOptions) (*httpSource, error) {
-	if o.Doer == nil {
-		return nil, fmt.Errorf("schoolauth: 需要 HTTPDoer")
-	}
-	if o.ParseIdentity == nil {
-		return nil, fmt.Errorf("schoolauth: 需要 ParseIdentity（实测确认响应结构后注入）")
-	}
-	return &httpSource{
-		doer:          o.Doer,
-		identityURL:   o.IdentityURL,
-		academicURL:   o.AcademicURL,
-		parseIdentity: o.ParseIdentity,
-		parseAcademic: o.ParseAcademic,
-	}, nil
-}
-
-// FetchIdentity 实现 AuthSource。
-func (s *httpSource) FetchIdentity(ctx context.Context, cred Credential) (RawIdentity, error) {
-	req, err := newCookieRequest(ctx, s.identityURL, cred.CookieHeader())
-	if err != nil {
-		return RawIdentity{}, err
-	}
-	body, err := fetch(ctx, s.doer, req)
-	if err != nil {
-		return RawIdentity{}, err
-	}
-	return s.parseIdentity(body)
-}
-
-// FetchAcademic 实现 AcademicSource。
-func (s *httpSource) FetchAcademic(ctx context.Context, cred Credential) (RawAcademic, error) {
-	if s.academicURL == "" || s.parseAcademic == nil {
-		return RawAcademic{}, fmt.Errorf("schoolauth: 教务源未配置")
-	}
-	req, err := newCookieRequest(ctx, s.academicURL, cred.CookieHeader())
-	if err != nil {
-		return RawAcademic{}, err
-	}
-	body, err := fetch(ctx, s.doer, req)
-	if err != nil {
-		return RawAcademic{}, err
-	}
-	return s.parseAcademic(body)
-}
+// 若将来真的需要第二条取数路径，应基于实测协议新写实现，而不是复活这个占位骨架。

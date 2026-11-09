@@ -6,6 +6,7 @@ package schoolauth_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,5 +62,9 @@ func TestTGTManager_RefreshWithoutCookieHeaderFailsClearly(t *testing.T) {
 	_, err := m.EnsureFresh(ctx, "u1", schoolauth.Credential{})
 	if err == nil {
 		t.Fatal("缺配套 cookie 的续期应失败并给出可识别原因")
+	}
+	// 票 #25 要求：不只断言「有错」，还要断言**可识别**
+	if !errors.Is(err, schoolauth.ErrMissingCookie) {
+		t.Fatalf("缺 cookie 应归类为 ErrMissingCookie，实际 %v", err)
 	}
 }
