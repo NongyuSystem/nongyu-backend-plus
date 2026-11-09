@@ -362,9 +362,9 @@ func TestAppWiresCapabilitiesAndHealthz(t *testing.T) {
 		t.Fatalf("app.New 应返回非 nil 的 App")
 	}
 
-	// 4 个能力（加原有 Store）都已注入、可用
+	// 5 个能力都已注入、可用（issue #23 移除了无消费者的 Store 字段）。
 	caps := a.Capabilities()
-	if caps.Store == nil || caps.Tickets == nil || caps.Cipher == nil || caps.Doer == nil || caps.Clock == nil {
+	if caps.Tickets == nil || caps.Cipher == nil || caps.Doer == nil || caps.Clock == nil {
 		t.Fatalf("装配层应注入全部外部能力，实际：%+v", caps)
 	}
 	if _, _, err := caps.Tickets.Get(ctx(), "nobody"); !platform.IsNotFound(err) {
