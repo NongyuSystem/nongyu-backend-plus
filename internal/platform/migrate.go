@@ -1,5 +1,17 @@
 package platform
 
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"nongyu-backend-plus/migrations"
+)
+
+// ---- from migrate.go ----
 // 迁移执行能力（issue #23 / Spec M4 / 验收第 3 条）。
 //
 // 落点理由：迁移是「把 Postgres 建成业务域期望的形状」，与 PGIdentityStore /
@@ -12,16 +24,6 @@ package platform
 // 文件名升序重放一遍是安全的——不引入版本表，避免「版本表与 IF NOT EXISTS
 // 两套真相」以及测试隔离 schema 里版本表残留导致的假通过。
 // 幂等性由 migrate_test.go 在空库上连跑两次并校验数据不丢来守护。
-
-import (
-	"context"
-	"fmt"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"nongyu-backend-plus/migrations"
-)
 
 // Migrate 在 dsn 指向的库（及其 search_path 指定的 schema）上执行全部迁移。
 //
@@ -67,4 +69,35 @@ func Migrate(ctx context.Context, dsn string) error {
 		}
 	}
 	return nil
+}
+
+// ---- from mock.go ----
+// MockStore 是骨架期的内存实现：无外部依赖、零配置，可直接 go run。
+// 数据库层就绪后，新增一个实现同一 Store 接口的类型并在 app 装配层替换即可，业务域代码不动。
+type MockStore struct {
+	mu   sync.RWMutex
+	data map[string][]byte
+}
+
+// NewMockStore 构造一个空的内存存储。
+func NewMockStore() *MockStore {
+	return &MockStore{data: make(map[string][]byte)}
+}
+
+// Seed 预置一条数据，供骨架期联调使用。
+func (m *MockStore) Seed(key string, value []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[key] = value
+}
+
+// Get 实现 Store 接口。
+func (m *MockStore) Get(_ context.Context, key string) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	v, ok := m.data[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return v, nil
 }

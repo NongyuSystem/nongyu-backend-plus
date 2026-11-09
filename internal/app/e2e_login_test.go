@@ -1,16 +1,10 @@
 package app
 
-// #26 门槛 4 的**可自动化部分**：完整 HTTP 链路
-//   POST /identity/login → 拿令牌 → GET /identity/me 200；无令牌 401。
-//
-// 用 schoolForTest 注入假学校认证源，不碰真实学校网络。
-// seam：HTTP 端点（公共行为），不测内部函数。
-// 真实凭据的人工验收另记在票评论里（依赖学校统一身份认证可达）。
-
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,6 +19,14 @@ import (
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	"nongyu-backend-plus/internal/platform"
 )
+
+// ---- from e2e_login_test.go ----
+// #26 门槛 4 的**可自动化部分**：完整 HTTP 链路
+//   POST /identity/login → 拿令牌 → GET /identity/me 200；无令牌 401。
+//
+// 用 schoolForTest 注入假学校认证源，不碰真实学校网络。
+// seam：HTTP 端点（公共行为），不测内部函数。
+// 真实凭据的人工验收另记在票评论里（依赖学校统一身份认证可达）。
 
 // fakeSchoolAuth 是假的学校认证源：按学号返回固定身份，模拟「客户端已完成学校登录」。
 type fakeSchoolAuth struct {
@@ -222,4 +224,62 @@ func TestE2E_TokenCarriesNoSensitiveData(t *testing.T) {
 		}
 	}
 	_ = platform.ScopeApp
+}
+
+// ---- from http_server_test.go ----
+// #21 M7：HTTP 服务器必须有读、写、空闲三个超时。
+// 期望值来自票正文验收判据，不是从实现里重算。
+
+func TestHTTPServerTimeouts_ReadWriteIdleAllSet(t *testing.T) {
+	// 直接构造被测的最小对象：NewHTTPServer 是装配层用来产出 *http.Server 的公共 seam。
+	srv := NewHTTPServer(":0", nil, 8*time.Second, 20*time.Second, 90*time.Second)
+	if srv.ReadTimeout != 8*time.Second {
+		t.Fatalf("ReadTimeout 应为 8s，实际 %v", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 20*time.Second {
+		t.Fatalf("WriteTimeout 应为 20s，实际 %v", srv.WriteTimeout)
+	}
+	if srv.IdleTimeout != 90*time.Second {
+		t.Fatalf("IdleTimeout 应为 90s，实际 %v", srv.IdleTimeout)
+	}
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout 也应保留")
+	}
+}
+
+// ---- from status_probe_test.go ----
+// #24：探针必须在依赖 Ping 失败时如实返回 false。
+// 覆盖「运行中 Redis 挂掉」的场景——/status 每次请求现查，不会缓存旧状态。
+
+func TestNewStatusProbe_ReflectsPingFailure(t *testing.T) {
+	pgOK := true
+	redisOK := true
+	probe := newStatusProbe(
+		func(context.Context) error {
+			if !pgOK {
+				return errors.New("pg down")
+			}
+			return nil
+		},
+		func(context.Context) error {
+			if !redisOK {
+				return errors.New("redis down")
+			}
+			return nil
+		},
+		func() string { return "closed" },
+		"postgres",
+	)
+
+	if !probe.Postgres() || !probe.Redis() {
+		t.Fatal("依赖正常时两个探针都应报可达")
+	}
+	// 模拟运行中 Redis 挂掉
+	redisOK = false
+	if probe.Redis() {
+		t.Fatal("Redis Ping 失败后探针必须返回 false（/status 会据此报 down）")
+	}
+	if !probe.Postgres() {
+		t.Fatal("Redis 挂掉不应影响 Postgres 探针")
+	}
 }
