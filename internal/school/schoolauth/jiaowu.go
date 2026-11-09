@@ -104,8 +104,8 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 		return RawAcademic{}, fmt.Errorf("schoolauth: 缺少 %s（需客户端在统一身份认证登录后交来）", goAdminTgtCookie)
 	}
 
-	// 1) 换票：拿 service ticket。
-	st, err := s.exchangeTicket(ctx, tgt)
+	// 1) 换票：拿 service ticket（同时带回新 tgt）。
+	st, refreshedTGT, err := s.exchangeTicket(ctx, tgt)
 	if err != nil {
 		return RawAcademic{}, err
 	}
@@ -128,58 +128,60 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 		return RawAcademic{}, err
 	}
 	return RawAcademic{
-		Major:     acc.Major,
-		ClassName: acc.ClassName,
-		Grade:     acc.Grade,
+		Major:        acc.Major,
+		ClassName:    acc.ClassName,
+		Grade:        acc.Grade,
+		RefreshedTGT: refreshedTGT,
 	}, nil
 }
 
 // exchangeTicket 用 go-admin-tgt 换一张教务的 service ticket。
-func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt string) (string, error) {
+func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt string) (string, string, error) {
 	u := s.authBase + "/api/v1/cas/login?appid=" + url.QueryEscape(JiaowuAppID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("accept", "*/*")
 	req.Header.Set("Cookie", goAdminTgtCookie+"="+tgt)
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("schoolauth: 换票请求失败：%w", err)
+		return "", "", fmt.Errorf("schoolauth: 换票请求失败：%w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJiaowuBody))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("schoolauth: 换票返回 %d", resp.StatusCode)
+		return "", "", fmt.Errorf("schoolauth: 换票返回 %d", resp.StatusCode)
 	}
 
 	// 换票响应与 ywtb 同构：requestId + 加密 data。
 	var env ywtbEnvelope
 	if err := jsonUnmarshal(raw, &env); err != nil {
-		return "", fmt.Errorf("schoolauth: 换票响应解析失败：%w", err)
+		return "", "", fmt.Errorf("schoolauth: 换票响应解析失败：%w", err)
 	}
 	if env.Code != 200 {
-		return "", fmt.Errorf("schoolauth: 换票业务码 %d（%s）", env.Code, env.Msg)
+		return "", "", fmt.Errorf("schoolauth: 换票业务码 %d（%s）", env.Code, env.Msg)
 	}
 	plain, err := DecryptYWTB(env.RequestID, env.Data)
 	if err != nil {
-		return "", fmt.Errorf("schoolauth: 换票响应解密失败：%w", err)
+		return "", "", fmt.Errorf("schoolauth: 换票响应解密失败：%w", err)
 	}
 	var ticket struct {
-		ST string `json:"st"`
+		ST  string `json:"st"`
+		TGT string `json:"tgt"`
 	}
 	if err := jsonUnmarshal(plain, &ticket); err != nil {
-		return "", fmt.Errorf("schoolauth: 票据解析失败：%w", err)
+		return "", "", fmt.Errorf("schoolauth: 票据解析失败：%w", err)
 	}
 	if ticket.ST == "" {
-		return "", fmt.Errorf("schoolauth: 换票未返回 service ticket")
+		return "", "", fmt.Errorf("schoolauth: 换票未返回 service ticket")
 	}
-	return ticket.ST, nil
+	return ticket.ST, ticket.TGT, nil
 }
 
 // establishSession 回投 ticket 建立教务会话，返回会话 cookie。
@@ -230,7 +232,7 @@ func (s *JiaowuSource) establishSession(ctx context.Context, st string) (string,
 			continue
 		}
 
-		// 非跳转：读回页面确认会话已建立（此时通常已是教务首页或目标页）。
+		// 非跳转：这已经是最终页（真实链路 3 跳后落在 index1.asp）。
 		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxJiaowuBody))
 		_ = resp.Body.Close()
 		if rerr != nil {
@@ -239,11 +241,12 @@ func (s *JiaowuSource) establishSession(ctx context.Context, st string) (string,
 		if resp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("schoolauth: 教务返回 %d", resp.StatusCode)
 		}
+		// 注意：会话 cookie 可能在**任意一跳**的 302 上下发（实测在中间跳），
+		// 所以这里判断的是「整个跟随过程中累计收到的 cookie」，
+		// 不能只看最终这一页有没有 Set-Cookie。
 		if len(cookies) == 0 {
 			return "", fmt.Errorf("schoolauth: 教务未下发会话 cookie")
 		}
-		// 会话建立成功；把 cookie 交给调用方去抓学籍页。
-		// 若这一跳已经落在学籍页上，body 就是学籍内容，可直接用。
 		_ = body
 		return strings.Join(cookies, "; "), nil
 	}

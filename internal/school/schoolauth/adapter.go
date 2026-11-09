@@ -133,6 +133,10 @@ type RawAcademic struct {
 	Major     string
 	ClassName string
 	Grade     string
+	// RefreshedTGT 是换票响应里带回的**新** go-admin-tgt。
+	// 实测：调用换票接口时响应里直接给出 tgt 字段，可用于后续换票与续期，
+	// 因此不需要每次都让客户端重新登录。
+	RefreshedTGT string
 }
 
 // Options 是适配器构造参数。

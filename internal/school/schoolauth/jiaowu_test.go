@@ -178,6 +178,109 @@ func TestJiaowuSource_TicketExchangeFailed(t *testing.T) {
 	}
 }
 
+// 真实跳转链是 3 跳：caslogin.asp → check_cas.asp?sign=.. → note.asp → index1.asp
+// 必须跟到最终 200 页，不能跳一次就当作成功。
+func TestJiaowuSource_FollowsMultiHopToFinalPage(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/api/v1/cas/login": {body: encryptForTest(t, "req-3hop", `{"st":"ST:FAKE"}`)},
+		"/jiaoshi/aspsso/caslogin.asp": {
+			status:   302,
+			location: "https://jiaowu.sicau.edu.cn/jiaoshi/bangong/check_cas.asp?sign=abc",
+		},
+		"/jiaoshi/bangong/check_cas.asp": {
+			status:   302,
+			location: "/jiaoshi/bangong/main/note.asp",
+			// 实测：ASPSESSIONID 在这类中间跳上下发
+			headers: map[string]string{"Set-Cookie": "ASPSESSIONIDxyz=abc; Path=/"},
+		},
+		"/jiaoshi/bangong/main/note.asp": {
+			status:   302,
+			location: "/jiaoshi/bangong/main/index1.asp",
+		},
+		"/jiaoshi/bangong/main/index1.asp":  {body: `<html>首页</html>`},
+		"/xuesheng/dangan/banji/bjiben.asp": {body: academicPageHTML},
+	}}
+
+	src, _ := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{
+		Doer:          d,
+		AuthBaseURL:   "https://auth.sicau.edu.cn",
+		JiaowuBaseURL: "https://jiaowu.sicau.edu.cn",
+	})
+	acc, err := src.FetchAcademic(context.Background(), schoolauth.Credential{RawCookie: "go-admin-tgt=T"})
+	if err != nil {
+		t.Fatalf("FetchAcademic: %v", err)
+	}
+	if acc.Major == "" {
+		t.Fatal("三跳之后应取到学籍")
+	}
+	// 应该真的走过 check_cas 与 note.asp
+	var sawCheckCas, sawNote, sawIndex bool
+	for _, r := range d.requests {
+		switch r.path {
+		case "/jiaoshi/bangong/check_cas.asp":
+			sawCheckCas = true
+		case "/jiaoshi/bangong/main/note.asp":
+			sawNote = true
+		case "/jiaoshi/bangong/main/index1.asp":
+			sawIndex = true
+		}
+	}
+	if !sawCheckCas || !sawNote || !sawIndex {
+		t.Fatalf("应跟随全部三跳，实际 checkCas=%v note=%v index=%v", sawCheckCas, sawNote, sawIndex)
+	}
+}
+
+// 相对 Location 也要能跟随（真实链路里 note.asp 用的是相对路径）。
+func TestJiaowuSource_FollowsRelativeRedirect(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/api/v1/cas/login": {body: encryptForTest(t, "req-rel", `{"st":"ST:FAKE"}`)},
+		"/jiaoshi/aspsso/caslogin.asp": {
+			status:   302,
+			location: "/jiaoshi/bangong/main/index1.asp", // 相对路径
+			headers:  map[string]string{"Set-Cookie": "ASPSESSIONIDabc=xyz; Path=/"},
+		},
+		"/jiaoshi/bangong/main/index1.asp":  {body: `<html>首页</html>`},
+		"/xuesheng/dangan/banji/bjiben.asp": {body: academicPageHTML},
+	}}
+	src, _ := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{
+		Doer:          d,
+		AuthBaseURL:   "https://auth.sicau.edu.cn",
+		JiaowuBaseURL: "https://jiaowu.sicau.edu.cn",
+	})
+	if _, err := src.FetchAcademic(context.Background(), schoolauth.Credential{RawCookie: "go-admin-tgt=T"}); err != nil {
+		t.Fatalf("相对跳转应能跟随：%v", err)
+	}
+}
+
+// 换票响应里**直接带 tgt**，应能取出来（可用于后续换票，避免二次登录）。
+func TestJiaowuSource_ExposesTGTFromTicketResponse(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/api/v1/cas/login": {
+			body: encryptForTest(t, "req-tgt", `{"st":"ST:FAKE","tgt":"201690:TGT:abc123"}`),
+		},
+		"/jiaoshi/aspsso/caslogin.asp": {
+			status:   302,
+			location: "/jiaoshi/bangong/main/index1.asp",
+			headers:  map[string]string{"Set-Cookie": "ASPSESSIONIDabc=xyz; Path=/"},
+		},
+		"/jiaoshi/bangong/main/index1.asp":  {body: `<html>首页</html>`},
+		"/xuesheng/dangan/banji/bjiben.asp": {body: academicPageHTML},
+	}}
+	src, _ := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{
+		Doer:          d,
+		AuthBaseURL:   "https://auth.sicau.edu.cn",
+		JiaowuBaseURL: "https://jiaowu.sicau.edu.cn",
+	})
+	raw, err := src.FetchAcademic(context.Background(), schoolauth.Credential{RawCookie: "go-admin-tgt=T"})
+	if err != nil {
+		t.Fatalf("FetchAcademic: %v", err)
+	}
+	// 真实换票响应会把新的 tgt 带回，便于续期。
+	if raw.RefreshedTGT != "201690:TGT:abc123" {
+		t.Fatalf("应带回新 tgt，实际 %q", raw.RefreshedTGT)
+	}
+}
+
 // 跳转指向**白名单外**的 host 时必须拒绝（防止变成任意 URL 代理）。
 func TestJiaowuSource_RejectsOffWhitelistRedirect(t *testing.T) {
 	d := &scriptedDoer{responses: map[string]*scriptedResp{
