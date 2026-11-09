@@ -2,7 +2,7 @@ package schoolauth_test
 
 // 用**真实捕获的一次响应**验证解密链路。
 //
-// 这组数据来自 2026-11-09 对 ywtb 的实际请求（见知识库「川农 ywtb getUserInfo 真实取数」）。
+// 这组数据来自 2026-11-09 对统一身份认证的实际请求（见 docs/tech/实测-川农CAS真实链路-tgt万能凭据.md）。
 // 有了真实样本，解密算法一旦被改动、或假设错了 key 的取法，测试会立刻失败——
 // 这是纯构造数据测不出来的。
 
@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"net/http"
 
@@ -123,96 +122,3 @@ func (d *envelopeDoer) Do(_ context.Context, req *http.Request) (*http.Response,
 	}
 	return &http.Response{StatusCode: st, Body: ioNopCloser(d.body)}, nil
 }
-
-func TestYWTBSource_FetchIdentityEndToEnd(t *testing.T) {
-	ivBytes := mustHex(t, sampleIVHex)
-	ct := mustB64(t, sampleCipherB64)
-	dataB64 := b64Of(append(ivBytes, ct...))
-
-	env, _ := json.Marshal(map[string]any{
-		"requestId": sampleRequestID,
-		"code":      200,
-		"msg":       "ok",
-		"data":      dataB64,
-	})
-
-	d := &envelopeDoer{body: string(env)}
-	src, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{
-		Doer: d, BaseURL: "https://ywtb.example.invalid",
-	})
-	if err != nil {
-		t.Fatalf("NewYWTBSource: %v", err)
-	}
-
-	raw, err := src.FetchIdentity(context.Background(), schoolauth.Credential{
-		BearerToken: "405162|fake-token-for-test",
-		RawCookie:   "laravel_session=fake-session",
-	})
-	if err != nil {
-		t.Fatalf("FetchIdentity: %v", err)
-	}
-
-	// 字段映射
-	if raw.StudentNo != "202502204" || raw.Name != "姚一飞" || raw.College != "信息工程学院" {
-		t.Fatalf("字段映射不符：%+v", raw)
-	}
-	if raw.IDCardFull != "650102200701142614" {
-		t.Fatalf("应带出完整身份证号，实际 %q", raw.IDCardFull)
-	}
-
-	// 请求形状：POST + 正确路径 + Bearer + cookie
-	if d.gotMethod != http.MethodPost {
-		t.Fatalf("应为 POST，实际 %s", d.gotMethod)
-	}
-	if d.gotPath != "/api/m/v1/user/getUserInfo" {
-		t.Fatalf("路径不符：%s", d.gotPath)
-	}
-	if d.gotAuth != "Bearer 405162|fake-token-for-test" {
-		t.Fatalf("Authorization 不符：%q", d.gotAuth)
-	}
-	if !strings.Contains(d.gotCookie, "laravel_session=") {
-		t.Fatalf("应带 laravel_session，实际 %q", d.gotCookie)
-	}
-}
-
-// 缺 Bearer token 时直接拒绝，不去发请求（纯 cookie 在真实环境是 401）。
-func TestYWTBSource_RequiresBearerToken(t *testing.T) {
-	d := &envelopeDoer{body: "{}"}
-	src, _ := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: d})
-	_, err := src.FetchIdentity(context.Background(), schoolauth.Credential{
-		RawCookie: "laravel_session=x",
-	})
-	if err == nil {
-		t.Fatal("缺 Bearer token 应报错")
-	}
-	if d.gotAuth != "" && d.gotPath != "" {
-		t.Fatal("缺 token 时不应发起请求")
-	}
-}
-
-// 业务码非 200：必须判失败（会话失效时上游常返 200 + 非 200 业务码）。
-func TestYWTBSource_NonOKBusinessCodeFails(t *testing.T) {
-	env, _ := json.Marshal(map[string]any{
-		"requestId": "x", "code": 401, "msg": "未登录", "data": "",
-	})
-	d := &envelopeDoer{body: string(env)}
-	src, _ := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: d})
-	_, err := src.FetchIdentity(context.Background(), schoolauth.Credential{BearerToken: "1|t"})
-	if err == nil {
-		t.Fatal("业务码非 200 应报错")
-	}
-}
-
-func TestYWTBSource_HTTPErrorFails(t *testing.T) {
-	d := &envelopeDoer{body: "unauthorized", status: 401}
-	src, _ := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: d})
-	_, err := src.FetchIdentity(context.Background(), schoolauth.Credential{BearerToken: "1|t"})
-	if err == nil {
-		t.Fatal("HTTP 401 应报错")
-	}
-}
-
-// 编译期断言：YWTBSource 满足 AuthSource。
-var _ schoolauth.AuthSource = (*schoolauth.YWTBSource)(nil)
-
-var _ = time.Second

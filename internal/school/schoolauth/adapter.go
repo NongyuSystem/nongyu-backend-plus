@@ -30,8 +30,9 @@ var ErrAuthFailed = errors.New("schoolauth: 学校认证失败")
 
 // SessionCookie 是客户端交上来的一条会话 cookie。
 //
-// 为什么是「一组」而不是一个字符串：实测确认单枚 `go-admin-tgt` **不足以**通过
-// 学校端校验，必须整套会话 cookie 一起带上。
+// 实测（2026-11-09）：**单枚 `go-admin-tgt` 就足以换票**（code=200）。
+// 早前「必须整套 cookie」的结论对当前平台已不成立；整套 cookie 仍可原样透传，
+// 但不再是前置条件。
 type SessionCookie struct {
 	Name  string
 	Value string
@@ -40,15 +41,16 @@ type SessionCookie struct {
 // Credential 是客户端交上来的学校会话凭据。
 //
 // 客户端先用自己那套方式完成学校登录（账密/微信/短信，都在客户端侧），
-// 然后把拿到的 cookie 交上来；本适配器用它去取身份，**不接触学生密码**。
+// 然后把拿到的 **`go-admin-tgt`** 交上来；本适配器用它换票取身份，
+// **不接触学生密码**。
+//
+// 只有这一种凭据形态。曾有一个 ywtb `BearerToken` 字段，已按维护者指示删除：
+// 真实链路上客户端不会有它，两条路径并存只会让「该交什么」含糊不清。
 type Credential struct {
-	// Cookies 是整套会话 cookie（实测需 laravel_session）。
+	// Cookies 是整套会话 cookie（可只含 go-admin-tgt）。
 	Cookies []SessionCookie
 	// RawCookie 是原始 Cookie 头（如 "a=1; b=2"）。给了 Cookies 时可省略。
 	RawCookie string
-	// BearerToken 是 ywtb 的访问令牌，形如 `<用户ID>|<随机串>`。
-	// **不是** XSRF-TOKEN，也不是纯 cookie——实测只带 cookie 会 401。
-	BearerToken string
 	// UserID 是这份凭据归属的农屿用户（用于按用户保管 tgt）。
 	// 零值表示「还不知道是谁」——此时无法使用服务端保管的 tgt，
 	// 只能用本次交来的凭据做一次性取数。
@@ -122,8 +124,11 @@ func replaceCookieValue(header, name, value string) string {
 }
 
 // Empty 判断凭据是否为空。
+// Empty 判断是否「没有任何可用凭据」。
+//
+// 判据就是 cookie：真实链路上客户端登录后交来的只有 go-admin-tgt。
 func (c Credential) Empty() bool {
-	return strings.TrimSpace(c.CookieHeader()) == "" && strings.TrimSpace(c.BearerToken) == ""
+	return strings.TrimSpace(c.CookieHeader()) == ""
 }
 
 // Identity 是解析出来的学校身份。

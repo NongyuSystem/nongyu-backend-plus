@@ -26,12 +26,12 @@ type schoolauthBridge struct {
 // 因此 tgt 保管此时只能先以「客户端本次交来的」为准；
 // 登录成功、有了 userID 之后再落库（由 flow 层在成功路径调用 TGTManager.Save）。
 func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCredential) (login.SchoolIdentity, error) {
-	// 只支持 cookie/token 形态：客户端完成学校登录后交凭据上来。
-	// 其它形态（直接给学校账密）需要服务端发起 CAS 流程，当前未实现。
+	// 凭据形态只有一种：客户端完成学校登录后交来的 go-admin-tgt（及其同域 cookie）。
+	// 曾经的 BearerToken 已删除（#28）：真实链路里客户端没有它，
+	// 且换票响应本身就带身份，不需要第二条取数路径。
 	cred := schoolauth.Credential{
-		RawCookie:   in.CookieHeader,
-		BearerToken: in.BearerToken,
-		UserID:      in.UserID,
+		RawCookie: in.CookieHeader,
+		UserID:    in.UserID,
 	}
 	// 教务换票需要 go-admin-tgt（auth 域 cookie）。
 	if in.GoAdminTgt != "" {

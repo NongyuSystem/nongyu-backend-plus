@@ -213,15 +213,42 @@ func (s *JiaowuSource) exchangeTicketOnly(ctx context.Context, tgt, cookieHeader
 	return TicketResult{ST: st, TGT: newTGT}, nil
 }
 
+// casUser 是换票响应明文里携带的用户信息（实测 2026-11-09 确认存在）。
+//
+// 一次换票请求同时给两样东西：st（给教务建会话）+ user（身份），
+// 所以「取身份」不必再调 ywtb getUserInfo（那条路要求 Bearer，#28）。
+type casUser struct {
+	ID     int64  `json:"id"`
+	Number string `json:"number"` // 学号
+	Name   string `json:"name"`   // 姓名
+	Phone  string `json:"phone"`
+	Group  []struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Alias string `json:"alias"` // 「本科生」等
+	} `json:"group"`
+}
+
 // exchangeTicket 用客户端的会话 cookie 换一张教务的 service ticket。
 //
-// cookieHeader 必须是**整套**同域 cookie（至少含 go-admin-tgt 与 laravel_session）。
-// 只带 go-admin-tgt 会在真实环境返回 code=500「未登录」——实测确认。
+// cookieHeader 为整套同域 cookie；若只给了 tgt，退化为只带 tgt。
+// **实测（2026-11-09）只带 go-admin-tgt 也能换票成功**（code=200）——
+// 早前「必须整套 cookie」的结论对当前平台已不成立，不再作为前置要求。
 func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt, cookieHeader string) (string, string, error) {
+	st, newTGT, _, err := s.exchangeTicketFull(ctx, tgt, cookieHeader)
+	return st, newTGT, err
+}
+
+// exchangeTicketFull 换票并**一并解出用户信息**（#28）。
+//
+// 返回值：st、新 tgt、换票响应里的 user。
+// 抽出这一层是为了让「取身份」复用同一次请求——换票响应本就带 user，
+// 没必要为了拿学号/姓名再走一趟要求 Bearer 的 getUserInfo。
+func (s *JiaowuSource) exchangeTicketFull(ctx context.Context, tgt, cookieHeader string) (string, string, casUser, error) {
 	u := s.authBase + "/api/v1/cas/login?appid=" + url.QueryEscape(JiaowuAppID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", casUser{}, err
 	}
 	req.Header.Set("accept", "*/*")
 	// 整套 cookie 原样透传；若调用方只给了 tgt（无其它 cookie），退化为只带 tgt。
@@ -233,41 +260,77 @@ func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt, cookieHeader str
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		return "", "", fmt.Errorf("%w：换票请求失败：%v", ErrTicketInfra, err)
+		return "", "", casUser{}, fmt.Errorf("%w：换票请求失败：%v", ErrTicketInfra, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJiaowuBody))
 	if err != nil {
-		return "", "", err
+		return "", "", casUser{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("%w：换票返回 %d", ErrTicketInfra, resp.StatusCode)
+		return "", "", casUser{}, fmt.Errorf("%w：换票返回 %d", ErrTicketInfra, resp.StatusCode)
 	}
 
 	// 换票响应与 ywtb 同构：requestId + 加密 data。
 	var env ywtbEnvelope
 	if err := jsonUnmarshal(raw, &env); err != nil {
-		return "", "", fmt.Errorf("%w：换票响应解析失败：%v", ErrTicketInfra, err)
+		return "", "", casUser{}, fmt.Errorf("%w：换票响应解析失败：%v", ErrTicketInfra, err)
 	}
 	if env.Code != 200 {
-		return "", "", fmt.Errorf("%w：换票业务码 %d（%s）", ErrTicketRejected, env.Code, env.Msg)
+		return "", "", casUser{}, fmt.Errorf("%w：换票业务码 %d（%s）", ErrTicketRejected, env.Code, env.Msg)
 	}
 	plain, err := DecryptYWTB(env.RequestID, env.Data)
 	if err != nil {
-		return "", "", fmt.Errorf("%w：换票响应解密失败：%v", ErrTicketInfra, err)
+		return "", "", casUser{}, fmt.Errorf("%w：换票响应解密失败：%v", ErrTicketInfra, err)
 	}
 	var ticket struct {
-		ST  string `json:"st"`
-		TGT string `json:"tgt"`
+		ST   string  `json:"st"`
+		TGT  string  `json:"tgt"`
+		User casUser `json:"user"`
 	}
 	if err := jsonUnmarshal(plain, &ticket); err != nil {
-		return "", "", fmt.Errorf("%w：票据解析失败：%v", ErrTicketInfra, err)
+		return "", "", casUser{}, fmt.Errorf("%w：票据解析失败：%v", ErrTicketInfra, err)
 	}
 	if ticket.ST == "" {
-		return "", "", fmt.Errorf("%w：换票未返回 service ticket", ErrTicketInfra)
+		return "", "", casUser{}, fmt.Errorf("%w：换票未返回 service ticket", ErrTicketInfra)
 	}
-	return ticket.ST, ticket.TGT, nil
+	return ticket.ST, ticket.TGT, ticket.User, nil
+}
+
+// ExchangeForIdentity 用 tgt 换票并返回身份（实现 TicketExchanger，#28）。
+//
+// 换票响应本就带 user，所以这是「取身份」最短的一条路：
+// 一次出站请求同时拿到身份，且**不需要 Bearer**（真实客户端没有）。
+func (s *JiaowuSource) ExchangeForIdentity(ctx context.Context, cred Credential) (TicketIdentity, error) {
+	tgt := cookieValue(cred, goAdminTgtCookie)
+	if s.tgt != nil {
+		userID := ""
+		if cred.UserID != 0 {
+			userID = strconv.FormatInt(cred.UserID, 10)
+		}
+		fresh, err := s.tgt.EnsureFresh(ctx, userID, cred)
+		if err != nil {
+			return TicketIdentity{}, err
+		}
+		tgt = fresh
+	}
+	if strings.TrimSpace(tgt) == "" {
+		return TicketIdentity{}, fmt.Errorf("schoolauth: 缺少 %s", goAdminTgtCookie)
+	}
+
+	_, _, user, err := s.exchangeTicketFull(ctx, tgt, cred.CookieHeader())
+	if err != nil {
+		return TicketIdentity{}, err
+	}
+	if strings.TrimSpace(user.Number) == "" {
+		return TicketIdentity{}, fmt.Errorf("schoolauth: 换票响应未返回学号")
+	}
+	ti := TicketIdentity{StudentNo: user.Number, Name: user.Name, Phone: user.Phone}
+	if len(user.Group) > 0 {
+		ti.Category = user.Group[0].Alias
+	}
+	return ti, nil
 }
 
 // establishSession 回投 ticket 建立教务会话，返回会话 cookie。

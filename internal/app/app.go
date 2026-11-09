@@ -48,6 +48,17 @@ type Capabilities struct {
 // renewInterval 是定时续期扫描的间隔（保守值，避免高频打扰学校侧）。
 const renewInterval = 5 * time.Minute
 
+// exchangerOrNil 把 *JiaowuSource 转成 TicketExchanger，并在为 nil 时返回**真正的 nil 接口**。
+//
+// 直接写 `Exchanger: jwSrc` 会有 typed-nil 陷阱：*JiaowuSource(nil) 装进接口后
+// 接口值 != nil，导致 YWTBSource 里 `s.exchanger == nil` 判断失效，运行时才崩。
+func exchangerOrNil(jw *schoolauth.JiaowuSource) schoolauth.TicketExchanger {
+	if jw == nil {
+		return nil
+	}
+	return jw
+}
+
 // schoolForTest 是**仅供本包测试**注入假学校认证源的钩子。
 //
 // 为什么需要它：#26 门槛 4 要求验证一条完整 HTTP 链路
@@ -229,36 +240,45 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		tokenIssuer = server.NewTokenVerifier(cfg.AuthKey, clock)
 	}
 
-	// 学校认证适配器：把「客户端交上来的 ywtb 凭据」换成学校身份。
-	// 认证走 ywtb getUserInfo（Bearer + laravel_session cookie），
-	// 教务那一路（专业/班级/年级）暂未接，失败只标记画像不完整，不阻断登录。
+	// 学校认证适配器：把「客户端交上来的 go-admin-tgt」换成学校身份。
+	//
+	// 只有一条取身份路径（#28）：用 tgt 换票，换票响应本身就带 user（学号/姓名）。
+	// 因此先建教务源（它提供换票能力），再把它作为 Exchanger 注入身份源。
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
 	// tgt 保管器：登录成功后按用户保存，之后取学籍不必再让客户端交凭据。
 	var tgtMgr *schoolauth.TGTManager
-	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: doer}); err == nil {
-		// 教务源：专业/班级/年级来自 bjiben.asp（GBK 老页面）。
-		var academicSrc schoolauth.AcademicSource
-		if jwSrc, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
-			// tgt 保管：换票响应会带回新 tgt，服务端加密存 9 天并滚动续期，
-			// 客户端只需首次登录时交一次，之后不必反复传凭据。
-			if cfg.TicketKey != "" && tickets != nil {
-				if mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
-					Store:  tickets,
-					Cipher: platform.NewAESCipher(cfg.TicketKey + ":tgt"),
-					Source: jwSrc,
-					Clock:  clock,
-				}); err == nil {
-					jwSrc.WithTGT(mgr)
-					tgtMgr = mgr
-					logger.Info("已启用 tgt 保管：换票续期由服务端自动完成")
-				} else {
-					logger.Warn("tgt 保管未启用，每次取学籍需客户端提供凭据", "err", err)
-				}
+
+	// 教务源：专业/班级/年级来自 bjiben.asp（GBK 老页面），
+	// 同时提供「用 tgt 换票并取身份」的能力给 ywtb 源兜底。
+	var academicSrc schoolauth.AcademicSource
+	var jwSrc *schoolauth.JiaowuSource
+	if s, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
+		jwSrc = s
+		// tgt 保管：换票响应会带回新 tgt，服务端加密存 9 天并滚动续期，
+		// 客户端只需首次登录时交一次，之后不必反复传凭据。
+		if cfg.TicketKey != "" && tickets != nil {
+			if mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
+				Store:  tickets,
+				Cipher: platform.NewAESCipher(cfg.TicketKey + ":tgt"),
+				Source: jwSrc,
+				Clock:  clock,
+			}); err == nil {
+				jwSrc.WithTGT(mgr)
+				tgtMgr = mgr
+				logger.Info("已启用 tgt 保管：换票续期由服务端自动完成")
+			} else {
+				logger.Warn("tgt 保管未启用，每次取学籍需客户端提供凭据", "err", err)
 			}
-			academicSrc = jwSrc
-		} else {
-			logger.Warn("教务取数源构造失败，专业/班级/年级将不可用", "err", err)
 		}
+		academicSrc = jwSrc
+	} else {
+		logger.Warn("教务取数源构造失败，专业/班级/年级将不可用", "err", err)
+	}
+
+	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{
+		Doer:      doer,
+		Exchanger: exchangerOrNil(jwSrc),
+	}); err == nil {
 		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc, Academic: academicSrc}); err == nil {
 			schoolAuthAdapter = schoolauthBridge{a: a}
 		} else {

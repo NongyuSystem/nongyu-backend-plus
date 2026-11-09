@@ -1,227 +1,112 @@
 package schoolauth
 
-// 本文件实现「ywtb 一网通办」的真实取数链路。
+// 本文件实现「取学校身份」的唯一路径：**用 go-admin-tgt 换票，从换票响应读身份**。
 //
-// 实测协议（2026-11-09，见知识库「川农 ywtb getUserInfo 真实取数」）：
+// 实测协议（2026-11-09，见 docs/tech/实测-川农CAS真实链路-tgt万能凭据.md）：
 //
-//	POST https://ywtb.sicau.edu.cn/api/m/v1/user/getUserInfo
-//	authorization: Bearer <用户ID>|<随机串>      ← 不是纯 cookie，XSRF-TOKEN 也不行
-//	cookie: laravel_session=...
-//	content-type: application/json
-//	body: {}
+//	GET https://auth.sicau.edu.cn/api/v1/cas/login?appid=<教务appid>
+//	Cookie: go-admin-tgt=<客户端登录后拿到的 tgt>
 //
-//	响应：{"requestId":"...","code":200,"msg":"ok","data":"<加密 base64>"}
+//	响应：{"requestId":"...","code":200,"msg":"登录成功","data":"<加密 base64>"}
+//	解密（DecryptYWTB）后的明文：
+//	  {"callbackUrl":"...","tgt":"...","st":"...",
+//	   "user":{"id":201690,"number":"202502204","name":"姚一飞",
+//	           "phone":"...","group":[{"alias":"本科生"}]},...}
 //
-//	解密：key = MD5(requestId + ":sicau-cas") 的 **digest 原始 32 字节**（AES-256）
-//	      iv  = base64(data) 的前 16 字节
-//	      ct  = 其余；AES-256-CBC + PKCS7
+// 关键事实：**go-admin-tgt 是万能凭据**。客户端在学校统一身份认证登录后
+// 只会拿到这张 cookie，不会有 ywtb 的 Bearer token。后端拿它换票，
+// 一次请求同时得到 st（给教务）与 user（身份），不需要再走任何 Bearer 路径。
 //
-//	明文（节选）：
-//	  {"number":"202502204","name":"姚一飞","idcard":"650102200701142614",
-//	   "unit":"信息工程学院","phone":"17799611327","wechat":"...",
-//	   "birthday":"2007-01-14T08:00:00+08:00","groups":["bzks"],"status":1}
+// 本文件曾有一条「Bearer + getUserInfo」的备选路径，已按维护者指示**删除**：
+// 两条路径并存会让「客户端到底该交什么」变得含糊，实测证明 tgt 单独就够。
 //
-// 注意：专业/班级/年级**不在这里**，要走教务 bjiben.asp（另一路）。
+// 代价（已知且接受）：换票响应**没有学院与身份证**。
+// 学院/身份证只在那条已删除的 getUserInfo 里有；若将来确需，应另立规格
+// 走教务档案页取，而不是复活 Bearer 路径。
 
 import (
-	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/md5"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"nongyu-backend-plus/internal/platform"
 )
 
-// ywtbSalt 是解密 salt。来自实测：key = MD5(requestId + ":sicau-cas")。
-const ywtbSalt = ":sicau-cas"
+// TicketIdentity 是「换票顺带取到的身份」。
+//
+// 换票响应明文里就带 user，所以这条路径不需要额外的凭据。
+// 缺点：**没有学院与身份证**，由上层按画像不完整语义处理。
+type TicketIdentity struct {
+	StudentNo string
+	Name      string
+	Phone     string
+	Category  string // 「本科生」等，来自 user.group[].alias
+}
 
-// maxYWTBBody 是响应体上限：正常只有几百字节，超限说明拿到的不是预期内容。
-const maxYWTBBody = 1 << 20
+// TicketExchanger 是「用 tgt 换票并顺带取身份」的能力。
+//
+// 由 JiaowuSource 实现（它本就要换票拿 st，一次请求两用）。
+// 抽成接口而不是直接依赖 JiaowuSource，是为了保持源之间不硬耦合。
+type TicketExchanger interface {
+	// ExchangeForIdentity 用 tgt 换票并返回身份。
+	ExchangeForIdentity(ctx context.Context, cred Credential) (TicketIdentity, error)
+}
 
-// YWTBOptions 是 ywtb 取数源构造参数。
+// YWTBOptions 是取身份源的构造参数。
 type YWTBOptions struct {
 	// Doer 是出站闸口（白名单、超时、3xx 拦截都在它里面）。
+	// 保留它是为了让本类型仍能独立构造（例如健康检查/诊断场景）。
 	Doer platform.HTTPDoer
-	// BaseURL 默认 https://ywtb.sicau.edu.cn；测试时可指向本地。
+	// BaseURL 默认 https://ywtb.sicau.edu.cn；当前取身份不走 ywtb，保留以兼容构造。
 	BaseURL string
+	// Exchanger **必需**：真正负责用 tgt 换票并取身份。
+	Exchanger TicketExchanger
 }
 
-// YWTBSource 实现 AuthSource：用客户端交上来的 Bearer token 与 cookie 取身份。
+// YWTBSource 实现 AuthSource。
+//
+// 名字保留 `YWTB` 是因为它在身份域里的角色仍是「学校侧身份源」；
+// 但实现上它已经**不再直连 ywtb 的 getUserInfo**，只通过换票拿身份。
 type YWTBSource struct {
-	doer    platform.HTTPDoer
-	baseURL string
+	doer      platform.HTTPDoer
+	baseURL   string
+	exchanger TicketExchanger
 }
 
-// NewYWTBSource 构造 ywtb 取数源。
+// NewYWTBSource 构造取身份源。
 func NewYWTBSource(o YWTBOptions) (*YWTBSource, error) {
 	if o.Doer == nil {
 		return nil, fmt.Errorf("schoolauth: YWTBSource 需要 HTTPDoer")
+	}
+	if o.Exchanger == nil {
+		return nil, fmt.Errorf("schoolauth: YWTBSource 需要 TicketExchanger（用 tgt 换票取身份）")
 	}
 	base := o.BaseURL
 	if base == "" {
 		base = "https://ywtb.sicau.edu.cn"
 	}
-	return &YWTBSource{doer: o.Doer, baseURL: strings.TrimRight(base, "/")}, nil
+	return &YWTBSource{doer: o.Doer, baseURL: strings.TrimRight(base, "/"), exchanger: o.Exchanger}, nil
 }
 
-// ywtbUserInfo 是 getUserInfo 解密后的明文结构（只列用得到的字段）。
-type ywtbUserInfo struct {
-	Number   string   `json:"number"`   // 学号
-	Name     string   `json:"name"`     // 姓名
-	Gender   string   `json:"gender"`   // 性别
-	IDCard   string   `json:"idcard"`   // 完整身份证号
-	Unit     string   `json:"unit"`     // 所属单位（= 学院）
-	Phone    string   `json:"phone"`    // 手机号
-	Email    string   `json:"email"`    //
-	QQ       string   `json:"qq"`       //
-	Wechat   string   `json:"wechat"`   // 微信 openid
-	Birthday string   `json:"birthday"` //
-	Status   int      `json:"status"`   //
-	Groups   []string `json:"groups"`   //
-}
-
-// ywtbEnvelope 是 getUserInfo 的响应信封。
-type ywtbEnvelope struct {
-	RequestID string `json:"requestId"`
-	Code      int    `json:"code"`
-	Msg       string `json:"msg"`
-	Data      string `json:"data"`
-}
-
-// FetchIdentity 实现 AuthSource：取身份并解出明文。
+// FetchIdentity 实现 AuthSource：用 go-admin-tgt 换票并读回身份。
 //
-// cred.BearerToken 必须是 `用户ID|随机串` 形式；cred.CookieHeader 需含 laravel_session。
+// 这是**唯一**的取身份路径。客户端在学校统一身份认证登录后交来的就是这张 cookie。
 func (s *YWTBSource) FetchIdentity(ctx context.Context, cred Credential) (RawIdentity, error) {
-	if strings.TrimSpace(cred.BearerToken) == "" {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 缺少 Bearer token")
+	tgt := cookieValue(cred, goAdminTgtCookie)
+	if strings.TrimSpace(tgt) == "" {
+		return RawIdentity{}, fmt.Errorf("schoolauth: 缺少 %s（需客户端在统一身份认证登录后交来）", goAdminTgtCookie)
 	}
 
-	body, err := s.postUserInfo(ctx, cred)
+	ti, err := s.exchanger.ExchangeForIdentity(ctx, cred)
 	if err != nil {
 		return RawIdentity{}, err
 	}
-
-	var env ywtbEnvelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 响应信封解析失败：%w", err)
+	if strings.TrimSpace(ti.StudentNo) == "" {
+		return RawIdentity{}, fmt.Errorf("schoolauth: 换票响应未返回学号，无法确定身份")
 	}
-	// 会话失效时上游可能返回 200 + 非 200 的业务码，必须按业务码判失败。
-	if env.Code != 200 {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 上游业务码 %d（%s）", env.Code, env.Msg)
-	}
-	if env.Data == "" {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 响应缺少 data")
-	}
-
-	plain, err := DecryptYWTB(env.RequestID, env.Data)
-	if err != nil {
-		return RawIdentity{}, err
-	}
-
-	var info ywtbUserInfo
-	if err := json.Unmarshal(plain, &info); err != nil {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 明文解析失败：%w", err)
-	}
-	if info.Number == "" {
-		return RawIdentity{}, fmt.Errorf("schoolauth: 明文缺少学号")
-	}
-
 	return RawIdentity{
-		StudentNo:    info.Number,
-		Name:         info.Name,
-		College:      info.Unit,
-		IDCardMasked: info.IDCard,
-		// IDCardFull 是完整号；由上层立即加密，本层不留存。
-		IDCardFull: info.IDCard,
+		StudentNo: ti.StudentNo,
+		Name:      ti.Name,
+		// 学院与身份证在换票响应里没有 —— 留空，由上层标画像不完整。
 	}, nil
-}
-
-// postUserInfo 发起 getUserInfo 请求并读回原始响应体。
-func (s *YWTBSource) postUserInfo(ctx context.Context, cred Credential) ([]byte, error) {
-	url := s.baseURL + "/api/m/v1/user/getUserInfo"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("{}")))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("accept", "*/*")
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(cred.BearerToken))
-	if c := cred.CookieHeader(); c != "" {
-		req.Header.Set("Cookie", c)
-	}
-
-	resp, err := s.doer.Do(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("schoolauth: ywtb 返回 %d", resp.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxYWTBBody+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxYWTBBody {
-		return nil, fmt.Errorf("schoolauth: 响应体超过上限")
-	}
-	return raw, nil
-}
-
-// DecryptYWTB 解密 ywtb 的 data 字段。
-//
-// key = MD5(requestId + ":sicau-cas") 的 digest 原始字节（32 字节 → AES-256）；
-// base64 解码后前 16 字节是 IV，其余是密文；AES-256-CBC + PKCS7。
-func DecryptYWTB(requestID, dataB64 string) ([]byte, error) {
-	if requestID == "" {
-		return nil, fmt.Errorf("schoolauth: 缺少 requestId，无法派生密钥")
-	}
-	raw, err := base64.StdEncoding.DecodeString(dataB64)
-	if err != nil {
-		return nil, fmt.Errorf("schoolauth: data 不是合法 base64：%w", err)
-	}
-	if len(raw) < aes.BlockSize*2 {
-		return nil, fmt.Errorf("schoolauth: 密文过短（%d 字节）", len(raw))
-	}
-
-	sum := md5.Sum([]byte(requestID + ywtbSalt))
-	block, err := aes.NewCipher(sum[:])
-	if err != nil {
-		return nil, err
-	}
-
-	iv := raw[:aes.BlockSize]
-	ct := raw[aes.BlockSize:]
-	if len(ct)%aes.BlockSize != 0 {
-		return nil, fmt.Errorf("schoolauth: 密文长度 %d 不是块大小倍数", len(ct))
-	}
-
-	out := make([]byte, len(ct))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(out, ct)
-	return stripPKCS7(out)
-}
-
-// stripPKCS7 去掉 PKCS7 填充；填充非法时原样返回（让上层解析失败而不是静默截断）。
-func stripPKCS7(b []byte) ([]byte, error) {
-	if len(b) == 0 {
-		return nil, fmt.Errorf("schoolauth: 明文为空")
-	}
-	n := int(b[len(b)-1])
-	if n <= 0 || n > aes.BlockSize || n > len(b) {
-		return nil, fmt.Errorf("schoolauth: 填充长度非法（%d）", n)
-	}
-	for i := len(b) - n; i < len(b); i++ {
-		if int(b[i]) != n {
-			return nil, fmt.Errorf("schoolauth: 填充字节不一致")
-		}
-	}
-	return b[:len(b)-n], nil
 }
