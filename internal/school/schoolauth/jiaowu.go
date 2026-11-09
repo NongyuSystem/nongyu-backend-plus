@@ -104,6 +104,25 @@ func NewJiaowuSource(o JiaowuOptions) (*JiaowuSource, error) {
 	}, nil
 }
 
+// FetchAcademicWithTicket 在**已经拿到 service ticket** 的情况下取学籍。
+//
+// 用于：调用方已通过别的方式换到票（例如已缓存的 tgt 换了一次），
+// 或需要复用同一张票做多件事时，避免重复换票。
+func (s *JiaowuSource) FetchAcademicWithTicket(ctx context.Context, st string) (Academic, error) {
+	if st == "" {
+		return Academic{}, fmt.Errorf("schoolauth: 需要 service ticket")
+	}
+	sessionCookies, err := s.establishSession(ctx, st)
+	if err != nil {
+		return Academic{}, err
+	}
+	body, err := s.fetchAcademicPage(ctx, sessionCookies)
+	if err != nil {
+		return Academic{}, err
+	}
+	return ParseAcademic(body)
+}
+
 // FetchAcademic 实现 AcademicSource。
 //
 // 凭据需要 go-admin-tgt（由客户端在 auth 域登录后交来）。
