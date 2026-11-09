@@ -1,6 +1,15 @@
 # Spec：身份域、学校认证与平台底座
 
 > 追踪票：[#18 Spec：身份域、学校认证与平台底座（从「逻辑绿」到「能跑」）](https://github.com/NongyuSystem/nongyu-backend-plus/issues/18)
+>
+> 实施票（直挂 #18）：
+> - [#22 实现真实 HTTPDoer 并接入装配层](https://github.com/NongyuSystem/nongyu-backend-plus/issues/22)（M1，硬前提）
+> - [#23 切换真实存储并让迁移可幂等执行](https://github.com/NongyuSystem/nongyu-backend-plus/issues/23)（M2 + M4，被 #22 阻塞）
+> - [#21 认证默认开启、HTTP 超时、退全部设备入口](https://github.com/NongyuSystem/nongyu-backend-plus/issues/21)（M3 + M7 + M9 + M11，被 #22 阻塞）
+> - [#20 tgt 续期改存整套 cookie](https://github.com/NongyuSystem/nongyu-backend-plus/issues/20)（M5，被 #22 阻塞）
+> - [#24 可观测性出口与 Elasticsearch 决策](https://github.com/NongyuSystem/nongyu-backend-plus/issues/24)（M6 + M8，被 #23 阻塞）
+>
+> 曾用容器票 #19（wayfinder 地图）已废弃关闭：需求已完全明确，不需要探索地图，实施票应直接挂在规格下。
 
 > 术语一律取自 [GLOSSARY.md](../../GLOSSARY.md)，服务端代请求边界引用 [ADR-0001](../adr/0001-服务端代请求边界由新后端重写.md)，数据边界引用 [ADR-0002](../adr/0002-身份仓数据边界.md)。本 Spec 不重述二者。
 >
