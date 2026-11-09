@@ -76,6 +76,51 @@ func (c Credential) CookieHeader() string {
 	return strings.Join(parts, "; ")
 }
 
+// FullCookieHeader 返回**整套** cookie 头，并确保包含 go-admin-tgt。
+//
+// 为什么需要它：实测换票必须带整套同域 cookie，只带 go-admin-tgt 会报「未登录」。
+// 因此换票/续期都应当用它，而不是自己拼一个只有 tgt 的头。
+func (c Credential) FullCookieHeader(tgt string) string {
+	base := strings.TrimSpace(c.CookieHeader())
+	if strings.TrimSpace(tgt) == "" {
+		return base
+	}
+	if cookieValue(c, goAdminTgtCookie) != "" {
+		// 已有 tgt（可能是新的），保持其它 cookie 不变，替换 tgt 值。
+		return replaceCookieValue(base, goAdminTgtCookie, tgt)
+	}
+	if base == "" {
+		return goAdminTgtCookie + "=" + tgt
+	}
+	return base + "; " + goAdminTgtCookie + "=" + tgt
+}
+
+// replaceCookieValue 在一个 Cookie 头里替换指定 cookie 的值；不存在则追加。
+func replaceCookieValue(header, name, value string) string {
+	parts := strings.Split(header, ";")
+	found := false
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) == 2 && strings.TrimSpace(kv[0]) == name {
+			parts[i] = " " + name + "=" + value
+			found = true
+			break
+		}
+	}
+	out := strings.TrimSpace(strings.Join(parts, ";"))
+	if !found {
+		if out == "" {
+			return name + "=" + value
+		}
+		return out + "; " + name + "=" + value
+	}
+	return out
+}
+
 // Empty 判断凭据是否为空。
 func (c Credential) Empty() bool {
 	return strings.TrimSpace(c.CookieHeader()) == "" && strings.TrimSpace(c.BearerToken) == ""

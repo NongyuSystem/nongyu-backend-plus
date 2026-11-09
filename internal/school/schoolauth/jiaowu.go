@@ -148,7 +148,12 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 	}
 
 	// 1) 换票：拿 service ticket（同时带回新 tgt）。
-	st, refreshedTGT, err := s.exchangeTicket(ctx, tgt)
+	//
+	// 注意：换票**必须带客户端交来的整套 cookie**，不能只带 go-admin-tgt。
+	// 实测：同一枚 tgt，只带它自己时换票返回 code=500「未登录」；
+	// 带上同域的 laravel_session 等配套 cookie 才返回 200。
+	// 整套 cookie（含 tgt 的最新值）：换票必须带全套，不能只带 tgt。
+	st, refreshedTGT, err := s.exchangeTicket(ctx, tgt, cred.FullCookieHeader(tgt))
 	if err != nil {
 		return RawAcademic{}, err
 	}
@@ -190,22 +195,32 @@ type TicketResult struct {
 //
 // 供 TGTManager 续期使用：只要拿到新 tgt 即可，不必每次都跑完整链路。
 func (s *JiaowuSource) exchangeTicketOnly(ctx context.Context, tgt string) (TicketResult, error) {
-	st, newTGT, err := s.exchangeTicket(ctx, tgt)
+	// 续期时手上只有 tgt 本身；真实环境仍需整套 cookie，
+	// 因此续期能力依赖调用方把 cookie 一并保管（见 TGTManager 的说明）。
+	st, newTGT, err := s.exchangeTicket(ctx, tgt, "")
 	if err != nil {
 		return TicketResult{}, err
 	}
 	return TicketResult{ST: st, TGT: newTGT}, nil
 }
 
-// exchangeTicket 用 go-admin-tgt 换一张教务的 service ticket。
-func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt string) (string, string, error) {
+// exchangeTicket 用客户端的会话 cookie 换一张教务的 service ticket。
+//
+// cookieHeader 必须是**整套**同域 cookie（至少含 go-admin-tgt 与 laravel_session）。
+// 只带 go-admin-tgt 会在真实环境返回 code=500「未登录」——实测确认。
+func (s *JiaowuSource) exchangeTicket(ctx context.Context, tgt, cookieHeader string) (string, string, error) {
 	u := s.authBase + "/api/v1/cas/login?appid=" + url.QueryEscape(JiaowuAppID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("accept", "*/*")
-	req.Header.Set("Cookie", goAdminTgtCookie+"="+tgt)
+	// 整套 cookie 原样透传；若调用方只给了 tgt（无其它 cookie），退化为只带 tgt。
+	if strings.TrimSpace(cookieHeader) != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	} else {
+		req.Header.Set("Cookie", goAdminTgtCookie+"="+tgt)
+	}
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
