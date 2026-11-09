@@ -131,22 +131,31 @@ func (v *TokenVerifier) parseSession(token string) (string, error) {
 	return claims.SessionID, nil
 }
 
-// publiclyAccessible 是**不需要已认证身份**的路径前缀。
+// publicPaths 是**不需要已认证身份**的路径（无尾斜杠形式）。
+//
+// 这是全仓**唯一**的公开路径来源：RevocableAuthMiddleware / AuthMiddleware
+// 都通过 IsPublicPath 判定，避免三处清单各自为政（评审 M5/N6）。
+// 注意不要在这里加尾斜杠——匹配规则是「精确相等 or 以 p+"/" 为前缀」，
+// 这样 "/identity/login" 既能命中自己，也能命中 "/identity/login/admin"。
 //
 // 登录端点必须在这里：它们的作用就是「取得一个身份」，若也要求先有身份，
 // 就成了永远进不去的鸡生蛋问题（实测过：全局中间件会把登录请求拦成 401）。
 // 登出不在名单里——登出需要先有会话才有意义。
-var publiclyAccessible = []string{
+var publicPaths = []string{
 	"/healthz",
-	"/status",             // 观测出口：运维/监控用，不要求已认证身份
-	"/identity/login/",    // 四种登录方式
-	"/identity/mailcode/", // 发送验证码
-	"/identity/register",  // 独立注册入口
+	"/status",            // 观测出口：运维/监控用，不要求已认证身份
+	"/identity/login",    // 四种登录方式（含 /identity/login/admin）
+	"/identity/mailcode", // 发送验证码
+	"/identity/register", // 独立注册入口
 }
 
-func isPublicPath(path string) bool {
-	for _, p := range publiclyAccessible {
-		if p == path || strings.HasPrefix(path, p) {
+// IsPublicPath 判断一个请求路径是否不需要已认证身份。
+//
+// 匹配规则：精确相等，或以 "<p>/" 为前缀。刻意不用裸 HasPrefix(path, p)，
+// 否则 "/identity/login" 会误命中 "/identity/loginx" 这类路径。
+func IsPublicPath(path string) bool {
+	for _, p := range publicPaths {
+		if path == p || strings.HasPrefix(path, p+"/") {
 			return true
 		}
 	}
@@ -155,7 +164,7 @@ func isPublicPath(path string) bool {
 func RevocableAuthMiddleware(verifier *TokenVerifier, resolver SessionResolver, _ Scope) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 公开端点（健康探针、登录、发验证码）不需要已认证身份。
-		if isPublicPath(c.Request.URL.Path) {
+		if IsPublicPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}

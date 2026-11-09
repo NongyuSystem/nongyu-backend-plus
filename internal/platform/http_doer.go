@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -163,7 +164,8 @@ func (d *RealHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Respons
 	// 读用 io.LimitReader 截断，但 Close 必须落到真实 body 上——不能用 io.NopCloser，
 	// 否则底层连接不会被归还，长跑下会泄漏连接。
 	resp.Body = &limitBody{
-		reader: io.LimitReader(resp.Body, d.maxBodyBytes),
+		reader: io.LimitReader(resp.Body, d.maxBodyBytes+1),
+		max:    d.maxBodyBytes,
 		closer: resp.Body,
 		cancel: cancel,
 	}
@@ -178,12 +180,23 @@ func (d *RealHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Respons
 // 却被提前 cancel 掉导致 `context canceled` 的坑（见 Do 上方长注释）。
 type limitBody struct {
 	reader io.Reader
+	max    int64
+	read   int64
 	closer io.Closer
 	cancel context.CancelFunc
 	once   sync.Once
 }
 
-func (b *limitBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+// Read 累计已读字节；一旦超过上限立即返回可识别错误，
+// 绝不把截断内容当完整响应静默交给调用方（评审 M4，口径同 schoolauth/http.go）。
+func (b *limitBody) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	b.read += int64(n)
+	if b.max > 0 && b.read > b.max {
+		return n, fmt.Errorf("platform: 响应体超过上限 %d 字节", b.max)
+	}
+	return n, err
+}
 
 func (b *limitBody) Close() error {
 	var err error

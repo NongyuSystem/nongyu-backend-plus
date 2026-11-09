@@ -218,6 +218,9 @@ type Result struct {
 	// MirrorError 非空表示登录成功但密码镜像没写进去（不阻断登录）。
 	// 由调用方决定是否记日志/告警——静默失败会让问题无从排查。
 	MirrorError error
+	// TGTStoreError 非空表示登录成功但学校会话凭据保管失败（不阻断登录）。
+	// 与 MirrorError 同理：不能静默吞掉，否则后续取学籍会莫名要求重交凭据。
+	TGTStoreError error
 }
 
 // LoginBySchool 走学校统一身份认证登录。
@@ -281,12 +284,14 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginSchool, u.StudentNo, nil)
 
 	// 保管学校会话凭据：现在才知道 userID，正好按用户存下来。
-	// 失败不阻断登录（只是后续取学籍时需要客户端重交凭据）。
+	// 失败不阻断登录，但**必须透传错误**（评审 M3）：静默吞掉会让后续取学籍
+	// 莫名要求重交凭据，且日志/审计里零痕迹。
+	var tgtStoreErr error
 	if s.tgtSaver != nil && cred.GoAdminTgt != "" {
-		_ = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt, cred.CookieHeader)
+		tgtStoreErr = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt, cred.CookieHeader)
 	}
 
-	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr}, nil
+	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr, TGTStoreError: tgtStoreErr}, nil
 }
 
 // LoginByPassword 走农屿账密登录。

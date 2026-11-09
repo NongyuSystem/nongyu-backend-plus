@@ -90,6 +90,13 @@ type Config struct {
 // Load 从环境变量装配 Config，并做最小校验。
 // 环境变量缺项时回落到默认值，不因缺配置而拒绝启动。
 func Load() (Config, error) {
+	// 骨架默认（APP_ENV 未显式设置、AUTH_KEY 为空）时允许起一个只有 /healthz 的服务，
+	// 兑现 config.go 顶部「无 .env 也能直接 go run」的契约（评审 M2）。
+	// 一旦显式声明 APP_ENV 或 prod/staging 强校验生效，就要求显式 ALLOW_INSECURE_DEV。
+	allowInsecureDefault := false
+	if os.Getenv("APP_ENV") == "" && os.Getenv("AUTH_KEY") == "" {
+		allowInsecureDefault = true
+	}
 	cfg := Config{
 		Addr:               envOr("ADDR", ":8080"),
 		AppEnv:             envOr("APP_ENV", "dev"),
@@ -101,7 +108,7 @@ func Load() (Config, error) {
 		HTTPEnforce:             envBoolOr("HTTP_ENFORCE", true),   // 生产默认启用出站闸口
 		AccelEnabled:            envBoolOr("ACCEL_ENABLED", false), // 门户免密未验证，默认关闭
 		AuthKey:                 envOr("AUTH_KEY", ""),             // 生产强校验要求非空
-		AllowInsecureDev:        envBoolOr("ALLOW_INSECURE_DEV", false),
+		AllowInsecureDev:        envBoolOr("ALLOW_INSECURE_DEV", allowInsecureDefault),
 		HTTPReadTimeoutSec:      envIntOr("HTTP_READ_TIMEOUT_SEC", 15),
 		HTTPWriteTimeoutSec:     envIntOr("HTTP_WRITE_TIMEOUT_SEC", 30),
 		HTTPIdleTimeoutSec:      envIntOr("HTTP_IDLE_TIMEOUT_SEC", 90),
@@ -160,6 +167,19 @@ func Load() (Config, error) {
 func isProduction(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {
 	case "prod", "production":
+		return true
+	}
+	return false
+}
+
+// IsProductionLike 判断是否为「必须开启认证」的真实部署环境。
+//
+// 覆盖 prod / production / staging：staging 是准生产，AUTH_KEY 为空时若放行，
+// 会静默以「所有业务端点无身份校验」启动（评审 M1）。
+// dev 与 test 不在其中：dev 有 AllowInsecureDev 显式开关兜底，test 是单测上下文。
+func IsProductionLike(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "prod", "production", "staging":
 		return true
 	}
 	return false

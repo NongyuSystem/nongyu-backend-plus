@@ -260,15 +260,14 @@ func TestRealHTTPDoerBodySizeLimit(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("读取受限响应体失败：%v", err)
+	// 超限必须**可识别地失败**（评审 M4）：静默截断成 16 字节会让
+	// jiaowu.Service.Fetch 以 200 + 审计 "ok" 返回不完整内容。
+	_, err = io.ReadAll(resp.Body)
+	if err == nil {
+		t.Fatal("响应体超过上限时读取必须返回可识别错误，不能静默当完整内容")
 	}
-	if int64(len(body)) != limit {
-		t.Fatalf("响应体应恰被截断到 %d 字节，实际 %d", limit, len(body))
-	}
-	if string(body) != strings.Repeat("A", int(limit)) {
-		t.Fatalf("截断内容不符，实际 %q", body)
+	if !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("错误应说明超限原因，实际 %v", err)
 	}
 }
 

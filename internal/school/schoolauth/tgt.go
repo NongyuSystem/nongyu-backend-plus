@@ -150,9 +150,14 @@ func (m *TGTManager) EnsureFresh(ctx context.Context, userID string, fallback Cr
 				return bundle.TGT, nil
 			}
 			// 临期：用本地整套 cookie 去换票续期（不需要客户端重交）。
-			if refreshed, rerr := m.refreshWith(ctx, userID, bundle); rerr == nil {
-				return refreshed, nil
+			// 续期失败**必须返回真实原因**（评审 M3）：本地明明有记录却落到
+			// fallback 会误报「没有可用的 tgt」，把学校站不可达 / cookie 失效
+			// / 业务码 500 等真实原因全部吞掉。
+			refreshed, rerr := m.refreshWith(ctx, userID, bundle)
+			if rerr != nil {
+				return "", fmt.Errorf("schoolauth: 续期失败：%w", rerr)
 			}
+			return refreshed, nil
 		} else if !platform.IsNotFound(err) {
 			return "", err
 		}
@@ -187,7 +192,8 @@ func (m *TGTManager) refreshWith(ctx context.Context, userID string, b TGTBundle
 			CookieHeader: replaceCookieValue(b.CookieHeader, goAdminTgtCookie, res.TGT),
 		}
 		if err := m.Save(ctx, userID, next); err != nil {
-			_ = err // 保存失败不阻断本次使用
+			// 保存失败不静默吞掉：返回可识别的错误，让调用方/日志看到（评审 M3）。
+			return "", fmt.Errorf("schoolauth: 续期后回写保管失败：%w", err)
 		}
 	}
 	if res.TGT == "" {

@@ -45,6 +45,9 @@ type SignedIn struct {
 	ProfileIncomplete bool
 	// MirrorError 非空表示登录成功但密码镜像未写入（不阻断登录）。
 	MirrorError error
+	// TGTStoreError 非空表示登录成功但学校会话凭据保管失败（不阻断登录）。
+	// 由调用方决定是否记日志/告警，不静默吞掉（评审 M3）。
+	TGTStoreError error
 }
 
 // Params 是一次登录的全部输入。
@@ -108,6 +111,7 @@ func (s *Service) Login(ctx context.Context, p Params) (SignedIn, error) {
 		ExpiresAt:         issued.ExpiresAt,
 		ProfileIncomplete: res.ProfileIncomplete,
 		MirrorError:       res.MirrorError,
+		TGTStoreError:     res.TGTStoreError,
 	}, nil
 }
 

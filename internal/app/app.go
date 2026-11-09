@@ -74,14 +74,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 生产环境 AUTH_KEY 为空由 config.Load() 强校验拦住（不在此重写）。
 	// 此处补 dev 侧的显式开关：真实 dev/prod 装配（AppEnv 非空）时，AUTH_KEY 为空
 	// 且未显式开启 AllowInsecureDev → 拒绝装配，避免「所有业务端点无身份校验」悄悄发生。
-	// AppEnv 为 dev/prod 时才是真实装配；test 或空串表示调用方直接构造 Config{}（单测注入），
-	// 跳过此校验以保持既有测试可用。
-	env := strings.ToLower(strings.TrimSpace(cfg.AppEnv))
-	isRealEnv := env == "dev" || env == "prod" || env == "production"
-	if isRealEnv && strings.TrimSpace(cfg.AuthKey) == "" && !cfg.AllowInsecureDev {
-		return nil, fmt.Errorf("app: AUTH_KEY 为空且未开启 ALLOW_INSECURE_DEV：认证中间件不会挂载，所有业务端点将无身份校验；生产必须配置 AUTH_KEY，dev 需显式开启 ALLOW_INSECURE_DEV")
+	// 判据抽到 config.IsProductionLike（单一来源）：prod / production / staging 都必须
+	// 挂认证；dev 由 AllowInsecureDev 显式开关兜底；test/空串是单测注入，跳过。
+	// 修评审 M1：之前 isRealEnv 漏了 staging，导致准生产可静默以「全端点无鉴权」启动。
+	if config.IsProductionLike(cfg.AppEnv) && strings.TrimSpace(cfg.AuthKey) == "" && !cfg.AllowInsecureDev {
+		return nil, fmt.Errorf("app: AUTH_KEY 为空且未开启 ALLOW_INSECURE_DEV：认证中间件不会挂载，所有业务端点将无身份校验；生产/预发布必须配置 AUTH_KEY，dev 需显式开启 ALLOW_INSECURE_DEV")
 	}
-	if isRealEnv && strings.TrimSpace(cfg.AuthKey) == "" && cfg.AllowInsecureDev {
+	if config.IsProductionLike(cfg.AppEnv) && strings.TrimSpace(cfg.AuthKey) == "" && cfg.AllowInsecureDev {
 		logger.Warn("ALLOW_INSECURE_DEV 已开启：AUTH_KEY 为空，认证中间件未挂载，所有业务端点无身份校验；仅限本地开发")
 	}
 	// 迁移（issue #23 / Spec M4）：配了 DATABASE_URL 时，启动即把 migrations/*.sql
