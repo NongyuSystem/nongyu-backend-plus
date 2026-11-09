@@ -149,15 +149,24 @@ func (l *RateLimiter) Allow(userID string) bool {
 	return true
 }
 
-// RateLimitMiddleware 按已认证身份限流；必须挂在 AuthMiddleware 之后。
+// RateLimitMiddleware 限流：已认证按身份计数，未认证按客户端 IP 计数。
+//
+// 必须挂在鉴权中间件之后。早期实现在 userID 为空时直接返回 429——
+// 那会把**登录请求本身**也挡掉（登录时当然还没有身份），等于谁也进不来。
+// 现在未认证请求按 IP 单独计数，既能防登录爆破，又不至于把人挡在门外。
 func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.URL.Path == "/healthz" {
+			// 健康探针不计入限流，避免探活把配额打满。
 			c.Next()
 			return
 		}
-		userID := c.GetString(CtxUserID)
-		if userID == "" || !limiter.Allow(userID) {
+		key := c.GetString(CtxUserID)
+		if key == "" {
+			// 未认证：按 IP 计数，并加前缀与已认证身份区分开。
+			key = "ip:" + c.ClientIP()
+		}
+		if !limiter.Allow(key) {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"code": "rate_limited"})
 			return
 		}

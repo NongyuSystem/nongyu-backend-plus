@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/config"
+	identitylogin "nongyu-backend-plus/internal/identity/login"
+	identitysession "nongyu-backend-plus/internal/identity/session"
+	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
@@ -50,7 +53,10 @@ type App struct {
 	closeStore  func() error
 	cache       *platform.RedisCache
 	pgAudit     *platform.PGAuditStore
-	logger      *slog.Logger
+	// 身份域资源（未配置 DATABASE_URL 时为 nil）
+	identityStore *platform.PGIdentityStore
+	sessionCache  *platform.RedisSessionCache
+	logger        *slog.Logger
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -148,13 +154,82 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("审计持久层未启用：审计只写 stdout", "hint", "配置 DATABASE_URL 以落库到 Postgres")
 	}
 
+	// 身份域持久层：与审计共用同一个 Postgres（库 nongyu），但连接池独立。
+	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
+	var identityStore *platform.PGIdentityStore
+	var sessionCache *platform.RedisSessionCache
+	var identityUserSvc *identityuser.Service
+	var identitySessionSvc *identitysession.Service
+	var identityLoginSvc *identitylogin.Service
+	if cfg.DatabaseURL != "" {
+		st, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: cfg.DatabaseURL})
+		if err != nil {
+			return nil, fmt.Errorf("身份域存储初始化失败：%w", err)
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err = st.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("身份域存储（Postgres）不可达：%w", err)
+		}
+		identityStore = st
+
+		identityUserSvc = identityuser.New(st, st)
+		identitySessionSvc = identitysession.New(st, st, clock)
+
+		// 会话 Redis 副本：可用则加速鉴权读，不可用不影响正确性（回落 PG）。
+		if cfg.RedisAddr != "" {
+			if rc, err := platform.NewRedisSessionCache(platform.RedisOptions{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+				Prefix:   cfg.RedisPrefix,
+			}); err == nil {
+				pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := rc.Ping(pingCtx); err == nil {
+					sessionCache = rc
+					identitySessionSvc.WithCache(rc)
+				} else {
+					logger.Warn("会话 Redis 副本不可用，鉴权将直读 Postgres", "err", err)
+					_ = rc.Close()
+				}
+				cancel()
+			}
+		}
+
+		// 登录子域：密码镜像与身份证必须用两把**独立**密钥（ADR-0002 第 2 条）。
+		if cfg.TicketKey != "" {
+			identityLoginSvc = identitylogin.New(identitylogin.Options{
+				Users:       st,
+				Profiles:    st,
+				Methods:     st,
+				Clock:       clock,
+				UserService: identityUserSvc,
+				PasswordBox: platform.NewMockCipher(cfg.TicketKey + ":password"),
+				IDCardBox:   platform.NewMockCipher(cfg.TicketKey + ":idcard"),
+			})
+		}
+	} else {
+		logger.Warn("身份域未启用：未配置 DATABASE_URL，用户与会话能力不可用")
+	}
+
 	// 认证与限流：AuthKey 非空时挂到所有业务路由之前（gin 的 Use 必须先于路由注册）。
-	// 身份只从已验签的 Bearer token 写入 context，业务域不再信任请求体/query 的 userID。
-	// 空 AuthKey 仅供本地开发/单测；prod 由 config.Load 强校验要求非空。
+	//
+	// 身份域可用时用**可吊销**中间件：令牌只带会话标识，验签后还要查会话，
+	// 因此能踢人（单设备顶替、登出、账号禁用即时生效）。
+	// 身份域不可用时退化为旧的自包含令牌中间件，并在日志里显式告警——
+	// 那种模式下吊销不生效，只适合本地开发。
 	if cfg.AuthKey != "" {
 		verifier := server.NewTokenVerifier(cfg.AuthKey, clock)
 		limiter := server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
-		engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(limiter))
+		if identityStore != nil {
+			resolver := server.NewSessionStoreResolver(identityStore, identityStore, clock)
+			engine.Use(server.RevocableAuthMiddleware(verifier, resolver, server.ScopeApp),
+				server.RateLimitMiddleware(limiter))
+		} else {
+			logger.Warn("使用不可吊销的自包含令牌鉴权：登出与踢人不会生效，仅限本地开发")
+			engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(limiter))
+		}
 	}
 
 	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
@@ -166,6 +241,21 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowuSvc.BindAuditStore(auditStore)
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
+
+	// 身份域路由：登录 / 用户画像 / 登出。
+	// 登录与登出端点本身由鉴权中间件放行（登出需要有效会话才有意义），
+	// 画像端点必须已认证——身份全部来自 context，不读请求体里的 userID。
+	if identityStore != nil {
+		if identityLoginSvc != nil {
+			identitylogin.Register(engine, identityLoginSvc)
+		}
+		if identityUserSvc != nil {
+			identityuser.Register(engine, identityUserSvc, server.CurrentUserID, identityStore)
+		}
+		if identitySessionSvc != nil {
+			identitysession.Register(engine, identitySessionSvc, server.CurrentSessionID)
+		}
+	}
 
 	// 定时续期循环：调度器只挑候选/错峰，真正执行换票交给 Service.RenewFor（经出站闸口）。
 	// ctx 由 App 持有，Shutdown 时 cancel + Stop，保证优雅关停、不留悬挂 goroutine。
@@ -207,13 +297,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Clock:   clock,
 			Cache:   cache,
 		},
-		cancelRenew: cancelRenew,
-		renewDone:   renewDone,
-		flushDone:   flushDone,
-		closeStore:  closeTickets,
-		cache:       cache,
-		pgAudit:     pgAudit,
-		logger:      logger,
+		cancelRenew:   cancelRenew,
+		renewDone:     renewDone,
+		flushDone:     flushDone,
+		closeStore:    closeTickets,
+		cache:         cache,
+		pgAudit:       pgAudit,
+		identityStore: identityStore,
+		sessionCache:  sessionCache,
+		logger:        logger,
 	}
 	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv, "store", "mock", "capabilities", 6,
 		"outboundEnforce", cfg.HTTPEnforce, "accelEnabled", cfg.AccelEnabled,
@@ -350,6 +442,13 @@ func (a *App) stopRenew() {
 				a.logger.Warn("本次运行有审计记录被丢弃（审计是旁路，不影响业务）", "dropped", dropped)
 			}
 			_ = a.pgAudit.Close()
+		}
+		// 身份域资源：先关会话缓存，再关存储（顺序避免关闭后仍有读）。
+		if a.sessionCache != nil {
+			_ = a.sessionCache.Close()
+		}
+		if a.identityStore != nil {
+			_ = a.identityStore.Close()
 		}
 	})
 }

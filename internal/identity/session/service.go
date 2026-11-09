@@ -33,6 +33,8 @@ type Service struct {
 	clock    platform.Clock
 	appTTL   time.Duration
 	adminTTL time.Duration
+	// cache 是会话的 Redis 副本，可为 nil（则每次直接读权威库）。
+	cache *platform.RedisSessionCache
 }
 
 // New 构造会话子域服务。
@@ -44,6 +46,12 @@ func New(sessions platform.SessionStore, users platform.UserRepo, clock platform
 		appTTL:   DefaultAppTTL,
 		adminTTL: DefaultAdminTTL,
 	}
+}
+
+// WithCache 注入会话的 Redis 副本。未注入时行为不变，只是每次鉴权多读一次权威库。
+func (s *Service) WithCache(cache *platform.RedisSessionCache) *Service {
+	s.cache = cache
+	return s
 }
 
 // Issued 是一次签发的产物。
@@ -93,6 +101,10 @@ func (s *Service) Issue(ctx context.Context, userID int64, scope platform.Sessio
 	if err := s.sessions.CreateSession(ctx, sess); err != nil {
 		return Issued{}, identity.WrapError(identity.CodeInternal, "写入会话失败", err)
 	}
+	// 写入 Redis 副本（失败不影响签发：权威库已落盘，下次鉴权回落读 PG 即可）。
+	if s.cache != nil {
+		_ = s.cache.PutSession(ctx, sess)
+	}
 	return Issued{SessionID: id, ExpiresAt: expires}, nil
 }
 
@@ -110,7 +122,7 @@ type Principal struct {
 // 四项校验（缺一不可）：未过期、未吊销、scope 匹配、App 侧 device 匹配。
 // 任何一项不满足都返回 CodeSessionExpired，不区分具体原因（避免给攻击者做区分探测）。
 func (s *Service) Authenticate(ctx context.Context, sessionID string, scope platform.SessionScope, deviceID string) (Principal, error) {
-	sess, err := s.sessions.SessionByID(ctx, sessionID)
+	sess, err := s.lookupSession(ctx, sessionID)
 	if platform.IsNotFound(err) {
 		return Principal{}, identity.NewError(identity.CodeSessionExpired, "会话不存在")
 	}
@@ -149,10 +161,37 @@ func (s *Service) Authenticate(ctx context.Context, sessionID string, scope plat
 	}, nil
 }
 
+// lookupSession 读会话：Redis 副本优先，未命中回落到权威库并回填缓存。
+//
+// 安全性：缓存只加速，不参与授权判定——拿到的记录仍要过 Active()、
+// scope、device、用户状态这几道检查。缓存里若已有吊销标记，也能正确判定为失效。
+func (s *Service) lookupSession(ctx context.Context, sessionID string) (platform.Session, error) {
+	if s.cache != nil {
+		if cached, err := s.cache.CachedSession(ctx, sessionID); err == nil && cached != nil {
+			return *cached, nil
+		}
+		// 缓存未命中或缓存故障：一律回落权威库，绝不因缓存问题放行或拒绝。
+	}
+	sess, err := s.sessions.SessionByID(ctx, sessionID)
+	if err != nil {
+		return platform.Session{}, err
+	}
+	if s.cache != nil {
+		_ = s.cache.PutSession(ctx, sess)
+	}
+	return sess, nil
+}
+
 // Revoke 吊销一条会话（登出）。
+//
+// 顺序：先写权威库（Postgres），再打 Redis 吊销标记。
+// 缓存失败不影响吊销结果——权威库已经是吊销态，最坏情况是该请求多读一次 PG。
 func (s *Service) Revoke(ctx context.Context, sessionID string) error {
 	if err := s.sessions.Revoke(ctx, sessionID); err != nil {
 		return identity.WrapError(identity.CodeInternal, "吊销会话失败", err)
+	}
+	if s.cache != nil {
+		_ = s.cache.MarkRevoked(ctx, sessionID, s.clock.Now())
 	}
 	return nil
 }
