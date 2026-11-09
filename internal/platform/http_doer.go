@@ -214,7 +214,11 @@ func (b *limitBody) Close() error {
 // 因此：
 //   - 本实现**不剥离** resp.Header 的 Set-Cookie，也不做任何额外透传；Set-Cookie 原样
 //     留在返回给内部业务域的 *http.Response 上，由业务域决定如何使用；
-//   - 外部 API 边界的「不回显」由 handler 层负责（它本就有兜底），与本组件正交；
+//   - 外部 API 边界的「不回显 Set-Cookie」由 handler 层负责（它本就有兜底），与本组件正交；
+//   - ADR-0001 第 5 条的「3xx 指向真站立即失败」也是调用方职责：本 Doer 必须把 3xx
+//     原样交回（三跳建会话要读中间跳的 Location/Set-Cookie），由 jiaowu.Service.Fetch
+//     把它转成 CodeBlockedRedirect / CodeSessionExpired。骨架期由 Mock 在 Doer 层代做，
+//     换真实 Doer 后该责任上移，勿再依赖本组件拦截 3xx。
 //   - 这与 MockHTTPDoer(Enforce=true) 的 resp.Header.Del("Set-Cookie") 是**有意不同**，
 //     不是遗漏。Mock 是内存模拟，没有下游业务域需要收 cookie；真实实现必须保留。
 // ---------------------------------------------------------------------------
