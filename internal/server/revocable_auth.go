@@ -138,6 +138,7 @@ func (v *TokenVerifier) parseSession(token string) (string, error) {
 // 登出不在名单里——登出需要先有会话才有意义。
 var publiclyAccessible = []string{
 	"/healthz",
+	"/status",             // 观测出口：运维/监控用，不要求已认证身份
 	"/identity/login/",    // 四种登录方式
 	"/identity/mailcode/", // 发送验证码
 	"/identity/register",  // 独立注册入口

@@ -426,6 +426,34 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	)
 	presence.Register(engine, presenceSvc)
 
+	// #24 / Spec M6：观测出口 /status。与 /healthz 分开——后者只报进程存活、不探下游。
+	// 探针用真实依赖的 Ping，Redis 掉线后本端点会如实报 down。
+	var pgPing, redisPing func(context.Context) error
+	if pgAudit != nil {
+		pgPing = pgAudit.Ping
+	} else if identityStore != nil {
+		pgPing = identityStore.Ping
+	}
+	if cache != nil {
+		redisPing = cache.Ping
+	} else if rt, ok := tickets.(*platform.RedisTicketStore); ok {
+		redisPing = rt.Ping
+	}
+	breakerName := "none"
+	if cache != nil {
+		breakerName = fmt.Sprint(cache.BreakerState())
+	}
+	storageKind := "memory"
+	if cfg.DatabaseURL != "" {
+		storageKind = "postgres"
+	}
+	RegisterStatus(engine, newStatusProbe(pgPing, redisPing, func() string {
+		if cache != nil {
+			return fmt.Sprint(cache.BreakerState())
+		}
+		return breakerName
+	}, storageKind))
+
 	a := &App{
 		cfg:    cfg,
 		engine: engine,
