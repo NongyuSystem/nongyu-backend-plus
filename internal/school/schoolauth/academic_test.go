@@ -65,13 +65,23 @@ func TestParseAcademic_RealStructure(t *testing.T) {
 	if got.Name != "姚一飞" {
 		t.Fatalf("姓名不符：%q", got.Name)
 	}
-	// 隐私：解析层**不产出**身份证/个人电话/家庭电话/家庭住址。
-	// 用反射断言结构体里没有这些字段——比运行时判空更强，
-	// 任何人后来加了这些字段，测试立刻失败。
+	// 隐私口径已于 2026-11-10 由维护者**显式覆盖**：
+	// 原断言「解析层不产出个人电话/家庭电话/家庭住址」作废，
+	// 这些字段现在要求落库（见 issue #29 的字段清单）。
+	//
+	// 仍然禁止的是**身份证**——但原因不是隐私，而是教务档案页根本没有这个字段；
+	// 身份证的唯一来源是 ywtb 的 getUserInfo（见 sso.go 的 FetchYWTBIdentity）。
+	// 若有一天有人在 Academic 里加了 IDCard，说明来源搞混了，应当拦下。
 	typ := reflect.TypeOf(got)
-	for _, forbidden := range []string{"IDCard", "Phone", "HomePhone", "HomeAddress", "IdCard"} {
+	for _, forbidden := range []string{"IDCard", "IdCard"} {
 		if _, ok := typ.FieldByName(forbidden); ok {
-			t.Fatalf("Academic 不应有字段 %s（隐私口径：这些不落库）", forbidden)
+			t.Fatalf("Academic 不应有字段 %s：身份证只能来自 ywtb，不在教务档案页", forbidden)
+		}
+	}
+	// 反向确认：这三个字段**应当存在**（维护者要求落库）。
+	for _, required := range []string{"PersonalPhone", "HomePhone", "HomeAddress"} {
+		if _, ok := typ.FieldByName(required); !ok {
+			t.Fatalf("Academic 应有字段 %s（维护者要求落库）", required)
 		}
 	}
 }
