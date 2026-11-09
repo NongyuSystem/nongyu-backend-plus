@@ -36,3 +36,6 @@ docs/agents/
 
 # APK 逆向工作区（不属于本服务，避免误提交）
 /work/
+
+# implement-spec 的临时 worktree（不入库）
+/.wt/
