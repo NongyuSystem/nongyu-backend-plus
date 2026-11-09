@@ -18,10 +18,12 @@ import (
 // DomainIdentity 是身份域能接受的身份形状。
 // 由装配层把 schoolauth.Identity 映射成 identity/login.SchoolIdentity。
 type DomainIdentity struct {
-	StudentNo         string
-	Name              string
-	College           string
-	IDCardSuffix4     string
+	StudentNo     string
+	Name          string
+	College       string
+	IDCardSuffix4 string
+	// IDCardFull 是完整号（空表示只有掩码）。由装配层加密后写入画像。
+	IDCardFull        string
 	Major             string
 	ClassName         string
 	Grade             string
@@ -35,6 +37,7 @@ func (i Identity) AsDomain() DomainIdentity {
 		Name:              i.Name,
 		College:           i.College,
 		IDCardSuffix4:     i.IDCardSuffix4,
+		IDCardFull:        i.IDCardFull,
 		Major:             i.Major,
 		ClassName:         i.ClassName,
 		Grade:             i.Grade,
@@ -86,8 +89,8 @@ func NewHTTPSource(o HTTPSourceOptions) (*httpSource, error) {
 }
 
 // FetchIdentity 实现 AuthSource。
-func (s *httpSource) FetchIdentity(ctx context.Context, cookieHeader string) (RawIdentity, error) {
-	req, err := newCookieRequest(ctx, s.identityURL, cookieHeader)
+func (s *httpSource) FetchIdentity(ctx context.Context, cred Credential) (RawIdentity, error) {
+	req, err := newCookieRequest(ctx, s.identityURL, cred.CookieHeader())
 	if err != nil {
 		return RawIdentity{}, err
 	}
@@ -99,11 +102,11 @@ func (s *httpSource) FetchIdentity(ctx context.Context, cookieHeader string) (Ra
 }
 
 // FetchAcademic 实现 AcademicSource。
-func (s *httpSource) FetchAcademic(ctx context.Context, cookieHeader string) (RawAcademic, error) {
+func (s *httpSource) FetchAcademic(ctx context.Context, cred Credential) (RawAcademic, error) {
 	if s.academicURL == "" || s.parseAcademic == nil {
 		return RawAcademic{}, fmt.Errorf("schoolauth: 教务源未配置")
 	}
-	req, err := newCookieRequest(ctx, s.academicURL, cookieHeader)
+	req, err := newCookieRequest(ctx, s.academicURL, cred.CookieHeader())
 	if err != nil {
 		return RawAcademic{}, err
 	}

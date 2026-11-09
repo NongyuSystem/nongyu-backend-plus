@@ -22,6 +22,7 @@ import (
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
+	"nongyu-backend-plus/internal/school/schoolauth"
 	"nongyu-backend-plus/internal/server"
 
 	"github.com/gin-gonic/gin"
@@ -162,6 +163,20 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		tokenIssuer = server.NewTokenVerifier(cfg.AuthKey, clock)
 	}
 
+	// 学校认证适配器：把「客户端交上来的 ywtb 凭据」换成学校身份。
+	// 认证走 ywtb getUserInfo（Bearer + laravel_session cookie），
+	// 教务那一路（专业/班级/年级）暂未接，失败只标记画像不完整，不阻断登录。
+	var schoolAuthAdapter identitylogin.SchoolAuthenticator
+	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{Doer: doer}); err == nil {
+		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
+			schoolAuthAdapter = schoolauthBridge{a: a}
+		} else {
+			logger.Warn("学校认证适配器构造失败，学校认证登录将不可用", "err", err)
+		}
+	} else {
+		logger.Warn("ywtb 取数源构造失败，学校认证登录将不可用", "err", err)
+	}
+
 	// 身份域持久层：与审计共用同一个 Postgres（库 nongyu），但连接池独立。
 	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
 	var identityStore *platform.PGIdentityStore
@@ -243,7 +258,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			}
 		}
 
-		// 登录子域：密码镜像用独立密钥（ADR-0002 修订后不再需要身份证密钥）。
+		// 登录子域：密码镜像与身份证必须用**两把独立密钥**（ADR-0002 第 2 条二修）。
 		if cfg.TicketKey != "" {
 			identityLoginSvc = identitylogin.New(identitylogin.Options{
 				Users:       st,
@@ -254,6 +269,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Clock:       clock,
 				UserService: identityUserSvc,
 				PasswordBox: platform.NewMockCipher(cfg.TicketKey + ":password"),
+				IDCardBox:   platform.NewMockCipher(cfg.TicketKey + ":idcard"),
+				// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
+				School: schoolAuthAdapter,
 			})
 		}
 	} else {

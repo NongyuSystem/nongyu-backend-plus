@@ -47,6 +47,9 @@ type SchoolCredential struct {
 	CookieHeader string
 	// Cookies 是结构化的一组 cookie；与 CookieHeader 二者给其一即可。
 	Cookies []SchoolCookie
+	// BearerToken 是 ywtb 访问令牌（形如 `用户ID|随机串`）。
+	// 实测：只带 cookie 在真实环境 401，必须同时带它。
+	BearerToken string
 
 	// ── 形态二：直接凭据 ──
 	StudentNo  string
@@ -99,8 +102,11 @@ type SchoolIdentity struct {
 	Name      string
 	// College 取自认证结果的「所属单位」；没有时才回落教务抓取值。
 	College string
-	// IDCardSuffix4 是从掩码证件号（如 650****2614）取出的后四位。
+	// IDCardSuffix4 是从证件号取出的后四位（掩码或完整号均可）。
 	IDCardSuffix4 string
+	// IDCardFull 是完整身份证号（ywtb API 会返回）。
+	// 由本层立即加密后写入画像，明文不留存、不进日志。
+	IDCardFull string
 
 	// 以下三项只有教务源提供，抓取失败时为空。
 	Major     string
@@ -130,6 +136,7 @@ type Service struct {
 	school      SchoolAuthenticator
 	mailCodes   *platform.RedisMailCodeStore
 	passwordBox Secrets // 密码镜像密钥
+	idcardBox   Secrets // 身份证密钥（与密码密钥独立）
 	clock       platform.Clock
 	userSvc     *identityuser.Service
 	mailer      platform.Mailer
@@ -143,8 +150,10 @@ type Options struct {
 	Methods   platform.LoginMethodRepo
 	School    SchoolAuthenticator
 	MailCodes *platform.RedisMailCodeStore
-	// PasswordBox 是密码镜像的加密能力（ADR-0002 修订后不再需要身份证密钥）。
+	// PasswordBox 与 IDCardBox 必须是**两把不同密钥**（ADR-0002 第 2 条二修）。
 	PasswordBox Secrets
+	// IDCardBox 是身份证的加密能力；必须与 PasswordBox 用不同密钥。
+	IDCardBox   Secrets
 	Clock       platform.Clock
 	UserService *identityuser.Service
 	// Mailer 投递邮箱验证码；SMTP 实现在配置齐全后注入。
@@ -166,6 +175,7 @@ func New(o Options) *Service {
 		school:      o.School,
 		mailCodes:   o.MailCodes,
 		passwordBox: o.PasswordBox,
+		idcardBox:   o.IDCardBox,
 		clock:       o.Clock,
 		userSvc:     o.UserService,
 		mailer:      o.Mailer,
@@ -212,14 +222,23 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 		return Result{}, identity.NewError(identity.CodeUserDisabled, "账号已被禁用")
 	}
 
-	// 身份证号：系统只能拿到掩码（650****2614）里的后四位，完整号拿不到。
-	// 因此不存完整号、不需要加密（ADR-0002 修订后的决定）。
+	// 身份证号：ywtb API 返回**完整号**（页面显示才是掩码）。
+	// 按 ADR-0002 二修：加密存储完整号 + 仍存后四位供离线校验；
+	// 明文只在内存里存在这一次，用完即弃。
+	var sealedID []byte
+	if ident.IDCardFull != "" && s.idcardBox != nil {
+		sealedID, err = s.idcardBox.Seal([]byte(ident.IDCardFull))
+		if err != nil {
+			return Result{}, identity.WrapError(identity.CodeInternal, "加密身份证失败", err)
+		}
+	}
 	prof, err := s.userSvc.SyncSchoolProfile(ctx, u.ID, identityuser.SchoolProfile{
 		Name:          ident.Name,
 		College:       ident.College,
 		Major:         ident.Major,
 		ClassName:     ident.ClassName,
 		Grade:         ident.Grade,
+		IDCardSealed:  sealedID,
 		IDCardSuffix4: ident.IDCardSuffix4,
 	})
 	if err != nil {

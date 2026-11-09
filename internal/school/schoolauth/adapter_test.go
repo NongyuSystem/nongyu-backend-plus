@@ -21,9 +21,9 @@ type fakeAuth struct {
 	calls     atomic.Int32
 }
 
-func (f *fakeAuth) FetchIdentity(_ context.Context, cookieHeader string) (schoolauth.RawIdentity, error) {
+func (f *fakeAuth) FetchIdentity(_ context.Context, cred schoolauth.Credential) (schoolauth.RawIdentity, error) {
 	f.calls.Add(1)
-	f.gotCookie = cookieHeader
+	f.gotCookie = cred.CookieHeader()
 	if f.err != nil {
 		return schoolauth.RawIdentity{}, f.err
 	}
@@ -36,7 +36,7 @@ type fakeAcademic struct {
 	delay time.Duration
 }
 
-func (f *fakeAcademic) FetchAcademic(ctx context.Context, _ string) (schoolauth.RawAcademic, error) {
+func (f *fakeAcademic) FetchAcademic(ctx context.Context, _ schoolauth.Credential) (schoolauth.RawAcademic, error) {
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):

@@ -46,7 +46,7 @@ func TestHTTPSource_SendsCookieAndParses(t *testing.T) {
 		t.Fatalf("NewHTTPSource: %v", err)
 	}
 
-	raw, err := src.FetchIdentity(context.Background(), "go-admin-tgt=T1; JSESSIONID=S1")
+	raw, err := src.FetchIdentity(context.Background(), schoolauth.Credential{RawCookie: "go-admin-tgt=T1; JSESSIONID=S1"})
 	if err != nil {
 		t.Fatalf("FetchIdentity: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestHTTPSource_Non200IsError(t *testing.T) {
 			return schoolauth.RawIdentity{StudentNo: "1"}, nil
 		},
 	})
-	if _, err := src.FetchIdentity(context.Background(), "a=1"); err == nil {
+	if _, err := src.FetchIdentity(context.Background(), schoolauth.Credential{RawCookie: "a=1"}); err == nil {
 		t.Fatal("非 200 应报错")
 	}
 }
@@ -85,7 +85,7 @@ func TestHTTPSource_200WithLoginPageIsFailure(t *testing.T) {
 			return schoolauth.RawIdentity{StudentNo: "1"}, nil
 		},
 	})
-	raw, err := src.FetchIdentity(context.Background(), "a=1")
+	raw, err := src.FetchIdentity(context.Background(), schoolauth.Credential{RawCookie: "a=1"})
 	if err == nil {
 		t.Fatalf("200 但是登录页时必须判失败，实际返回 %+v", raw)
 	}
@@ -113,7 +113,7 @@ func TestHTTPSource_DoerErrorPropagates(t *testing.T) {
 			return schoolauth.RawIdentity{StudentNo: "1"}, nil
 		},
 	})
-	if _, err := src.FetchIdentity(context.Background(), "a=1"); err == nil {
+	if _, err := src.FetchIdentity(context.Background(), schoolauth.Credential{RawCookie: "a=1"}); err == nil {
 		t.Fatal("出站错误应向上抛")
 	}
 }
@@ -126,7 +126,7 @@ func TestHTTPSource_AcademicUnconfigured(t *testing.T) {
 			return schoolauth.RawIdentity{StudentNo: "1"}, nil
 		},
 	})
-	if _, err := src.FetchAcademic(context.Background(), "a=1"); err == nil {
+	if _, err := src.FetchAcademic(context.Background(), schoolauth.Credential{RawCookie: "a=1"}); err == nil {
 		t.Fatal("教务源未配置时应报错（由适配器转成「画像不完整」）")
 	}
 }

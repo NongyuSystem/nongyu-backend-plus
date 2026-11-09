@@ -42,10 +42,13 @@ type SessionCookie struct {
 // 客户端先用自己那套方式完成学校登录（账密/微信/短信，都在客户端侧），
 // 然后把拿到的 cookie 交上来；本适配器用它去取身份，**不接触学生密码**。
 type Credential struct {
-	// Cookies 是整套会话 cookie。
+	// Cookies 是整套会话 cookie（实测需 laravel_session）。
 	Cookies []SessionCookie
 	// RawCookie 是原始 Cookie 头（如 "a=1; b=2"）。给了 Cookies 时可省略。
 	RawCookie string
+	// BearerToken 是 ywtb 的访问令牌，形如 `<用户ID>|<随机串>`。
+	// **不是** XSRF-TOKEN，也不是纯 cookie——实测只带 cookie 会 401。
+	BearerToken string
 }
 
 // String 实现 fmt.Stringer，**故意不输出 cookie 值**，防止被日志打印出去。
@@ -71,7 +74,7 @@ func (c Credential) CookieHeader() string {
 
 // Empty 判断凭据是否为空。
 func (c Credential) Empty() bool {
-	return strings.TrimSpace(c.CookieHeader()) == ""
+	return strings.TrimSpace(c.CookieHeader()) == "" && strings.TrimSpace(c.BearerToken) == ""
 }
 
 // Identity 是解析出来的学校身份。
@@ -80,8 +83,11 @@ type Identity struct {
 	Name      string
 	// College 取自认证结果里的「所属单位」。
 	College string
-	// IDCardSuffix4 从掩码证件号（如 650****2614）取末四位。
+	// IDCardSuffix4 从证件号取末四位（掩码或完整号均可）。
 	IDCardSuffix4 string
+	// IDCardFull 是完整身份证号；由上层立即加密，不在本层留存。
+	// 空值表示上游只给了掩码（如某些入口）。
+	IDCardFull string
 
 	// 以下三项来自教务，抓取失败时为空。
 	Major     string
@@ -92,19 +98,21 @@ type Identity struct {
 	ProfileIncomplete bool
 }
 
-// AuthSource 是「用会话凭据取身份」的外部能力，由 school/jiaowu 实现。
+// AuthSource 是「用会话凭据取身份」的外部能力，由 ywtb 源实现。
 //
-// 拆成接口而不是直接调 jiaowu，是为了让适配器可测、且不把 jiaowu 的
-// 传输层细节（Cookie 头、编码）渗进身份域。
+// 刻意接收完整的 Credential 而不是一个 cookie 字符串：
+// 实测 ywtb 需要 **Bearer token + laravel_session cookie 两者同时**，
+// 只传 cookie 会在真实环境 401。接口形状必须反映这个事实，
+// 否则实现方会写出「只带 cookie」的代码而测试照样通过。
 type AuthSource interface {
-	// FetchIdentity 用客户端的会话 cookie 取认证身份（学号/姓名/所属单位/掩码证件号）。
-	FetchIdentity(ctx context.Context, cookieHeader string) (RawIdentity, error)
+	// FetchIdentity 用客户端交上来的凭据取认证身份。
+	FetchIdentity(ctx context.Context, cred Credential) (RawIdentity, error)
 }
 
 // AcademicSource 是从教务取学籍的能力，由 school/jiaowu 实现。
 type AcademicSource interface {
-	// FetchAcademic 用客户端的会话 cookie 取专业/班级/年级。
-	FetchAcademic(ctx context.Context, cookieHeader string) (RawAcademic, error)
+	// FetchAcademic 用客户端凭据取专业/班级/年级（教务那一路是另一套会话）。
+	FetchAcademic(ctx context.Context, cred Credential) (RawAcademic, error)
 }
 
 // RawIdentity 是认证源返回的原始字段（未做掩码解析）。
@@ -113,8 +121,11 @@ type RawIdentity struct {
 	Name      string
 	// College 对应页面上的「所属单位」。
 	College string
-	// IDCardMasked 是页面上原样显示的证件号，可能是掩码（650****2614）或完整号。
+	// IDCardMasked 是证件号原值：API 返回的是**完整号**（页面显示才是掩码）。
+	// 字段名保留 Masked 是为了兼容既有测试；上层应按「可能是完整号」处理。
 	IDCardMasked string
+	// IDCardFull 是完整身份证号（与 IDCardMasked 同源；显式命名便于上层加密存储）。
+	IDCardFull string
 }
 
 // RawAcademic 是教务源返回的学籍字段。
@@ -173,9 +184,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 	if cred.Empty() {
 		return Identity{}, ErrAuthFailed
 	}
-	cookieHeader := cred.CookieHeader()
-
-	raw, err := a.auth.FetchIdentity(ctx, cookieHeader)
+	raw, err := a.auth.FetchIdentity(ctx, cred)
 	if err != nil {
 		return Identity{}, ErrAuthFailed
 	}
@@ -184,11 +193,17 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 		return Identity{}, ErrAuthFailed
 	}
 
+	// 完整号优先；若上游只给了掩码，则从掩码取后四位。
+	fullID := raw.IDCardFull
+	if fullID == "" {
+		fullID = raw.IDCardMasked
+	}
 	ident := Identity{
 		StudentNo:     raw.StudentNo,
 		Name:          raw.Name,
 		College:       raw.College,
-		IDCardSuffix4: Suffix4FromMasked(raw.IDCardMasked),
+		IDCardSuffix4: Suffix4FromMasked(fullID),
+		IDCardFull:    raw.IDCardFull,
 	}
 
 	// 教务：超时或失败都只影响画像完整性，不影响登录。
@@ -199,7 +214,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 	actx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	ac, aerr := a.academic.FetchAcademic(actx, cookieHeader)
+	ac, aerr := a.academic.FetchAcademic(actx, cred)
 	if aerr != nil {
 		ident.ProfileIncomplete = true
 		if a.logger != nil {

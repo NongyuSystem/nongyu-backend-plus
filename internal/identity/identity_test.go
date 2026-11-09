@@ -22,8 +22,10 @@ import (
 // 身份域的集成测试：真连 Postgres（与 Redis 不参与，邮箱码另有测试）。
 // 未配置 DATABASE_URL 时跳过。
 
+const fullIDCard = "650102200701142614"
+
 const pwdKey = "password-box-key-for-tests-only-32b"
-const idKey = "idcard-box-key-for-tests-only-32byt"
+const idKey = "idcard-box-key-for-tests-only-32byts"
 
 type fixtures struct {
 	users      *platform.PGIdentityStore
@@ -104,6 +106,7 @@ func setup(t *testing.T) fixtures {
 			StudentNo: studentNo, Name: "Yao Yifei",
 			// 认证只给掩码证件号，故直接给后四位（实测：650****2614）
 			IDCardSuffix4: "2614",
+			IDCardFull:    fullIDCard,
 			College:       "信息工程学院", Major: "数据科学与大数据技术",
 			ClassName: "大数据202503", Grade: "2025",
 		},
@@ -113,6 +116,7 @@ func setup(t *testing.T) fixtures {
 		Users: store, Profiles: store, Methods: store,
 		School:      school,
 		PasswordBox: pwBox,
+		IDCardBox:   platform.NewMockCipher(idKey),
 		Clock:       clock, UserService: userSvc,
 		Initials: login.DefaultInitializer{},
 	})
@@ -169,9 +173,13 @@ func TestLogin_SchoolCreatesUserOthersDoNot(t *testing.T) {
 	if res.Profile.IDCardSuffix4 != "2614" {
 		t.Fatalf("身份证后四位应派生为 2614，实际 %q", res.Profile.IDCardSuffix4)
 	}
-	// 完整身份证号拿不到（实测是掩码），因此不得有任何完整号落库。
-	if len(res.Profile.IDCardSealed) != 0 {
-		t.Fatal("不应存储完整身份证号（系统只能拿到掩码）")
+	// ADR-0002 二修：ywtb API 返回完整号，因此**加密存储完整号**。
+	// 断言两件事：密文存在，且不是明文。
+	if len(res.Profile.IDCardSealed) == 0 {
+		t.Fatal("完整身份证号应被加密存储（ywtb API 会返回完整号）")
+	}
+	if string(res.Profile.IDCardSealed) == fullIDCard {
+		t.Fatal("身份证号不得明文存储")
 	}
 }
 
