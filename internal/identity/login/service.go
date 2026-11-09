@@ -33,17 +33,60 @@ type SchoolAuthenticator interface {
 }
 
 // SchoolCredential 是学校认证的入参。
+//
+// 两种形态，由 Method 区分：
+//   - "cookie"：客户端已完成学校登录，把整套会话 cookie 交上来（**当前主路径**）。
+//     后端不接触学生密码，只用 cookie 去取身份与学籍。
+//   - "password"/"wechat"/"phone"：直接给学校凭据，由后端发起认证。
 type SchoolCredential struct {
-	// Method 是学校侧的认证方式：password / wechat / phone
+	// Method 是学校侧的认证方式：cookie / password / wechat / phone
 	Method string
-	// 账密方式
-	StudentNo string
-	Password  string
-	// 短信方式
-	Phone string
-	Code  string
-	// 微信方式
+
+	// ── 形态一：客户端会话 ──
+	// CookieHeader 是原始 Cookie 头（"a=1; b=2"）。
+	CookieHeader string
+	// Cookies 是结构化的一组 cookie；与 CookieHeader 二者给其一即可。
+	Cookies []SchoolCookie
+
+	// ── 形态二：直接凭据 ──
+	StudentNo  string
+	Password   string
+	Phone      string
+	Code       string
 	WechatCode string
+}
+
+// SchoolCookie 是一条学校会话 cookie。
+type SchoolCookie struct {
+	Name  string
+	Value string
+}
+
+// String 实现 fmt.Stringer，**故意不输出 cookie 值**，避免被日志打印。
+func (c SchoolCredential) String() string {
+	return "SchoolCredential{method=" + c.Method + ", cookies=" +
+		itoa(len(c.Cookies)) + ", hasHeader=" + boolStr(c.CookieHeader != "") + "}"
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // SchoolIdentity 是学校确认后的结果。
@@ -67,6 +110,9 @@ type SchoolIdentity struct {
 	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级。
 	// 此时**登录照常成功**（维护者决定），由客户端提示用户，下次登录重试。
 	ProfileIncomplete bool
+	// MirrorError 非空表示登录成功但密码镜像没写进去（不阻断登录）。
+	// 由调用方决定是否记日志/告警——静默失败会让问题无从排查。
+	MirrorError error
 }
 
 // Secrets 是加解密能力（密码镜像与身份证各用一把独立密钥，由装配层注入两个实例）。
@@ -136,6 +182,9 @@ type Result struct {
 	NeedSchoolAuth bool
 	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级（登录仍成功）。
 	ProfileIncomplete bool
+	// MirrorError 非空表示登录成功但密码镜像没写进去（不阻断登录）。
+	// 由调用方决定是否记日志/告警——静默失败会让问题无从排查。
+	MirrorError error
 }
 
 // LoginBySchool 走学校统一身份认证登录。
@@ -178,15 +227,18 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 	}
 
 	// 密码镜像：只在「确实用了学校账密」时写入。其它学校方式（微信/短信）不写。
+	var mirrorErr error
 	if cred.Method == "password" && cred.Password != "" && s.passwordBox != nil {
 		// 镜像失败不阻断登录：学生仍可用学校认证登录。
-		_ = s.mirrorPassword(ctx, u.ID, cred.Password)
+		// 但错误要带出去（Result.MirrorError）——静默失败会让
+		// 「管理员进不了管理台」这类问题无从排查。
+		mirrorErr = s.mirrorPassword(ctx, u.ID, cred.Password)
 	}
 
 	// 绑定/刷新 school 登录方式（标识用学号）。
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginSchool, u.StudentNo, nil)
 
-	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete}, nil
+	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr}, nil
 }
 
 // LoginByPassword 走农屿账密登录。

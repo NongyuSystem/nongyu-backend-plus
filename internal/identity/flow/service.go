@@ -43,6 +43,8 @@ type SignedIn struct {
 	ExpiresAt time.Time
 	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级。
 	ProfileIncomplete bool
+	// MirrorError 非空表示登录成功但密码镜像未写入（不阻断登录）。
+	MirrorError error
 }
 
 // Params 是一次登录的全部输入。
@@ -105,6 +107,7 @@ func (s *Service) Login(ctx context.Context, p Params) (SignedIn, error) {
 		SessionID:         issued.SessionID,
 		ExpiresAt:         issued.ExpiresAt,
 		ProfileIncomplete: res.ProfileIncomplete,
+		MirrorError:       res.MirrorError,
 	}, nil
 }
 

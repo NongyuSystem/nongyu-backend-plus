@@ -197,6 +197,21 @@ func TestFlow_PasswordLoginAfterMirror(t *testing.T) {
 		t.Fatalf("首次学校认证登录: %v", err)
 	}
 
+	// 前置条件必须成立：学校账密登录后镜像应已写入。
+	// 先断言，再测后续登录——否则失败信息会误导成「登录逻辑有问题」，
+	// 实际可能是镜像没写上（或测试数据被别人删了）。
+	u, err := f.store.ByStudentNo(ctx, noPasswordMirr)
+	if err != nil {
+		t.Fatalf("前置：用户应已建号：%v", err)
+	}
+	m, err := f.store.ByUserAndKind(ctx, u.ID, platform.LoginPassword)
+	if err != nil {
+		t.Fatalf("前置：学校账密登录后密码镜像应已写入，实际 %v（用户 id=%d）", err, u.ID)
+	}
+	if len(m.SecretSealed) == 0 {
+		t.Fatalf("前置：密码镜像密文不得为空（用户 id=%d）", u.ID)
+	}
+
 	signed, err := f.flow.Login(ctx, flow.Params{
 		Method: "password", DeviceID: "dev-C",
 		StudentNo: noPasswordMirr, Password: "school-pw",
@@ -248,15 +263,19 @@ func TestFlow_AdminLoginRequiresAdminRole(t *testing.T) {
 	f := setupFlow(t, fullIdent(noAdminLogin))
 	ctx := context.Background()
 	// 用学校账密登录：既建号，也写入密码镜像。
-	if _, err := f.flow.Login(ctx, flow.Params{
+	first, err := f.flow.Login(ctx, flow.Params{
 		Method: "school", DeviceID: "dev-F",
 		SchoolCred: login.SchoolCredential{Method: "password", StudentNo: noAdminLogin, Password: "school-pw"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Login: %v", err)
+	}
+	if first.MirrorError != nil {
+		t.Fatalf("前置：密码镜像应写入成功，实际 %v", first.MirrorError)
 	}
 
 	// 普通用户即使密码镜像已写入，也不能进管理台。
-	_, err := f.flow.LoginAdmin(ctx, noAdminLogin, "school-pw")
+	_, err = f.flow.LoginAdmin(ctx, noAdminLogin, "school-pw")
 	if identity.CodeOf(err) != identity.CodeForbidden {
 		t.Fatalf("普通用户进管理台应 forbidden，实际 %v", err)
 	}

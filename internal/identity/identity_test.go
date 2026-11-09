@@ -2,7 +2,10 @@ package identity_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -31,6 +34,7 @@ type fixtures struct {
 	userSvc    *identityuser.Service
 	sessionSvc *session.Service
 	loginSvc   *login.Service
+	studentNo  string
 }
 
 // 学校认证的假实现：按预置表返回身份。
@@ -54,8 +58,22 @@ func (f *fakeSchool) Authenticate(_ context.Context, in login.SchoolCredential) 
 	return ident, nil
 }
 
+// studentNoFor 由测试名派生一个 9 位学号：
+// 同一测试每次运行相同（可复现），不同测试互不相同
+// （-count=N 或跨包并发时不会互相删数据）。
+func studentNoFor(name string) string {
+	sum := sha256.Sum256([]byte("identity-test:" + name))
+	n := binary.BigEndian.Uint32(sum[:4]) % 100000000
+	return fmt.Sprintf("7%08d", n)
+}
+
+var _ = pgxpool.New
+
 func setup(t *testing.T) fixtures {
 	t.Helper()
+	// 学号按当前测试名派生：同一测试每次运行相同（可复现），
+	// 不同测试互不相同（-count=N 或跨包并发时不会互相删数据）。
+	studentNo := studentNoFor(t.Name())
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
@@ -70,9 +88,9 @@ func setup(t *testing.T) fixtures {
 		t.Skipf("Postgres 不可达，跳过：%v", err)
 	}
 
-	cleanup(t, dsn)
+	cleanup(t, dsn, studentNo)
 	t.Cleanup(func() {
-		cleanup(t, dsn)
+		cleanup(t, dsn, studentNo)
 		_ = store.Close()
 	})
 
@@ -82,8 +100,8 @@ func setup(t *testing.T) fixtures {
 	pwBox := platform.NewMockCipher(pwdKey)
 
 	school := &fakeSchool{byStudent: map[string]login.SchoolIdentity{
-		"202311001": {
-			StudentNo: "202311001", Name: "Yao Yifei",
+		studentNo: {
+			StudentNo: studentNo, Name: "Yao Yifei",
 			// 认证只给掩码证件号，故直接给后四位（实测：650****2614）
 			IDCardSuffix4: "2614",
 			College:       "信息工程学院", Major: "数据科学与大数据技术",
@@ -103,10 +121,11 @@ func setup(t *testing.T) fixtures {
 	return fixtures{
 		users: store, profiles: store, methods: store, sessions: store,
 		clock: clock, userSvc: userSvc, sessionSvc: sessionSvc, loginSvc: loginSvc,
+		studentNo: studentNo,
 	}
 }
 
-func cleanup(t *testing.T, dsn string) {
+func cleanup(t *testing.T, dsn, studentNo string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -115,7 +134,8 @@ func cleanup(t *testing.T, dsn string) {
 		return
 	}
 	defer pool.Close()
-	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE student_no LIKE '2023110%'`)
+	// 只删本测试自己的学号：按前缀删会误伤并发运行的其他测试。
+	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE student_no = $1`, studentNo)
 }
 
 // ── 无感注册的硬约束 ──────────────────────────────────────────
@@ -125,17 +145,17 @@ func TestLogin_SchoolCreatesUserOthersDoNot(t *testing.T) {
 	ctx := context.Background()
 
 	// 非学校方式在用户不存在时：返回 NeedSchoolAuth，且**不建号**。
-	_, err := f.loginSvc.LoginByPassword(ctx, "202311001", "whatever")
+	_, err := f.loginSvc.LoginByPassword(ctx, f.studentNo, "whatever")
 	if identity.CodeOf(err) != identity.CodeNeedSchoolAuth {
 		t.Fatalf("农屿账密找不到用户应返回 need_school_auth，实际 %v", err)
 	}
-	if _, err := f.users.ByStudentNo(ctx, "202311001"); !platform.IsNotFound(err) {
+	if _, err := f.users.ByStudentNo(ctx, f.studentNo); !platform.IsNotFound(err) {
 		t.Fatalf("非学校方式不得建号，实际查到了用户")
 	}
 
 	// 学校认证可以建号。
 	res, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	})
 	if err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
@@ -162,13 +182,13 @@ func TestLogin_PasswordMirrorWrittenOnSchoolPasswordLogin(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	})
 	if err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
 	}
 
-	u, _ := f.users.ByStudentNo(ctx, "202311001")
+	u, _ := f.users.ByStudentNo(ctx, f.studentNo)
 	m, err := f.methods.ByUserAndKind(ctx, u.ID, platform.LoginPassword)
 	if err != nil {
 		t.Fatalf("密码镜像应写入 login_methods：%v", err)
@@ -181,15 +201,15 @@ func TestLogin_PasswordMirrorWrittenOnSchoolPasswordLogin(t *testing.T) {
 	}
 
 	// 用镜像后的密码可以登录农屿账密。
-	res, err := f.loginSvc.LoginByPassword(ctx, "202311001", "school-pw")
+	res, err := f.loginSvc.LoginByPassword(ctx, f.studentNo, "school-pw")
 	if err != nil {
 		t.Fatalf("镜像后应能用学校密码登录农屿账密：%v", err)
 	}
-	if res.User.StudentNo != "202311001" {
+	if res.User.StudentNo != f.studentNo {
 		t.Fatalf("登录到的用户不符：%+v", res.User)
 	}
 	// 错误密码必须被拒。
-	if _, err := f.loginSvc.LoginByPassword(ctx, "202311001", "wrong-pw"); identity.CodeOf(err) != identity.CodeBadCredentials {
+	if _, err := f.loginSvc.LoginByPassword(ctx, f.studentNo, "wrong-pw"); identity.CodeOf(err) != identity.CodeBadCredentials {
 		t.Fatalf("错误密码应 bad_credentials，实际 %v", err)
 	}
 }
@@ -201,12 +221,12 @@ func TestLogin_PasswordUnsetWhenNoSchoolPasswordLogin(t *testing.T) {
 
 	// 用微信方式完成学校认证（不写密码镜像）。
 	if _, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "wechat", StudentNo: "202311001", WechatCode: "wx-code",
+		Method: "wechat", StudentNo: f.studentNo, WechatCode: "wx-code",
 	}); err != nil {
 		t.Fatalf("LoginBySchool(wechat): %v", err)
 	}
 	// 此时农屿账密应不可用。
-	_, err := f.loginSvc.LoginByPassword(ctx, "202311001", "school-pw")
+	_, err := f.loginSvc.LoginByPassword(ctx, f.studentNo, "school-pw")
 	if identity.CodeOf(err) != identity.CodeLoginMethodUnbound {
 		t.Fatalf("未设置密码时农屿账密应不可用，实际 %v", err)
 	}
@@ -219,30 +239,30 @@ func TestLogin_ByIDCard(t *testing.T) {
 	ctx := context.Background()
 	// 先把用户建出来（学校认证）。
 	if _, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	}); err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
 	}
 
 	// 拉丁名 "Yao Yifei" 按词取首字母 → "YY"
-	res, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "2614", "yy")
+	res, err := f.loginSvc.LoginByIDCard(ctx, f.studentNo, "2614", "yy")
 	if err != nil {
 		t.Fatalf("LoginByIDCard: %v", err)
 	}
-	if res.User.StudentNo != "202311001" {
+	if res.User.StudentNo != f.studentNo {
 		t.Fatalf("登录用户不符：%+v", res.User)
 	}
 
 	// 后四位错 → bad_credentials
-	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "9999", "yy"); identity.CodeOf(err) != identity.CodeBadCredentials {
+	if _, err := f.loginSvc.LoginByIDCard(ctx, f.studentNo, "9999", "yy"); identity.CodeOf(err) != identity.CodeBadCredentials {
 		t.Fatalf("后四位错应 bad_credentials，实际 %v", err)
 	}
 	// 首字母错 → bad_credentials
-	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311001", "2614", "abc"); identity.CodeOf(err) != identity.CodeBadCredentials {
+	if _, err := f.loginSvc.LoginByIDCard(ctx, f.studentNo, "2614", "abc"); identity.CodeOf(err) != identity.CodeBadCredentials {
 		t.Fatalf("首字母错应 bad_credentials，实际 %v", err)
 	}
 	// 用户不存在 → need_school_auth
-	if _, err := f.loginSvc.LoginByIDCard(ctx, "202311999", "2614", "yy"); identity.CodeOf(err) != identity.CodeNeedSchoolAuth {
+	if _, err := f.loginSvc.LoginByIDCard(ctx, f.studentNo+"9", "2614", "yy"); identity.CodeOf(err) != identity.CodeNeedSchoolAuth {
 		t.Fatalf("未注册学号应 need_school_auth，实际 %v", err)
 	}
 }
@@ -276,7 +296,7 @@ func TestSession_SingleDeviceAndRevoke(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	res, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	})
 	if err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
@@ -291,7 +311,7 @@ func TestSession_SingleDeviceAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if p.StudentNo != "202311001" {
+	if p.StudentNo != f.studentNo {
 		t.Fatalf("主体不符：%+v", p)
 	}
 
@@ -332,7 +352,7 @@ func TestSession_DisabledUserInvalidatesExistingSession(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	res, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	})
 	if err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
@@ -395,7 +415,7 @@ func TestProfileExtrasPreservedAcrossSchoolSync(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	res, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	})
 	if err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
@@ -412,7 +432,7 @@ func TestProfileExtrasPreservedAcrossSchoolSync(t *testing.T) {
 
 	// 再走一次学校认证（同步学校档案）→ 扩展字段必须保留
 	if _, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	}); err != nil {
 		t.Fatalf("LoginBySchool #2: %v", err)
 	}
@@ -430,21 +450,21 @@ func TestStudentBriefReader_MinimalFields(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	if _, err := f.loginSvc.LoginBySchool(ctx, login.SchoolCredential{
-		Method: "password", StudentNo: "202311001", Password: "school-pw",
+		Method: "password", StudentNo: f.studentNo, Password: "school-pw",
 	}); err != nil {
 		t.Fatalf("LoginBySchool: %v", err)
 	}
 
 	var reader platform.StudentBriefReader = f.userSvc
-	brief, err := reader.Brief(ctx, "202311001")
+	brief, err := reader.Brief(ctx, f.studentNo)
 	if err != nil {
 		t.Fatalf("Brief: %v", err)
 	}
-	if brief.StudentNo != "202311001" || brief.Name != "Yao Yifei" || brief.College != "信息工程学院" {
+	if brief.StudentNo != f.studentNo || brief.Name != "Yao Yifei" || brief.College != "信息工程学院" {
 		t.Fatalf("最小字段集不符：%+v", brief)
 	}
 	// 不存在的学号 → ErrNotFound（而不是零值）
-	if _, err := reader.Brief(ctx, "202311999"); !platform.IsNotFound(err) {
+	if _, err := reader.Brief(ctx, f.studentNo+"9"); !platform.IsNotFound(err) {
 		t.Fatalf("不存在应 ErrNotFound，实际 %v", err)
 	}
 }
