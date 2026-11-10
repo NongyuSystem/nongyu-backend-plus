@@ -37,6 +37,8 @@ type Credential struct {
 	Cookies []SessionCookie
 	// RawCookie 是原始 Cookie 头（如 "a=1; b=2"）。给了 Cookies 时可省略。
 	RawCookie string
+	// XSGZToken 是学工系统的 access token（唯一数据源，#28 后续）。
+	XSGZToken string
 	// UserID 是这份凭据归属的农屿用户（用于按用户保管 tgt）。
 	// 零值表示「还不知道是谁」——此时无法使用服务端保管的 tgt，
 	// 只能用本次交来的凭据做一次性取数。
@@ -191,6 +193,11 @@ type RawIdentity struct {
 	Birthday string
 	// AvatarSourceURL 是 ywtb 的头像地址（issue #29）。
 	AvatarSourceURL string
+	// 以下三项在**唯一数据源**（xsgz detail）下由取身份源直接给出，
+	// 不再需要单独抓教务 GBK 页面（那两条路径已 disable）。
+	Major     string
+	ClassName string
+	Grade     string
 }
 
 // RawAcademic 是教务源返回的学籍字段。
@@ -295,6 +302,14 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 		// ywtb 字段（issue #29）
 		Birthday:        raw.Birthday,
 		AvatarSourceURL: raw.AvatarSourceURL,
+		// 唯一数据源（xsgz detail）已直接给出专业/班级/年级。
+		Major:     raw.Major,
+		ClassName: raw.ClassName,
+		Grade:     raw.Grade,
+	}
+	// 已经从唯一数据源拿到三项时，不再走教务 GBK 页面（那条路径已 disable）。
+	if ident.Major != "" && ident.ClassName != "" && ident.Grade != "" {
+		return ident, nil
 	}
 
 	// 教务：超时或失败都只影响画像完整性，不影响登录。

@@ -1380,17 +1380,17 @@ func TestFetchXSGZStudentDetail_RequiresAppKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchXSGZStudentDetail: %v", err)
 	}
-	if detail.Base.StudentNo != "202500001" || detail.Base.StudentName != "张三" {
-		t.Fatalf("基础身份解析错误: %+v", detail.Base)
+	if detail.Typed.StudentNo != "202500001" || detail.Typed.StudentName != "张三" {
+		t.Fatalf("基础身份解析错误: %+v", detail.Typed)
 	}
-	if detail.Exam.ExamineeNo != "E123" {
-		t.Fatalf("考生号解析错误: %q", detail.Exam.ExamineeNo)
+	if detail.Typed.ExamineeNo != "E123" {
+		t.Fatalf("考生号解析错误: %q", detail.Typed.ExamineeNo)
 	}
-	if detail.Family.FamilyAddress != "某地址" {
-		t.Fatalf("家庭地址解析错误: %q", detail.Family.FamilyAddress)
+	if detail.Typed.FamilyAddress != "某地址" {
+		t.Fatalf("家庭地址解析错误: %q", detail.Typed.FamilyAddress)
 	}
-	if detail.ContactInfo.Email != "a@b.com" {
-		t.Fatalf("邮箱解析错误: %q", detail.ContactInfo.Email)
+	if detail.Typed.Email != "a@b.com" {
+		t.Fatalf("邮箱解析错误: %q", detail.Typed.Email)
 	}
 	// 断言 AppKey 头确实发出去了（这是「权限异常」的根因）
 	var found bool

@@ -32,6 +32,8 @@ func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCrede
 	cred := schoolauth.Credential{
 		RawCookie: in.CookieHeader,
 		UserID:    in.UserID,
+		// 学工系统 token（唯一数据源，#28 后续）。
+		XSGZToken: in.XSGZToken,
 	}
 	// 教务换票需要 go-admin-tgt（auth 域 cookie）。
 	if in.GoAdminTgt != "" {

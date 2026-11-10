@@ -628,6 +628,11 @@ var migrationTables = []string{
 	"audit_log",
 	"login_methods",
 	"sessions",
+	// 0004：学工系统（xsgz）完整档案，唯一数据源对应的四张表
+	"student_family_members",
+	"student_profile_groups",
+	"student_profiles",
+	"student_resumes",
 	"user_profiles",
 	"users",
 }

@@ -35,7 +35,11 @@ import (
 
 // migrationTables 是 migrations/*.sql 声明的全部表（独立事实源：SQL 字面量）。
 var migrationTables = []string{
-	"audit_log", "login_methods", "sessions", "user_profiles", "users",
+	"audit_log", "login_methods", "sessions",
+	// 0004：学工系统（xsgz）完整档案四张表
+	"student_family_members", "student_profile_groups",
+	"student_profiles", "student_resumes",
+	"user_profiles", "users",
 }
 
 // appTestDSN 返回一个指向**全新空 schema** 的 DSN。
@@ -382,7 +386,7 @@ func TestAppNew_IdempotentAcrossRestart(t *testing.T) {
 		}
 		_ = a.Shutdown(2 * time.Second)
 	}
-	// 两次启动后表集仍是迁移声明的那 5 张，没有重复/半成品。
+	// 两次启动后表集仍是迁移声明的全部表，没有重复/半成品。
 	got := tablesInSchema(t, dsn, schema)
 	if len(got) != len(migrationTables) {
 		t.Fatalf("两次启动迁移后表数应为 %d，实际 %v", len(migrationTables), got)

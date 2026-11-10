@@ -242,15 +242,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 
 	// 学校认证适配器：把「客户端交上来的 go-admin-tgt」换成学校身份。
 	//
-	// 只有一条取身份路径（#28）：用 tgt 换票，换票响应本身就带 user（学号/姓名）。
-	// 因此先建教务源（它提供换票能力），再把它作为 Exchanger 注入身份源。
+	// **唯一数据源是学工系统 xsgz**（2026-11-10 维护者决定）：
+	// 客户端只做一次统一登录，之后交出 go-admin-tgt（确认身份）与
+	// xsgz access token（取全量档案），后端负责所有取数与入库。
+	// jiaowu 的 GBK 页面解析与 ywtb 的 getUserInfo 取数**已 disable**：
+	// 它们给不出身份证号、家庭住址、考生号、紧急联系人、教育经历等字段。
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
 	// tgt 保管器：登录成功后按用户保存，之后取学籍不必再让客户端交凭据。
 	var tgtMgr *schoolauth.TGTManager
 
-	// 教务源：专业/班级/年级来自 bjiben.asp（GBK 老页面），
-	// 同时提供「用 tgt 换票并取身份」的能力给 ywtb 源兜底。
-	var academicSrc schoolauth.AcademicSource
+	// 教务源：这里只用它的「换票」能力（确认学号 + 滚动续期 tgt），
+	// **不再用它抓 bjiben.asp 取专业/班级/年级**（那条路径已 disable）。
 	var jwSrc *schoolauth.JiaowuSource
 	if s, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
 		jwSrc = s
@@ -267,19 +269,20 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				tgtMgr = mgr
 				logger.Info("已启用 tgt 保管：换票续期由服务端自动完成")
 			} else {
-				logger.Warn("tgt 保管未启用，每次取学籍需客户端提供凭据", "err", err)
+				logger.Warn("tgt 保管未启用，每次取数需客户端提供凭据", "err", err)
 			}
 		}
-		academicSrc = jwSrc
 	} else {
-		logger.Warn("教务取数源构造失败，专业/班级/年级将不可用", "err", err)
+		logger.Warn("换票源构造失败，学校认证登录将不可用", "err", err)
 	}
 
-	if authSrc, err := schoolauth.NewYWTBSource(schoolauth.YWTBOptions{
+	// 唯一取身份源：xsgz detail 端点（13 个分组，字段最全）。
+	if authSrc, err := schoolauth.NewXSGZSource(schoolauth.XSGZOptions{
 		Doer:      doer,
 		Exchanger: exchangerOrNil(jwSrc),
 	}); err == nil {
-		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc, Academic: academicSrc}); err == nil {
+		// Academic 传 nil：jiaowu 的 GBK 页面取数已 disable（#28 后续）。
+		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
 			schoolAuthAdapter = schoolauthBridge{a: a}
 		} else {
 			logger.Warn("学校认证适配器构造失败，学校认证登录将不可用", "err", err)

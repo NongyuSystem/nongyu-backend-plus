@@ -56,6 +56,12 @@ type SchoolCredential struct {
 	// 教务换票需要它：后端用它换一张教务 service ticket，再抓 bjiben.asp 取学籍。
 	// 由客户端在 auth 域登录后交来。
 	GoAdminTgt string
+	// XSGZToken 是学工系统（xsgz）的 access token（main-app-access-token）。
+	//
+	// 唯一数据源（#28 后续）：客户端完成统一登录后，把这张 token 交上来，
+	// 后端就能用它调 xsgz detail 端点取到**全部**档案字段（13 个分组）。
+	// 与 ywtb 的 Bearer 同为「客户端交 token、后端取数」模式。
+	XSGZToken string
 	// UserID 是这份凭据归属的农屿用户；供服务端按用户保管 tgt。
 	// 首次登录时还不知道（为零），此时只能用本次交来的凭据做一次性取数。
 	UserID int64

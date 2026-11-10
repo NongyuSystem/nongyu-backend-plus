@@ -546,3 +546,107 @@ func FetchXSGZStudentDetail(ctx context.Context, doer platform.HTTPDoer, baseURL
 func ParseXSGZDetail(data json.RawMessage) (XSGZStudentDetail, error) {
 	return parseXSGZDetail(data)
 }
+
+// ── XSGZSource：唯一取身份源（学工系统）─────────────────────────────
+//
+// 为什么是它（2026-11-10 实测）：
+//
+//	xsgz 的 detail 端点一次返回 13 个分组，覆盖用户清单里几乎所有字段
+//	（身份证号、家庭住址、考生号、紧急联系人、教育经历、家庭成员、经济情况…），
+//	而教务 bjiben.asp 与 ywtb getUserInfo 都给不了这些。
+//	因此**取数统一走 xsgz**；jiaowu / ywtb 的取数逻辑已 disable（见 app 装配层）。
+//
+// 身份确认仍用统一认证换票（拿学号），这是「一次登录」的落点：
+// 客户端只做一次统一认证，之后所有取数都是后端的事。
+type XSGZSource struct {
+	doer      platform.HTTPDoer
+	exchanger TicketExchanger
+	// token 是客户端交来的 main-app-access-token。
+	token string
+}
+
+// XSGZOptions 是 XSGZSource 的构造参数。
+type XSGZOptions struct {
+	Doer      platform.HTTPDoer
+	Exchanger TicketExchanger
+	// Token 是学工系统的 access token（客户端完成统一登录后交来）。
+	Token string
+}
+
+// NewXSGZSource 构造学工取身份源。
+func NewXSGZSource(o XSGZOptions) (*XSGZSource, error) {
+	if o.Doer == nil {
+		return nil, fmt.Errorf("schoolauth: XSGZSource 需要 HTTPDoer")
+	}
+	if o.Exchanger == nil {
+		return nil, fmt.Errorf("schoolauth: XSGZSource 需要 TicketExchanger（用 tgt 换票确认学号）")
+	}
+	return &XSGZSource{doer: o.Doer, exchanger: o.Exchanger, token: strings.TrimSpace(o.Token)}, nil
+}
+
+// WithToken 设置学工系统的 access token。
+func (s *XSGZSource) WithToken(t string) *XSGZSource {
+	s.token = strings.TrimSpace(t)
+	return s
+}
+
+// FetchIdentity 实现 AuthSource：换票确认身份 + 取完整档案。
+func (s *XSGZSource) FetchIdentity(ctx context.Context, cred Credential) (RawIdentity, error) {
+	// ① 换票：确认「这个人是谁」（学号）。tgt 已在客户端完成统一登录。
+	tgt := cookieValue(cred, goAdminTgtCookie)
+	if strings.TrimSpace(tgt) == "" {
+		return RawIdentity{}, fmt.Errorf("schoolauth: 缺少 %s", goAdminTgtCookie)
+	}
+	ti, err := s.exchanger.ExchangeForIdentity(ctx, cred)
+	if err != nil {
+		return RawIdentity{}, err
+	}
+	if strings.TrimSpace(ti.StudentNo) == "" {
+		return RawIdentity{}, fmt.Errorf("schoolauth: 换票响应未返回学号")
+	}
+
+	// ② 取完整档案（唯一数据源）。
+	token := cred.XSGZToken
+	if strings.TrimSpace(token) == "" {
+		token = s.token
+	}
+	detail, err := FetchXSGZStudentDetail(ctx, s.doer, "", token, ti.StudentNo)
+	if err != nil {
+		// 档案取不到时**不阻断登录**：身份已由换票确认。
+		// 换票响应里没有身份证（身份证只在校工 detail 里）。
+		return RawIdentity{
+			StudentNo: ti.StudentNo,
+			Name:      ti.Name,
+		}, nil
+	}
+
+	raw := RawIdentity{
+		StudentNo:    detail.Typed.StudentNo,
+		Name:         detail.Typed.StudentName,
+		College:      detail.Typed.CollegeName,
+		IDCardMasked: detail.Typed.IDCardNo,
+		IDCardFull:   detail.Typed.IDCardNo,
+	}
+	// 专业/班级/年级/学号等也从这里来（不再是教务 GBK 页面）。
+	raw.Major = detail.Typed.SpecialtyName
+	raw.ClassName = detail.Typed.ClassName
+	raw.Grade = detail.Typed.Grade
+	return raw, nil
+}
+
+// FetchDetail 取完整档案（供上层落库用；AuthSource 拿不到 detail 原文）。
+func (s *XSGZSource) FetchDetail(ctx context.Context, cred Credential) (XSGZStudentDetail, error) {
+	tgt := cookieValue(cred, goAdminTgtCookie)
+	if strings.TrimSpace(tgt) == "" {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: 缺少 %s", goAdminTgtCookie)
+	}
+	ti, err := s.exchanger.ExchangeForIdentity(ctx, cred)
+	if err != nil {
+		return XSGZStudentDetail{}, err
+	}
+	token := cred.XSGZToken
+	if strings.TrimSpace(token) == "" {
+		token = s.token
+	}
+	return FetchXSGZStudentDetail(ctx, s.doer, "", token, ti.StudentNo)
+}
