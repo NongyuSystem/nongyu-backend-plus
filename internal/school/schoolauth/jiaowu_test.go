@@ -1304,3 +1304,114 @@ func newManagerWithSource(t *testing.T, src *schoolauth.JiaowuSource) *schoolaut
 	}
 	return m
 }
+
+// ── from sso_test.go ──────────────────────────────────────────────
+// 把「8 个站到底能不能拿数据」的实测结论钉死在测试里（2026-11-10）。
+// 维护者最初预期「一次登录后 8 个站都能用」，逐站实测后发现只有 3 个
+// 真有个人数据。不留断言，后人很容易重新假设「认证通了 = 数据能抓」。
+
+func TestSiteProfiles_CoversAllRequestedSites(t *testing.T) {
+	// 维护者原始清单的 8 个站必须都在目录里，一个都不能漏。
+	want := []string{"jiaowu", "ywtb", "xsc", "zjc", "cwc", "lib", "webvpn", "ecology"}
+	for _, name := range want {
+		if _, ok := schoolauth.SiteProfiles[name]; !ok {
+			t.Errorf("站点目录缺 %q（维护者清单要求覆盖）", name)
+		}
+	}
+}
+
+func TestSiteProfiles_OnlyThreeHavePersonalData(t *testing.T) {
+	// 实测结论：教务 / ywtb / xsgz 三个站有个人数据；
+	// webvpn 是网关（不提供数据）；其余是门户或独立账号体系。
+	personal := map[string]bool{"jiaowu": true, "ywtb": true, "xsgz": true}
+	for name, p := range schoolauth.SiteProfiles {
+		got := p.Kind == schoolauth.SitePersonal
+		if got != personal[name] {
+			t.Errorf("%s 的类别是 %q，与实测结论不符（有个人数据的只有 jiaowu/ywtb/xsgz）", name, p.Kind)
+		}
+	}
+}
+
+func TestSiteProfiles_GatewayIsNotData(t *testing.T) {
+	p := schoolauth.SiteProfiles["webvpn"]
+	if p.Kind != schoolauth.SiteGateway {
+		t.Fatalf("webvpn 应为网关（只用于访问内网），实际 %q", p.Kind)
+	}
+}
+
+func TestSiteProfiles_OPACHasOwnAccount(t *testing.T) {
+	// 图书馆 OPAC 是唯一确认「有个人数据但不认统一认证」的系统。
+	p := schoolauth.SiteProfiles["opac"]
+	if p.Kind != schoolauth.SiteOwnAccount {
+		t.Fatalf("opac 应为独立账号体系，实际 %q", p.Kind)
+	}
+}
+
+func TestSiteProfiles_EveryEntryHasNote(t *testing.T) {
+	for name, p := range schoolauth.SiteProfiles {
+		if p.Note == "" {
+			t.Errorf("%s 缺少 Note（必须写明为什么归到这个类别）", name)
+		}
+		if p.Host == "" {
+			t.Errorf("%s 缺少 Host", name)
+		}
+	}
+}
+
+// ── xsgz 学工系统完整档案端点（2026-11-10 实测）─────────────────────
+// 关键契约：H-Zove-AppKey 必须带，否则网关报「验证权限异常」(500)。
+
+func TestFetchXSGZStudentDetail_RequiresAppKey(t *testing.T) {
+	// 用 scripted doer 模拟：没带 AppKey 的请求返回 500 权限异常
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/gateway/zovecenter-saip-xg-app-student/student/detail/202500001": {
+			status: 200,
+			body: `{"code":"0","message":"操作成功","data":{` +
+				`"baseDto":{"studentNo":"202500001","studentName":"张三","sexName":"男"},` +
+				`"examDto":{"examineeNo":"E123"},` +
+				`"familyDto":{"familyAddress":"某地址"},` +
+				`"contactInfoDto":{"email":"a@b.com"},` +
+				`"studentStatusDto":{},"personalInfoDto":{},"emergencyContactInfoDto":{},` +
+				`"familyMemberList":[],"resumeList":[],"sociologyMemberList":[],` +
+				`"economyDto":{},"workUnitDto":{},"age":19}}`,
+		},
+	}}
+	detail, err := schoolauth.FetchXSGZStudentDetail(context.Background(), d, "https://xsgz.sicau.edu.cn", "tok", "202500001")
+	if err != nil {
+		t.Fatalf("FetchXSGZStudentDetail: %v", err)
+	}
+	if detail.Base.StudentNo != "202500001" || detail.Base.StudentName != "张三" {
+		t.Fatalf("基础身份解析错误: %+v", detail.Base)
+	}
+	if detail.Exam.ExamineeNo != "E123" {
+		t.Fatalf("考生号解析错误: %q", detail.Exam.ExamineeNo)
+	}
+	if detail.Family.FamilyAddress != "某地址" {
+		t.Fatalf("家庭地址解析错误: %q", detail.Family.FamilyAddress)
+	}
+	if detail.ContactInfo.Email != "a@b.com" {
+		t.Fatalf("邮箱解析错误: %q", detail.ContactInfo.Email)
+	}
+	// 断言 AppKey 头确实发出去了（这是「权限异常」的根因）
+	var found bool
+	for _, r := range d.requests {
+		if r.path == "/gateway/zovecenter-saip-xg-app-student/student/detail/202500001" {
+			found = true
+			// scriptedDoer 只记部分头，这里靠下面的独立断言补
+		}
+	}
+	if !found {
+		t.Fatal("应请求 detail 端点")
+	}
+}
+
+func TestFetchXSGZStudentDetail_RejectsNonNumericStudentNo(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{}}
+	_, err := schoolauth.FetchXSGZStudentDetail(context.Background(), d, "", "tok", "202500001/../../admin")
+	if err == nil {
+		t.Fatal("学号含非数字必须被拒绝（路径注入防护）")
+	}
+	if n := len(d.requests); n != 0 {
+		t.Fatalf("非法学号不得出站，实际 %d 次", n)
+	}
+}

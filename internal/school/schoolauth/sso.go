@@ -3,18 +3,28 @@ package schoolauth
 // 本文件实现「一次登录覆盖多站点」的唯一解（2026-11-10 实测，见
 // docs/tech/实测-川农一次登录覆盖多站点的唯一解.md）。
 //
-// 两张凭据，各管一半：
+// 结论：**不需要逐站登录**。一张 go-admin-tgt 经统一认证即可覆盖所有
+// 已注册站点，浏览器会自动完成 SSO；少数站点在此之上额外要一个自己的 token。
 //
-//	① go-admin-tgt —— 管所有「认证类站点」（教务 / WebVPN / 学生工作 / 财务 …）
-//	   对任意**已注册 appid** 换票：GET auth/v1/cas/login?appid=<UUID>
-//	   返回 code=200 + 加密 data，解出 {st, tgt, user, callbackUrl}。
-//	   随机 UUID 会返回 code=500「未登录」——appid 必须是平台注册过的。
+// 三类站点，三种取数方式（2026-11-10 逐站实测）：
 //
-//	② ywtb Bearer —— 只管 ywtb 一个站（它完全不认 go-admin-tgt，会 401）
-//	   形如 "405500|xxx"，请求头 Authorization: Bearer <token>。
-//	   这是**身份证号的唯一来源**（教务 bjiben.asp 没有身份证）。
+//	① CAS 换票型（教务 jiaowu）
+//	   GET auth/v1/cas/login?appid=<UUID> + Cookie: go-admin-tgt
+//	   → 加密 data 解出 {st, tgt, user, callbackUrl}，拿 st 回投建会话取页面。
+//	   随机 UUID 返回 code=500「未登录」——appid 必须已注册。
 //
-// 结论：不需要逐站登录。tgt 覆盖认证类站点，ywtb 额外需要一个 Bearer。
+//	② 自有 Bearer 型（ywtb 一网通办）
+//	   它完全不认 go-admin-tgt（401），需要自己的 Bearer "405500|xxx"。
+//	   这是**身份证号的唯一来源**（教务档案页没有身份证）。
+//
+//	③ SSO 网关型（学工系统 xsgz）
+//	   只靠 go-admin-tgt 跳 auth/sso/login?service=<站点>/sso 即自动登录，
+//	   网关下发 main-app-access-token；后续请求带 H-Zove-Token 等头取数。
+//	   它提供教务/ywtb 都没有的字段：宿舍地址、班主任、主责单位。
+//
+// 不属于统一认证范围：图书馆 OPAC（独立账号体系）、
+// xsc/zjc/cwc/lib/ecology（资讯门户，无个人数据）、webvpn（VPN 网关）。
+// 详见 SiteProfiles。
 
 import (
 	"context"
@@ -35,6 +45,81 @@ var SiteAppID = map[string]string{
 	"jiaowu": "b54a2f27-f7ba-4b91-bbf0-3b2b12244d14", // 教务
 	"webvpn": "aea49a21-6b26-4e8f-bcfc-80e3de591c93", // 门户 / WebVPN
 	"ywtb":   "ywtb",                                 // 特例：该平台允许用名字
+}
+
+// SiteKind 说明一个站点「能不能拿个人数据」，这决定了统一认证对它的价值。
+//
+// 2026-11-10 逐站实测结论（详见 docs/tech/实测-川农一次登录覆盖多站点的唯一解.md）：
+// 用户给的 8 个站里，只有 3 个真能取个人数据；其余是资讯门户或独立账号体系。
+// 「认证层全通」不等于「业务数据可取」——这个区分必须留在代码里，
+// 否则后人会以为「8 个站都能抓」，实际抓不到。
+type SiteKind string
+
+const (
+	// SitePersonal 有个人数据，且走统一认证：换票即可取数。
+	SitePersonal SiteKind = "personal"
+	// SitePortal 纯资讯门户：没有个人数据，认证与否都一样。
+	SitePortal SiteKind = "portal"
+	// SiteOwnAccount 有自己的账号体系（不认统一认证）：必须另行登录。
+	SiteOwnAccount SiteKind = "own_account"
+	// SiteGateway VPN 网关：它不提供数据，只用来访问内网站点。
+	SiteGateway SiteKind = "gateway"
+)
+
+// SiteProfile 描述一个站点的性质与取数方式。
+type SiteProfile struct {
+	Kind SiteKind
+	// Host 是站点主机名（便于日志与排查）。
+	Host string
+	// Note 说明「为什么是这个类别」，写给后来人看。
+	Note string
+}
+
+// SiteProfiles 是逐站实测的站点目录。
+//
+// 用户原始清单的 8 个站全部收录；另加 opac（图书馆书目系统，因为它才是
+// lib 站点里真正有个人数据的地方，且它不认统一认证）。
+var SiteProfiles = map[string]SiteProfile{
+	"jiaowu": {
+		Kind: SitePersonal, Host: "jiaowu.sicau.edu.cn",
+		Note: "教务：换票后三跳建会话可取 bjiben.asp（21 个学籍字段）",
+	},
+	"ywtb": {
+		Kind: SitePersonal, Host: "ywtb.sicau.edu.cn",
+		Note: "一网通办：需它自己的 Bearer，是身份证号的唯一来源",
+	},
+	"webvpn": {
+		Kind: SiteGateway, Host: "webvpn.sicau.edu.cn",
+		Note: "VPN 网关：用于访问内网站点，本身不提供个人数据",
+	},
+	"xsc": {
+		Kind: SitePortal, Host: "xsc.sicau.edu.cn",
+		Note: "党委学工部：纯资讯门户（部门概况/党建/学风/资助），无个人数据接口",
+	},
+	"zjc": {
+		Kind: SitePortal, Host: "zjc.sicau.edu.cn",
+		Note: "招生就业处：资讯门户；其下另有独立的招生/就业信息网",
+	},
+	"cwc": {
+		Kind: SitePortal, Host: "cwc.sicau.edu.cn",
+		Note: "财务处：首页提示「没有访问当前栏目的权限」，需额外授权，非统一认证范围",
+	},
+	"lib": {
+		Kind: SitePortal, Host: "lib.sicau.edu.cn",
+		Note: "图书馆门户：资讯为主；真正有个人数据的是其 opac 子系统",
+	},
+	"xsgz": {
+		Kind: SitePersonal, Host: "xsgz.sicau.edu.cn",
+		Note: "学工系统：SSO 后拿 main-app-access-token，GET /gateway/zovecenter-saip-xg-app-student/student/detail/<学号> 一次返回 13 组档案（含身份证/家庭/简历）",
+	},
+	"opac": {
+		Kind: SiteOwnAccount, Host: "opac.sicau.edu.cn",
+		Note: "图书馆书目系统：独立账号体系（username/password 表单），页内无 CAS/SSO 入口",
+	},
+	"ecology": {
+		Kind: SitePortal, Host: "ecology.sicau.edu.cn",
+		Note: "生态/学工一体化：可达（HTTPS 200），未发现统一认证取数入口",
+	},
 }
 
 const (
@@ -225,4 +310,239 @@ func FetchYWTBIdentity(ctx context.Context, doer platform.HTTPDoer, baseURL, bea
 		return YWTBIdentity{}, fmt.Errorf("schoolauth: ywtb 明文缺少学号")
 	}
 	return info, nil
+}
+
+// ── ③ xsgz 学工系统（SSO 网关型）───────────────────────────────────
+
+// XSGZStudentDetail 是学工系统的完整学生档案（2026-11-10 实测）。
+//
+// 端点：GET /gateway/zovecenter-saip-xg-app-student/student/detail/<学号>
+// 一次返回 13 个分组，覆盖用户清单里几乎所有字段——包括教务档案页和
+// ywtb 都给不了的身份证号、家庭住址、考生号、紧急联系人、教育经历。
+//
+// 设计：**每个分组同时保留原始 JSON**（Groups map），上游新增字段不会丢；
+// 常用字段通过 TypedXxx 结构提取。这样既不会因上游加字段而崩，也不用把
+// 上百个字段全定义成 Go 结构体。
+type XSGZStudentDetail struct {
+	// Groups 保留 13 个分组的完整原文，key 形如 "baseDto" / "examDto"。
+	Groups map[string]json.RawMessage
+	// Typed 是把常用字段解出来的便利视图（供上层直接读）。
+	Typed XSGZTyped
+}
+
+// XSGZTyped 是从各分组提取出的常用字段（用户清单里的字段优先）。
+type XSGZTyped struct {
+	StudentNo          string
+	OneCardNo          string
+	StudentName        string
+	Sex                string
+	SexName            string
+	Nationality        string
+	IDCardNo           string // 身份证号（完整，上层立即加密）
+	Birthday           string
+	CollegeName        string
+	SpecialtyName      string
+	Grade              string
+	ClassName          string
+	CampusName         string
+	DormAddress        string
+	StudyYears         string
+	InSchoolDate       string
+	ExamineeNo         string
+	Email              string
+	MobilePhone        string
+	Wechat             string
+	QQ                 string
+	FamilyAddress      string
+	FamilyTelephone    string
+	EmergencyContact   string
+	EmergencyTelephone string
+	NamePinyin         string
+	Height             string
+	Weight             string
+	Age                int
+}
+
+// XSGZGroupKeys 是实测的 13 个分组名（顺序固定，便于遍历）。
+var XSGZGroupKeys = []string{
+	"baseDto", "studentStatusDto", "personalInfoDto", "contactInfoDto",
+	"emergencyContactInfoDto", "examDto", "familyDto", "economyDto",
+	"workUnitDto", "familyMemberList", "sociologyMemberList", "resumeList", "age",
+}
+
+// strField 从分组原文里安全取字符串字段：字段不存在、null、或为 number 时
+// 都能取到字符串表示（number 用其字面量），绝不因类型不匹配报错。
+func strField(g json.RawMessage, key string) string {
+	if len(g) == 0 {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(g, &m) != nil {
+		return ""
+	}
+	raw, ok := m[key]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	// 字符串直接去引号；其它类型（number/bool）用原始字面量
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+	}
+	return string(raw)
+}
+
+// parseXSGZDetail 把网关 data 解成 XSGZStudentDetail（分组原文 + 常用字段视图）。
+func parseXSGZDetail(data json.RawMessage) (XSGZStudentDetail, error) {
+	var groups map[string]json.RawMessage
+	if err := json.Unmarshal(data, &groups); err != nil {
+		return XSGZStudentDetail{}, fmt.Errorf("解析 data 分组失败：%w", err)
+	}
+	d := XSGZStudentDetail{Groups: groups}
+	g := func(k string) json.RawMessage { return groups[k] }
+
+	base, status, personal := g("baseDto"), g("studentStatusDto"), g("personalInfoDto")
+	contact, emergency, exam := g("contactInfoDto"), g("emergencyContactInfoDto"), g("examDto")
+	family := g("familyDto")
+
+	t := XSGZTyped{
+		StudentNo:          strField(base, "studentNo"),
+		OneCardNo:          strField(base, "oneCardNo"),
+		StudentName:        strField(base, "studentName"),
+		Sex:                strField(base, "sex"),
+		SexName:            strField(base, "sexName"),
+		Nationality:        strField(base, "nationality"),
+		IDCardNo:           strField(base, "idCardNo"),
+		Birthday:           strField(base, "birthday"),
+		CollegeName:        strField(status, "collegeName"),
+		SpecialtyName:      strField(status, "specialtyName"),
+		Grade:              strField(status, "grade"),
+		ClassName:          strField(status, "className"),
+		CampusName:         strField(status, "campusName"),
+		DormAddress:        strField(status, "dormAddress"),
+		StudyYears:         strField(status, "studyYears"),
+		InSchoolDate:       strField(status, "inSchoolDate"),
+		ExamineeNo:         strField(exam, "examineeNo"),
+		Email:              strField(contact, "email"),
+		MobilePhone:        strField(contact, "mobilePhone"),
+		Wechat:             strField(contact, "wechat"),
+		QQ:                 strField(contact, "qq"),
+		FamilyAddress:      strField(family, "familyAddress"),
+		FamilyTelephone:    strField(family, "familyTelephone"),
+		EmergencyContact:   strField(emergency, "emergencyContact"),
+		EmergencyTelephone: strField(emergency, "emergencyContactTelephone"),
+		NamePinyin:         strField(personal, "namePinyin"),
+		Height:             strField(personal, "height"),
+		Weight:             strField(personal, "weight"),
+	}
+	if a := strField(groups["age"], ""); a == "" {
+		var age int
+		if json.Unmarshal(groups["age"], &age) == nil {
+			t.Age = age
+		}
+	}
+	d.Typed = t
+	if t.StudentNo == "" {
+		return XSGZStudentDetail{}, fmt.Errorf("响应缺少学号（baseDto.studentNo）")
+	}
+	return d, nil
+}
+
+const (
+	xsgzHost = "xsgz.sicau.edu.cn"
+	// xsgzDetailGateway 是「学生详情」端点所在的子应用网关。
+	xsgzDetailGateway = "/gateway/zovecenter-saip-xg-app-student"
+	xsgzAppKey        = "zovecenter-saip-xg-app-student"
+	xsgzTenant        = "XG"
+)
+
+// xsgzHeaders 构造学工网关要求的请求头（2026-11-10 用浏览器完整 curl 实测确认）。
+//
+// 三处极易写错、写错就 403「API 接口资源未授权」或 500「验证权限异常」：
+//   - H-Zove-Source 必须是 "20000"（子应用），不是主应用的 "20100"
+//   - H-Zove-AppKey 必须是 "zovecenter-saip-xg-app-student"（子应用），不是 agg-pc
+//   - H-Zove-UserLevel 必须带（学生为 "XS"），漏了就 403
+func xsgzHeaders(token, userLevel string) map[string]string {
+	if strings.TrimSpace(userLevel) == "" {
+		userLevel = "XS"
+	}
+	return map[string]string{
+		"H-Zove-Token":     strings.TrimSpace(token),
+		"H-Zove-Source":    "20000",
+		"H-Zove-TenantId":  xsgzTenant,
+		"H-Zove-AppKey":    xsgzAppKey,
+		"H-Zove-UserLevel": userLevel,
+	}
+}
+
+// FetchXSGZStudentDetail 取学工系统的完整学生档案（一次请求多字段）。
+//
+// token 来自客户端完成统一登录后交来的 main-app-access-token（与 ywtb 交
+// Bearer 是同一模式）；后端拿到后即可独立取数，不需要浏览器参与。
+// studentNo 是学号，作为路径参数。
+func FetchXSGZStudentDetail(ctx context.Context, doer platform.HTTPDoer, baseURL, token, studentNo string) (XSGZStudentDetail, error) {
+	if doer == nil {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: FetchXSGZStudentDetail 需要 HTTPDoer")
+	}
+	if strings.TrimSpace(token) == "" {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: 缺少 xsgz access token（main-app-access-token）")
+	}
+	if strings.TrimSpace(studentNo) == "" {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: 缺少学号")
+	}
+	// 学号只允许数字，防止路径注入（这是拼进 URL 的唯一外部输入）。
+	for _, r := range studentNo {
+		if r < '0' || r > '9' {
+			return XSGZStudentDetail{}, fmt.Errorf("schoolauth: 学号只能包含数字")
+		}
+	}
+	if baseURL == "" {
+		baseURL = "https://" + xsgzHost
+	}
+
+	u := strings.TrimRight(baseURL, "/") + xsgzDetailGateway + "/student/detail/" + studentNo
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return XSGZStudentDetail{}, err
+	}
+	req.Header.Set("accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 Chrome/120")
+	req.Header.Set("Referer", strings.TrimRight(baseURL, "/")+"/student/personal/info")
+	for k, v := range xsgzHeaders(token, "XS") {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := doer.Do(ctx, req)
+	if err != nil {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: xsgz 取档案请求失败：%w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return XSGZStudentDetail{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: xsgz 返回 %d（token 可能已失效或权限不足）", resp.StatusCode)
+	}
+
+	var env struct {
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: xsgz 响应解析失败：%w", err)
+	}
+	if env.Code != "0" {
+		return XSGZStudentDetail{}, fmt.Errorf("schoolauth: xsgz 业务码 %s（%s）", env.Code, env.Message)
+	}
+	return parseXSGZDetail(env.Data)
+}
+
+// ParseXSGZDetail 解析 detail 端点的 data 段（供落库/测试复用）。
+func ParseXSGZDetail(data json.RawMessage) (XSGZStudentDetail, error) {
+	return parseXSGZDetail(data)
 }
