@@ -1362,8 +1362,19 @@ func TestSiteProfiles_EveryEntryHasNote(t *testing.T) {
 // 关键契约：H-Zove-AppKey 必须带，否则网关报「验证权限异常」(500)。
 
 func TestFetchXSGZStudentDetail_RequiresAppKey(t *testing.T) {
-	// 用 scripted doer 模拟：没带 AppKey 的请求返回 500 权限异常
+	// 用 scripted doer 模拟：没带 AppKey 的请求返回 500 权限异常。
+	// 注意 FetchXSGZStudentDetail 内部会先走两步 enterHall（实测必需），
+	// 所以这里也要把这两步的响应补上。
 	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/gateway/xg-agg-pc/user/checkUserAndGetUserLevel": {
+			status: 200,
+			body: `{"code":"0","message":"操作成功","data":{"loginLevels":[` +
+				`{"levelNo":"XS","units":[{"unitType":2,"unitNo":"419"}]}]}}`,
+		},
+		"/gateway/xg-agg-pc/user/enterHall": {
+			status: 200,
+			body:   `{"code":"0","message":"操作成功","data":{"account":"202500001"}}`,
+		},
 		"/gateway/zovecenter-saip-xg-app-student/student/detail/202500001": {
 			status: 200,
 			body: `{"code":"0","message":"操作成功","data":{` +
@@ -1489,6 +1500,16 @@ func TestXSGZSource_TriggersOnDetail(t *testing.T) {
 		`"familyMemberList":[],"resumeList":[],"sociologyMemberList":[],` +
 		`"economyDto":{},"workUnitDto":{},"age":20}}`
 	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		// FetchXSGZStudentDetail 内部会先走两步 enterHall（实测必需）
+		"/gateway/xg-agg-pc/user/checkUserAndGetUserLevel": {
+			status: 200,
+			body: `{"code":"0","message":"操作成功","data":{"loginLevels":[` +
+				`{"levelNo":"XS","units":[{"unitType":2,"unitNo":"419"}]}]}}`,
+		},
+		"/gateway/xg-agg-pc/user/enterHall": {
+			status: 200,
+			body:   `{"code":"0","message":"操作成功","data":{}}`,
+		},
 		"/gateway/zovecenter-saip-xg-app-student/student/detail/202500001": {status: 200, body: detailBody},
 	}}
 	var gotStudentNo string
@@ -1524,4 +1545,61 @@ type fakeExchanger struct {
 
 func (f fakeExchanger) ExchangeForIdentity(_ context.Context, _ schoolauth.Credential) (schoolauth.TicketIdentity, error) {
 	return schoolauth.TicketIdentity{StudentNo: f.studentNo, Name: f.name}, nil
+}
+
+// ── 后端自取 token + enterHall 前置（2026-11-10 实测）────────────────
+//
+// 这两条锁住本轮最关键的发现：
+//   ① 后端能用 tgt 自己换出 token（不需要浏览器/WebView）
+//   ② 取 detail 前必须先走 enterHall，否则 500「验证权限异常」
+// 曾经因为漏掉 ②，我把原因误判成「服务端识别客户端环境」，白查了很久。
+
+func TestEnterXSGZHall_CallsBothSteps(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/gateway/xg-agg-pc/user/checkUserAndGetUserLevel": {
+			status: 200,
+			body: `{"code":"0","data":{"loginLevels":[` +
+				`{"levelNo":"XS","units":[{"unitType":2,"unitNo":"419"}]}]}}`,
+		},
+		"/gateway/xg-agg-pc/user/enterHall": {
+			status: 200,
+			body:   `{"code":"0","data":{}}`,
+		},
+	}}
+	if err := schoolauth.EnterXSGZHall(context.Background(), d, "https://xsgz.sicau.edu.cn", "tok"); err != nil {
+		t.Fatalf("EnterXSGZHall: %v", err)
+	}
+	// 两步都必须发出
+	var gotLevel, gotEnter bool
+	for _, r := range d.requests {
+		switch r.path {
+		case "/gateway/xg-agg-pc/user/checkUserAndGetUserLevel":
+			gotLevel = true
+		case "/gateway/xg-agg-pc/user/enterHall":
+			gotEnter = true
+		}
+	}
+	if !gotLevel || !gotEnter {
+		t.Fatalf("必须依次调用两个接口，实际 level=%v enterHall=%v", gotLevel, gotEnter)
+	}
+}
+
+func TestEnterXSGZHall_PropagatesBusinessError(t *testing.T) {
+	// 业务码非 0 必须报错，否则调用方会以为升级成功、继续去打必然 500 的 detail。
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/gateway/xg-agg-pc/user/checkUserAndGetUserLevel": {
+			status: 200,
+			body:   `{"code":"500","message":"验证权限异常"}`,
+		},
+	}}
+	if err := schoolauth.EnterXSGZHall(context.Background(), d, "", "tok"); err == nil {
+		t.Fatal("业务码非 0 时 EnterXSGZHall 必须报错")
+	}
+}
+
+func TestFetchXSGZToken_RejectsEmptyTGT(t *testing.T) {
+	d := &scriptedDoer{responses: map[string]*scriptedResp{}}
+	if _, err := schoolauth.FetchXSGZToken(context.Background(), d, "", "  "); err == nil {
+		t.Fatal("空 tgt 必须被拒绝")
+	}
 }
