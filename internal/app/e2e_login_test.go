@@ -197,7 +197,7 @@ func TestE2E_TokenCarriesNoSensitiveData(t *testing.T) {
 	const studentNo = "888100043"
 	school := fakeSchoolAuth{ident: identitylogin.SchoolIdentity{
 		StudentNo: studentNo, Name: "令牌检查",
-		IDCardSuffix4: "2614", IDCardFull: "650102200701142614",
+		IDCardSuffix4: "2614", IDCardFull: "110101200001011234",
 	}}
 	a, _ := newE2EApp(t, "e2e_token_payload", school)
 
@@ -218,7 +218,7 @@ func TestE2E_TokenCarriesNoSensitiveData(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 
 	// 令牌是 base64 的 payload：解出来检查不得含敏感串
-	for _, forbidden := range []string{"SuperSecret123", "650102200701142614", studentNo} {
+	for _, forbidden := range []string{"SuperSecret123", "110101200001011234", studentNo} {
 		if bytes.Contains([]byte(resp.Token), []byte(forbidden)) {
 			t.Fatalf("令牌不得含敏感内容 %q", forbidden)
 		}

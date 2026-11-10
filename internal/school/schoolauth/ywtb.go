@@ -10,7 +10,7 @@ package schoolauth
 //	响应：{"requestId":"...","code":200,"msg":"登录成功","data":"<加密 base64>"}
 //	解密（DecryptYWTB）后的明文：
 //	  {"callbackUrl":"...","tgt":"...","st":"...",
-//	   "user":{"id":201690,"number":"202502204","name":"姚一飞",
+//	   "user":{"id":201690,"number":"202500001","name":"张三",
 //	           "phone":"...","group":[{"alias":"本科生"}]},...}
 //
 // 关键事实：**go-admin-tgt 是万能凭据**。客户端在学校统一身份认证登录后

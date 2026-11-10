@@ -127,7 +127,7 @@ func TestProfileRepo_UpsertAndRead(t *testing.T) {
 
 	p := platform.Profile{
 		UserID:        u.ID,
-		Name:          "姚一飞",
+		Name:          "张三",
 		IDCardSealed:  []byte("sealed-idcard"),
 		IDCardSuffix4: "1234",
 		College:       "信息工程学院",

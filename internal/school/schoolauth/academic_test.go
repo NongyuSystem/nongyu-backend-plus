@@ -43,11 +43,11 @@ const realPageHTML = `<html><head><meta charset="gb2312"></head><body>
 <td>锁定信息</td><td>核实和补充个人信息</td>
 </tr>
 <tr class="g_body_2">
-<td>1</td><td>25650101151502</td><td>202502204</td><td>姚一飞</td><td>男</td>
+<td>1</td><td>25650101151502</td><td>202500001</td><td>张三</td><td>男</td>
 <td>信息工程学院</td><td>数据科学与大数据技术（工学）</td><td>四年</td><td>本科</td><td>2025</td>
 <td>大数据202503</td><td>数据科学与大数据技术</td><td>大数据202503</td><td>在读</td><td>2025-9-10</td>
 <td>汉族</td><td>群众</td><td>新疆乌鲁木齐市</td><td>乌鲁木齐</td>
-<td>17799611327</td><td>0991-1234567</td><td>无</td><td>否</td><td>无</td><td>无</td>
+<td>13800138000</td><td>0991-1234567</td><td>无</td><td>否</td><td>无</td><td>无</td>
 </tr>
 </table>
 </body></html>`
@@ -70,10 +70,10 @@ func TestParseAcademic_RealStructure(t *testing.T) {
 	if got.College != "信息工程学院" {
 		t.Fatalf("学院（系别）不符：%q", got.College)
 	}
-	if got.StudentNo != "202502204" {
+	if got.StudentNo != "202500001" {
 		t.Fatalf("学号不符：%q", got.StudentNo)
 	}
-	if got.Name != "姚一飞" {
+	if got.Name != "张三" {
 		t.Fatalf("姓名不符：%q", got.Name)
 	}
 	// 隐私口径已于 2026-11-10 由维护者**显式覆盖**：
@@ -137,7 +137,7 @@ func TestParseAcademic_GBKBytes(t *testing.T) {
 	// 用 GBK 编码构造同一个页面（部分字段），验证按 GBK 解码能出中文。
 	page := `<table class="tablebody">
 <tr class="g_column"><td>学号</td><td>姓名</td><td>专业</td></tr>
-<tr class="g_body_2"><td>202502204</td><td>姚一飞</td><td>数据科学与大数据技术</td></tr>
+<tr class="g_body_2"><td>202500001</td><td>张三</td><td>数据科学与大数据技术</td></tr>
 </table>`
 	enc, err := encodeGBK(page)
 	if err != nil {
@@ -147,8 +147,8 @@ func TestParseAcademic_GBKBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAcademic(GBK): %v", err)
 	}
-	if got.Name != "姚一飞" {
-		t.Fatalf("GBK 解码后姓名应为姚一飞，实际 %q", got.Name)
+	if got.Name != "张三" {
+		t.Fatalf("GBK 解码后姓名应为张三，实际 %q", got.Name)
 	}
 	if got.Major != "数据科学与大数据技术" {
 		t.Fatalf("GBK 解码后专业不符，实际 %q", got.Major)
@@ -174,7 +174,7 @@ func TestParseAcademic_CleansParentheses(t *testing.T) {
 func TestParseAcademic_PrefersNewMajorWhenPresent(t *testing.T) {
 	page := `<table class="tablebody">
 <tr class="g_column"><td>学号</td><td>姓名</td><td>专业</td><td>新专业</td><td>班级</td><td>新班级</td></tr>
-<tr class="g_body_2"><td>202502204</td><td>姚一飞</td><td>旧专业</td><td>新专业X</td><td>旧班级</td><td>新班级Y</td></tr>
+<tr class="g_body_2"><td>202500001</td><td>张三</td><td>旧专业</td><td>新专业X</td><td>旧班级</td><td>新班级Y</td></tr>
 </table>`
 	got, err := schoolauth.ParseAcademic([]byte(page))
 	if err != nil {
@@ -220,10 +220,10 @@ func TestParseAcademic_AllBjibenFields(t *testing.T) {
 		"政治面貌", "家庭通讯地址", "火车站点", "个人电话", "家庭电话", "特长",
 	}
 	values := []string{
-		"2511010101", "202502204", "姚一飞", "男", "信息工程学院", "数据科学与大数据技术",
+		"2511010101", "202500001", "张三", "男", "信息工程学院", "数据科学与大数据技术",
 		"四年", "本科", "2025", "大数据202503", "数据科学与大数据技术", "大数据202503",
 		"在读", "2025-09-01", "汉族", "群众", "乌鲁木齐", "乌鲁木齐站",
-		"17799611327", "0991-0000000", "编程",
+		"13800138000", "0991-0000000", "编程",
 	}
 
 	ac, err := schoolauth.ParseAcademic(buildBjibenPage(headers, values))
@@ -233,8 +233,8 @@ func TestParseAcademic_AllBjibenFields(t *testing.T) {
 
 	checks := map[string][2]string{
 		"ExamNo":           {ac.ExamNo, "2511010101"},
-		"StudentNo":        {ac.StudentNo, "202502204"},
-		"Name":             {ac.Name, "姚一飞"},
+		"StudentNo":        {ac.StudentNo, "202500001"},
+		"Name":             {ac.Name, "张三"},
 		"Gender":           {ac.Gender, "男"},
 		"College":          {ac.College, "信息工程学院"},
 		"Major":            {ac.Major, "数据科学与大数据技术"},
@@ -250,7 +250,7 @@ func TestParseAcademic_AllBjibenFields(t *testing.T) {
 		"PoliticalStatus":  {ac.PoliticalStatus, "群众"},
 		"HomeAddress":      {ac.HomeAddress, "乌鲁木齐"},
 		"TrainStation":     {ac.TrainStation, "乌鲁木齐站"},
-		"PersonalPhone":    {ac.PersonalPhone, "17799611327"},
+		"PersonalPhone":    {ac.PersonalPhone, "13800138000"},
 		"HomePhone":        {ac.HomePhone, "0991-0000000"},
 		"Specialty":        {ac.Specialty, "编程"},
 	}
@@ -264,7 +264,7 @@ func TestParseAcademic_AllBjibenFields(t *testing.T) {
 // 「新专业」含「专业」：必须取到各自正确的值，不能串。
 func TestParseAcademic_NewMajorDoesNotShadowMajor(t *testing.T) {
 	headers := []string{"学号", "姓名", "专业", "新专业"}
-	values := []string{"202502204", "姚一飞", "老专业名", "新专业名"}
+	values := []string{"202500001", "张三", "老专业名", "新专业名"}
 	ac, err := schoolauth.ParseAcademic(buildBjibenPage(headers, values))
 	if err != nil {
 		t.Fatalf("ParseAcademic: %v", err)
@@ -338,7 +338,7 @@ func cred(cookies ...string) schoolauth.Credential {
 // 正常路径：认证身份 + 教务学籍 合并成完整画像。
 func TestAuthenticate_MergesTwoSources(t *testing.T) {
 	fa := &fakeAuth{raw: schoolauth.RawIdentity{
-		StudentNo: "202502204", Name: "姚一飞",
+		StudentNo: "202500001", Name: "张三",
 		College: "信息工程学院", IDCardMasked: "650****2614",
 	}}
 	fac := &fakeAcademic{raw: schoolauth.RawAcademic{
@@ -353,7 +353,7 @@ func TestAuthenticate_MergesTwoSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if ident.StudentNo != "202502204" || ident.Name != "姚一飞" {
+	if ident.StudentNo != "202500001" || ident.Name != "张三" {
 		t.Fatalf("认证字段不符：%+v", ident)
 	}
 	if ident.College != "信息工程学院" {
@@ -378,7 +378,7 @@ func TestAuthenticate_MergesTwoSources(t *testing.T) {
 // 教务抓取失败：登录仍成功，标记不完整，学院仍保留。
 func TestAuthenticate_AcademicFailureMarksIncomplete(t *testing.T) {
 	fa := &fakeAuth{raw: schoolauth.RawIdentity{
-		StudentNo: "202502204", Name: "姚一飞", College: "信息工程学院", IDCardMasked: "650****2614",
+		StudentNo: "202500001", Name: "张三", College: "信息工程学院", IDCardMasked: "650****2614",
 	}}
 	fac := &fakeAcademic{err: errors.New("教务超时")}
 	log := &testLogger{}
@@ -413,7 +413,7 @@ func TestAuthenticate_AcademicFailureMarksIncomplete(t *testing.T) {
 
 // 教务抓取超时：按不完整处理，且不会把登录拖住。
 func TestAuthenticate_AcademicTimeout(t *testing.T) {
-	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202502204", Name: "姚一飞"}}
+	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202500001", Name: "张三"}}
 	fac := &fakeAcademic{delay: 2 * time.Second, raw: schoolauth.RawAcademic{Major: "x"}}
 	a, err := schoolauth.New(schoolauth.Options{
 		Auth: fa, Academic: fac, AcademicTimeout: 50 * time.Millisecond,
@@ -448,7 +448,7 @@ func TestAuthenticate_AuthFailure(t *testing.T) {
 
 // 认证源没给学号：等同认证失败（没有学号就无法确定是谁）。
 func TestAuthenticate_MissingStudentNoIsFailure(t *testing.T) {
-	fa := &fakeAuth{raw: schoolauth.RawIdentity{Name: "姚一飞"}}
+	fa := &fakeAuth{raw: schoolauth.RawIdentity{Name: "张三"}}
 	a, _ := schoolauth.New(schoolauth.Options{Auth: fa})
 	_, err := a.Authenticate(context.Background(), cred("go-admin-tgt=TGT1"))
 	if !errors.Is(err, schoolauth.ErrAuthFailed) {
@@ -528,7 +528,7 @@ func TestCredentialEmpty(t *testing.T) {
 
 // 没有教务源时：认证成功但标记不完整（而不是假装完整）。
 func TestAuthenticate_NoAcademicSource(t *testing.T) {
-	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202502204", College: "信息工程学院"}}
+	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202500001", College: "信息工程学院"}}
 	a, _ := schoolauth.New(schoolauth.Options{Auth: fa})
 	ident, err := a.Authenticate(context.Background(), cred("go-admin-tgt=TGT1"))
 	if err != nil {
@@ -541,7 +541,7 @@ func TestAuthenticate_NoAcademicSource(t *testing.T) {
 
 // 教务抓到了但字段全空：同样视为不完整。
 func TestAuthenticate_EmptyAcademicMarksIncomplete(t *testing.T) {
-	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202502204"}}
+	fa := &fakeAuth{raw: schoolauth.RawIdentity{StudentNo: "202500001"}}
 	fac := &fakeAcademic{raw: schoolauth.RawAcademic{}}
 	a, _ := schoolauth.New(schoolauth.Options{Auth: fa, Academic: fac})
 	ident, err := a.Authenticate(context.Background(), cred("go-admin-tgt=TGT1"))
@@ -563,7 +563,7 @@ func TestNew_RequiresAuthSource(t *testing.T) {
 // 桥接层：把适配器结果映射成身份域形状，字段必须一一对应。
 func TestIdentity_AsDomain(t *testing.T) {
 	i := schoolauth.Identity{
-		StudentNo: "202502204", Name: "姚一飞",
+		StudentNo: "202500001", Name: "张三",
 		College: "信息工程学院", IDCardSuffix4: "2614",
 		Major: "数据科学与大数据技术", ClassName: "大数据202503", Grade: "2025",
 		ProfileIncomplete: true,

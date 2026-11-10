@@ -22,7 +22,7 @@ import (
 // 身份域的集成测试：真连 Postgres（与 Redis 不参与，邮箱码另有测试）。
 // 未配置 DATABASE_URL 时跳过。
 
-const fullIDCard = "650102200701142614"
+const fullIDCard = "110101200001011234"
 
 const pwdKey = "password-box-key-for-tests-only-32b"
 const idKey = "idcard-box-key-for-tests-only-32byts"
@@ -278,7 +278,7 @@ func TestLogin_ByIDCard(t *testing.T) {
 // 拼音转换器处理不了汉字时必须 fail-closed，而不是拿猜测值比对。
 func TestLogin_ByIDCard_FailsClosedWhenInitialsUnavailable(t *testing.T) {
 	// 直接验证转换器本身的行为：处理不了汉字时必须返回错误而不是猜。
-	if _, err := (login.DefaultInitializer{}).Initials("姚一飞"); !errors.Is(err, login.ErrNoHanSupport) {
+	if _, err := (login.DefaultInitializer{}).Initials("张三"); !errors.Is(err, login.ErrNoHanSupport) {
 		t.Fatalf("默认转换器遇汉字应返回 ErrNoHanSupport，实际 %v", err)
 	}
 	// 拉丁名按词取首字母："Yao Yifei" → "YY"
@@ -289,7 +289,7 @@ func TestLogin_ByIDCard_FailsClosedWhenInitialsUnavailable(t *testing.T) {
 
 	// 注入一个不含该字的表 → 仍应拒绝（不得跳过字符）。
 	mi := login.MapInitializer{Table: map[rune]string{'姚': "Y"}}
-	if _, err := mi.Initials("姚一飞"); !errors.Is(err, login.ErrNoHanSupport) {
+	if _, err := mi.Initials("张三"); !errors.Is(err, login.ErrNoHanSupport) {
 		t.Fatalf("表外汉字应拒绝，实际 %v", err)
 	}
 	// 表内全覆盖 → 正常返回
