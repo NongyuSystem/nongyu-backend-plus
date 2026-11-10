@@ -250,6 +250,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
 	// tgt 保管器：登录成功后按用户保存，之后取学籍不必再让客户端交凭据。
 	var tgtMgr *schoolauth.TGTManager
+	// 身份域持久层（在下方初始化；xsgz 落库回调需要引用它，故提前声明）。
+	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
+	var identityStore *platform.PGIdentityStore
 
 	// 教务源：这里只用它的「换票」能力（确认学号 + 滚动续期 tgt），
 	// **不再用它抓 bjiben.asp 取专业/班级/年级**（那条路径已 disable）。
@@ -280,6 +283,39 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if authSrc, err := schoolauth.NewXSGZSource(schoolauth.XSGZOptions{
 		Doer:      doer,
 		Exchanger: exchangerOrNil(jwSrc),
+		// 取到完整档案后落库（4 张表）。落库失败不阻断登录。
+		OnDetail: func(ctx context.Context, d schoolauth.XSGZStudentDetail) error {
+			if identityStore == nil {
+				return nil
+			}
+			pd := d.ToProfileData()
+			// 身份证号加密后落库（ADR-0002：明文绝不入库）。
+			// 复用 TicketKey 作密钥（同样是「必须加密保存的敏感数据」一类），
+			// 用不同派生后缀隔离用途，避免与 tgt 共用同一把实际密钥。
+			var sealed []byte
+			suffix := ""
+			if pd.IDCardNo != "" {
+				if cfg.TicketKey != "" {
+					var serr error
+					sealed, serr = platform.NewAESCipher(cfg.TicketKey + ":idcard").Seal([]byte(pd.IDCardNo))
+					if serr != nil {
+						logger.Warn("身份证加密失败，只保存后四位", "err", serr)
+						sealed = nil
+					}
+				}
+				suffix = schoolauth.Suffix4FromMasked(pd.IDCardNo)
+			}
+			return identityStore.SaveXSGZProfile(ctx, platform.XSGZProfileInput{
+				StudentNo:     pd.StudentNo,
+				Fields:        pd.Fields,
+				Groups:        pd.Groups,
+				FamilyMembers: pd.FamilyMembers,
+				Resumes:       pd.Resumes,
+				IDCardSealed:  sealed,
+				IDCardSuffix4: suffix,
+				Age:           pd.Age,
+			})
+		},
 	}); err == nil {
 		// Academic 传 nil：jiaowu 的 GBK 页面取数已 disable（#28 后续）。
 		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
@@ -292,8 +328,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 
 	// 身份域持久层：与审计共用同一个 Postgres（库 nongyu），但连接池独立。
-	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
-	var identityStore *platform.PGIdentityStore
+	// （identityStore 已在上方提前声明。）
 	var sessionCache *platform.RedisSessionCache
 	var identityUserSvc *identityuser.Service
 	var identitySessionSvc *identitysession.Service

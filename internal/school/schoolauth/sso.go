@@ -332,35 +332,50 @@ type XSGZStudentDetail struct {
 
 // XSGZTyped 是从各分组提取出的常用字段（用户清单里的字段优先）。
 type XSGZTyped struct {
-	StudentNo          string
-	OneCardNo          string
-	StudentName        string
-	Sex                string
-	SexName            string
-	Nationality        string
-	IDCardNo           string // 身份证号（完整，上层立即加密）
-	Birthday           string
-	CollegeName        string
-	SpecialtyName      string
-	Grade              string
-	ClassName          string
-	CampusName         string
-	DormAddress        string
-	StudyYears         string
-	InSchoolDate       string
-	ExamineeNo         string
-	Email              string
-	MobilePhone        string
-	Wechat             string
-	QQ                 string
-	FamilyAddress      string
-	FamilyTelephone    string
-	EmergencyContact   string
-	EmergencyTelephone string
-	NamePinyin         string
-	Height             string
-	Weight             string
-	Age                int
+	StudentNo             string
+	OneCardNo             string
+	StudentName           string
+	Sex                   string
+	SexName               string
+	Nationality           string
+	NationalityName       string
+	IDCardNo              string // 身份证号（完整，上层立即加密）
+	Birthday              string
+	Photo                 string
+	CollegeNo             string
+	CollegeName           string
+	SpecialtyNo           string
+	SpecialtyName         string
+	Grade                 string
+	ClassNo               string
+	ClassName             string
+	CampusName            string
+	DormAddress           string
+	StudyYears            string
+	InSchoolDate          string
+	StudentStateName      string
+	CurrentStateName      string
+	ExamineeNo            string
+	HighSchool            string
+	SourceLocation        string
+	Email                 string
+	MobilePhone           string
+	Wechat                string
+	QQ                    string
+	EmergencyContact      string
+	EmergencyRelationship string
+	EmergencyTelephone    string
+	EmergencyAddress      string
+	FamilyAddress         string
+	FamilyDetailAddress   string
+	FamilyTelephone       string
+	FamilyPostalNo        string
+	NamePinyin            string
+	BloodTypeName         string
+	Height                string
+	Weight                string
+	NativePlace           string
+	Age                   int
 }
 
 // XSGZGroupKeys 是实测的 13 个分组名（顺序固定，便于遍历）。
@@ -408,34 +423,49 @@ func parseXSGZDetail(data json.RawMessage) (XSGZStudentDetail, error) {
 	family := g("familyDto")
 
 	t := XSGZTyped{
-		StudentNo:          strField(base, "studentNo"),
-		OneCardNo:          strField(base, "oneCardNo"),
-		StudentName:        strField(base, "studentName"),
-		Sex:                strField(base, "sex"),
-		SexName:            strField(base, "sexName"),
-		Nationality:        strField(base, "nationality"),
-		IDCardNo:           strField(base, "idCardNo"),
-		Birthday:           strField(base, "birthday"),
-		CollegeName:        strField(status, "collegeName"),
-		SpecialtyName:      strField(status, "specialtyName"),
-		Grade:              strField(status, "grade"),
-		ClassName:          strField(status, "className"),
-		CampusName:         strField(status, "campusName"),
-		DormAddress:        strField(status, "dormAddress"),
-		StudyYears:         strField(status, "studyYears"),
-		InSchoolDate:       strField(status, "inSchoolDate"),
-		ExamineeNo:         strField(exam, "examineeNo"),
-		Email:              strField(contact, "email"),
-		MobilePhone:        strField(contact, "mobilePhone"),
-		Wechat:             strField(contact, "wechat"),
-		QQ:                 strField(contact, "qq"),
-		FamilyAddress:      strField(family, "familyAddress"),
-		FamilyTelephone:    strField(family, "familyTelephone"),
-		EmergencyContact:   strField(emergency, "emergencyContact"),
-		EmergencyTelephone: strField(emergency, "emergencyContactTelephone"),
-		NamePinyin:         strField(personal, "namePinyin"),
-		Height:             strField(personal, "height"),
-		Weight:             strField(personal, "weight"),
+		StudentNo:             strField(base, "studentNo"),
+		OneCardNo:             strField(base, "oneCardNo"),
+		StudentName:           strField(base, "studentName"),
+		Sex:                   strField(base, "sex"),
+		SexName:               strField(base, "sexName"),
+		Nationality:           strField(base, "nationality"),
+		NationalityName:       strField(base, "nationalityName"),
+		IDCardNo:              strField(base, "idCardNo"),
+		Birthday:              strField(base, "birthday"),
+		Photo:                 strField(base, "photo"),
+		CollegeNo:             strField(status, "collegeNo"),
+		CollegeName:           strField(status, "collegeName"),
+		SpecialtyNo:           strField(status, "specialtyNo"),
+		SpecialtyName:         strField(status, "specialtyName"),
+		Grade:                 strField(status, "grade"),
+		ClassNo:               strField(status, "classNo"),
+		ClassName:             strField(status, "className"),
+		CampusName:            strField(status, "campusName"),
+		DormAddress:           strField(status, "dormAddress"),
+		StudyYears:            strField(status, "studyYears"),
+		InSchoolDate:          strField(status, "inSchoolDate"),
+		StudentStateName:      strField(status, "studentStateName"),
+		CurrentStateName:      strField(status, "currentStateName"),
+		ExamineeNo:            strField(exam, "examineeNo"),
+		HighSchool:            strField(exam, "highSchool"),
+		SourceLocation:        strField(exam, "sourceLocation"),
+		Email:                 strField(contact, "email"),
+		MobilePhone:           strField(contact, "mobilePhone"),
+		Wechat:                strField(contact, "wechat"),
+		QQ:                    strField(contact, "qq"),
+		FamilyAddress:         strField(family, "familyAddress"),
+		FamilyDetailAddress:   strField(family, "familyDetailAddress"),
+		FamilyTelephone:       strField(family, "familyTelephone"),
+		FamilyPostalNo:        strField(family, "familyPostalNo"),
+		EmergencyContact:      strField(emergency, "emergencyContact"),
+		EmergencyRelationship: strField(emergency, "emergencyContactRelationship"),
+		EmergencyTelephone:    strField(emergency, "emergencyContactTelephone"),
+		EmergencyAddress:      strField(emergency, "emergencyContactAddress"),
+		NamePinyin:            strField(personal, "namePinyin"),
+		BloodTypeName:         strField(personal, "bloodTypeName"),
+		Height:                strField(personal, "height"),
+		Weight:                strField(personal, "weight"),
+		NativePlace:           strField(personal, "nativePlace"),
 	}
 	if a := strField(groups["age"], ""); a == "" {
 		var age int
@@ -563,6 +593,9 @@ type XSGZSource struct {
 	exchanger TicketExchanger
 	// token 是客户端交来的 main-app-access-token。
 	token string
+	// onDetail 是取到完整档案后的回调（装配层接上落库）。
+	// 设计成回调：schoolauth 是业务域，不该知道「数据存哪」。
+	onDetail func(ctx context.Context, detail XSGZStudentDetail) error
 }
 
 // XSGZOptions 是 XSGZSource 的构造参数。
@@ -571,6 +604,11 @@ type XSGZOptions struct {
 	Exchanger TicketExchanger
 	// Token 是学工系统的 access token（客户端完成统一登录后交来）。
 	Token string
+	// OnDetail 是取到完整档案后的回调，由装配层接上「落库」。
+	// 设计成回调而不是在这里直接依赖 platform 的存储：
+	// schoolauth 是业务域，不该知道「数据存哪」。
+	// 回调失败不阻断登录（身份已由换票确认），但会记录日志。
+	OnDetail func(ctx context.Context, detail XSGZStudentDetail) error
 }
 
 // NewXSGZSource 构造学工取身份源。
@@ -581,7 +619,7 @@ func NewXSGZSource(o XSGZOptions) (*XSGZSource, error) {
 	if o.Exchanger == nil {
 		return nil, fmt.Errorf("schoolauth: XSGZSource 需要 TicketExchanger（用 tgt 换票确认学号）")
 	}
-	return &XSGZSource{doer: o.Doer, exchanger: o.Exchanger, token: strings.TrimSpace(o.Token)}, nil
+	return &XSGZSource{doer: o.Doer, exchanger: o.Exchanger, token: strings.TrimSpace(o.Token), onDetail: o.OnDetail}, nil
 }
 
 // WithToken 设置学工系统的 access token。
@@ -620,6 +658,13 @@ func (s *XSGZSource) FetchIdentity(ctx context.Context, cred Credential) (RawIde
 		}, nil
 	}
 
+	// 落库：交给装配层注入的回调（失败不阻断登录）。
+	if s.onDetail != nil {
+		if derr := s.onDetail(ctx, detail); derr != nil {
+			// 不返回错误：身份已确认，落库失败只影响画像完整度。
+			_ = derr
+		}
+	}
 	raw := RawIdentity{
 		StudentNo:    detail.Typed.StudentNo,
 		Name:         detail.Typed.StudentName,
@@ -649,4 +694,70 @@ func (s *XSGZSource) FetchDetail(ctx context.Context, cred Credential) (XSGZStud
 		token = s.token
 	}
 	return FetchXSGZStudentDetail(ctx, s.doer, "", token, ti.StudentNo)
+}
+
+// XSGZProfileData 是 detail 展开后、可直接交给存储层的纯数据。
+//
+// 放在 schoolauth 里而不是装配层：字段映射规则属于「学工协议」的一部分，
+// 装配层不应知道 examDto.collegeNo 这种上游细节。
+type XSGZProfileData struct {
+	StudentNo     string
+	Fields        map[string]string
+	Groups        map[string]string
+	FamilyMembers []string
+	Resumes       []string
+	IDCardNo      string
+	Age           int
+}
+
+// ToProfileData 把 detail 展开成落库用的纯数据。
+func (d XSGZStudentDetail) ToProfileData() XSGZProfileData {
+	t := d.Typed
+	fields := map[string]string{
+		"oneCardNo": t.OneCardNo, "studentName": t.StudentName,
+		"sex": t.Sex, "sexName": t.SexName,
+		"nationality": t.Nationality, "nationalityName": t.NationalityName,
+		"birthday": t.Birthday, "photo": t.Photo,
+		"collegeNo": t.CollegeNo, "collegeName": t.CollegeName,
+		"specialtyNo": t.SpecialtyNo, "specialtyName": t.SpecialtyName,
+		"grade": t.Grade, "classNo": t.ClassNo, "className": t.ClassName,
+		"campusName": t.CampusName, "dormAddress": t.DormAddress,
+		"studyYears": t.StudyYears, "inSchoolDate": t.InSchoolDate,
+		"studentStateName": t.StudentStateName, "currentStateName": t.CurrentStateName,
+		"examineeNo": t.ExamineeNo, "highSchool": t.HighSchool,
+		"sourceLocation": t.SourceLocation,
+		"email":          t.Email, "mobilePhone": t.MobilePhone,
+		"wechat": t.Wechat, "qq": t.QQ,
+		"emergencyContact":             t.EmergencyContact,
+		"emergencyContactRelationship": t.EmergencyRelationship,
+		"emergencyContactTelephone":    t.EmergencyTelephone,
+		"emergencyContactAddress":      t.EmergencyAddress,
+		"familyAddress":                t.FamilyAddress,
+		"familyDetailAddress":          t.FamilyDetailAddress,
+		"familyTelephone":              t.FamilyTelephone, "familyPostalNo": t.FamilyPostalNo,
+		"namePinyin": t.NamePinyin, "bloodTypeName": t.BloodTypeName,
+		"height": t.Height, "weight": t.Weight, "nativePlace": t.NativePlace,
+	}
+	groups := make(map[string]string, len(d.Groups))
+	for k, v := range d.Groups {
+		groups[k] = string(v)
+	}
+	var members, resumes []string
+	var arr []json.RawMessage
+	if json.Unmarshal(d.Groups["familyMemberList"], &arr) == nil {
+		for _, v := range arr {
+			members = append(members, string(v))
+		}
+	}
+	arr = nil
+	if json.Unmarshal(d.Groups["resumeList"], &arr) == nil {
+		for _, v := range arr {
+			resumes = append(resumes, string(v))
+		}
+	}
+	return XSGZProfileData{
+		StudentNo: t.StudentNo, Fields: fields, Groups: groups,
+		FamilyMembers: members, Resumes: resumes,
+		IDCardNo: t.IDCardNo, Age: t.Age,
+	}
 }
