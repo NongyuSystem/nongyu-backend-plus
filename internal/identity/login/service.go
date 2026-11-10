@@ -122,6 +122,27 @@ type SchoolIdentity struct {
 	ClassName string
 	Grade     string
 
+	// ── 以下来自教务档案页 bjiben.asp（issue #29）──────────────────
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
+	// ── 以下来自 ywtb getUserInfo（issue #29）──────────────────────
+	Birthday        string
+	AvatarSourceURL string
+
 	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级。
 	// 此时**登录照常成功**（维护者决定），由客户端提示用户，下次登录重试。
 	ProfileIncomplete bool
@@ -268,6 +289,27 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 		Grade:         ident.Grade,
 		IDCardSealed:  sealedID,
 		IDCardSuffix4: ident.IDCardSuffix4,
+
+		// 教务档案页字段（#29）
+		ExamNo:           ident.ExamNo,
+		Gender:           ident.Gender,
+		StudyDuration:    ident.StudyDuration,
+		EducationLevel:   ident.EducationLevel,
+		NewMajor:         ident.NewMajor,
+		NewClassName:     ident.NewClassName,
+		EnrollmentStatus: ident.EnrollmentStatus,
+		EnrollmentDate:   ident.EnrollmentDate,
+		Nation:           ident.Nation,
+		PoliticalStatus:  ident.PoliticalStatus,
+		HomeAddress:      ident.HomeAddress,
+		TrainStation:     ident.TrainStation,
+		PersonalPhone:    ident.PersonalPhone,
+		HomePhone:        ident.HomePhone,
+		Specialty:        ident.Specialty,
+
+		// ywtb 字段（#29）
+		Birthday:        ident.Birthday,
+		AvatarSourceURL: ident.AvatarSourceURL,
 	})
 	if err != nil {
 		return Result{}, err

@@ -9,7 +9,9 @@ package migrations_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"nongyu-backend-plus/migrations"
@@ -22,21 +24,24 @@ func TestEmbeddedSQL_MatchesRootMigrationFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("枚举嵌入脚本失败：%v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("应有且仅有两份迁移脚本，实际 %d：%+v", len(files), files)
+	if len(files) == 0 {
+		t.Fatal("没有任何迁移脚本")
 	}
-	wantNames := []string{"0001_audit_log.sql", "0002_identity.sql"}
-	for i, want := range wantNames {
-		if files[i].Name != want {
-			t.Fatalf("第 %d 份脚本应为 %q，实际 %q（顺序即执行顺序）", i, want, files[i].Name)
+	// 不再硬编码「恰好两份」：迁移是增量的，新增编号属正常演进。
+	// 这里改为校验「编号连续从 0001 开始」+「逐个与磁盘一致」。
+	for i := range files {
+		// 只校验「编号连续且从 0001 开始」，文件名主体不锁死。
+		wantPrefix := fmt.Sprintf("%04d_", i+1)
+		if !strings.HasPrefix(files[i].Name, wantPrefix) {
+			t.Fatalf("第 %d 份脚本应以 %q 开头，实际 %q（顺序即执行顺序）", i, wantPrefix, files[i].Name)
 		}
 		// go test 的 cwd 就是本包目录（migrations/），权威源与 .go 同目录。
-		disk, err := os.ReadFile(want)
+		disk, err := os.ReadFile(files[i].Name)
 		if err != nil {
-			t.Fatalf("读磁盘权威源 %s 失败：%v", want, err)
+			t.Fatalf("读磁盘权威源 %s 失败：%v", files[i].Name, err)
 		}
 		if !bytes.Equal([]byte(files[i].SQL), disk) {
-			t.Fatalf("嵌入的 %s 与磁盘权威源不一致（%d vs %d 字节）", want, len(files[i].SQL), len(disk))
+			t.Fatalf("嵌入的 %s 与磁盘权威源不一致（%d vs %d 字节）", files[i].Name, len(files[i].SQL), len(disk))
 		}
 	}
 }

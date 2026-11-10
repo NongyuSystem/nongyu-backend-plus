@@ -101,9 +101,10 @@ func (s *PGIdentityStore) Create(ctx context.Context, studentNo string, role Rol
 	var u User
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO users (student_no, role) VALUES ($1, $2)
-		 RETURNING id, student_no, role, status, created_at`,
+		 RETURNING id, student_no, role, status, created_at,
+		           last_login_ip, last_login_device, last_login_at`,
 		studentNo, int16(role),
-	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt)
+	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt, &u.LastLoginIP, &u.LastLoginDevice, &u.LastLoginAt)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return User{}, ErrAlreadyExists
@@ -117,9 +118,9 @@ func (s *PGIdentityStore) Create(ctx context.Context, studentNo string, role Rol
 func (s *PGIdentityStore) ByStudentNo(ctx context.Context, studentNo string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, student_no, role, status, created_at FROM users WHERE student_no = $1`,
+		`SELECT id, student_no, role, status, created_at, last_login_ip, last_login_device, last_login_at FROM users WHERE student_no = $1`,
 		studentNo,
-	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt)
+	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt, &u.LastLoginIP, &u.LastLoginDevice, &u.LastLoginAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -133,8 +134,8 @@ func (s *PGIdentityStore) ByStudentNo(ctx context.Context, studentNo string) (Us
 func (s *PGIdentityStore) ByID(ctx context.Context, id int64) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, student_no, role, status, created_at FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt)
+		`SELECT id, student_no, role, status, created_at, last_login_ip, last_login_device, last_login_at FROM users WHERE id = $1`, id,
+	).Scan(&u.ID, &u.StudentNo, &u.Role, &u.Status, &u.CreatedAt, &u.LastLoginIP, &u.LastLoginDevice, &u.LastLoginAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -148,6 +149,24 @@ func (s *PGIdentityStore) ByID(ctx context.Context, id int64) (User, error) {
 func (s *PGIdentityStore) SetStatus(ctx context.Context, id int64, status UserStatus) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE users SET status = $2, updated_at = now() WHERE id = $1`, id, int16(status))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchLogin 记录一次成功登录的审计三元组（issue #29）。
+//
+// 只在登录成功路径调用一次；不要挂到每个请求上（写放大会压垮 users 表）。
+// ip/device 允许为空（取不到客户端信息时不阻塞登录）。
+func (s *PGIdentityStore) TouchLogin(ctx context.Context, id int64, ip, device string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users
+		    SET last_login_ip = $2, last_login_device = $3, last_login_at = now(), updated_at = now()
+		  WHERE id = $1`, id, strings.TrimSpace(ip), strings.TrimSpace(device))
 	if err != nil {
 		return err
 	}
@@ -176,8 +195,16 @@ func (s *PGIdentityStore) SetRole(ctx context.Context, id int64, role Role) erro
 func (s *PGIdentityStore) Upsert(ctx context.Context, p Profile) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO user_profiles
-			(user_id, name, id_card_sealed, id_card_suffix4, college, major, class_name, grade, qq, avatar_url, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+			(user_id, name, id_card_sealed, id_card_suffix4, college, major, class_name, grade,
+			 qq, avatar_url, exam_no, gender, study_duration, education_level, new_major,
+			 new_class_name, enrollment_status, enrollment_date, nation, political_status,
+			 home_address, train_station, personal_phone, home_phone, specialty,
+			 nickname, email, birthday, avatar_source_url, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+		        $9,$10,$11,$12,$13,$14,$15,
+		        $16,$17,$18,$19,$20,
+		        $21,$22,$23,$24,$25,
+		        $26,$27,$28,$29, now())
 		ON CONFLICT (user_id) DO UPDATE SET
 			name = EXCLUDED.name,
 			id_card_sealed = EXCLUDED.id_card_sealed,
@@ -188,9 +215,32 @@ func (s *PGIdentityStore) Upsert(ctx context.Context, p Profile) error {
 			grade = EXCLUDED.grade,
 			qq = EXCLUDED.qq,
 			avatar_url = EXCLUDED.avatar_url,
+			exam_no = EXCLUDED.exam_no,
+			gender = EXCLUDED.gender,
+			study_duration = EXCLUDED.study_duration,
+			education_level = EXCLUDED.education_level,
+			new_major = EXCLUDED.new_major,
+			new_class_name = EXCLUDED.new_class_name,
+			enrollment_status = EXCLUDED.enrollment_status,
+			enrollment_date = EXCLUDED.enrollment_date,
+			nation = EXCLUDED.nation,
+			political_status = EXCLUDED.political_status,
+			home_address = EXCLUDED.home_address,
+			train_station = EXCLUDED.train_station,
+			personal_phone = EXCLUDED.personal_phone,
+			home_phone = EXCLUDED.home_phone,
+			specialty = EXCLUDED.specialty,
+			nickname = EXCLUDED.nickname,
+			email = EXCLUDED.email,
+			birthday = EXCLUDED.birthday,
+			avatar_source_url = EXCLUDED.avatar_source_url,
 			updated_at = now()`,
 		p.UserID, p.Name, p.IDCardSealed, p.IDCardSuffix4,
-		p.College, p.Major, p.ClassName, p.Grade, p.QQ, p.AvatarURL)
+		p.College, p.Major, p.ClassName, p.Grade,
+		p.QQ, p.AvatarURL, p.ExamNo, p.Gender, p.StudyDuration, p.EducationLevel, p.NewMajor,
+		p.NewClassName, p.EnrollmentStatus, p.EnrollmentDate, p.Nation, p.PoliticalStatus,
+		p.HomeAddress, p.TrainStation, p.PersonalPhone, p.HomePhone, p.Specialty,
+		p.Nickname, p.Email, p.Birthday, p.AvatarSourceURL)
 	return err
 }
 
@@ -198,10 +248,18 @@ func (s *PGIdentityStore) Upsert(ctx context.Context, p Profile) error {
 func (s *PGIdentityStore) ByUserID(ctx context.Context, userID int64) (Profile, error) {
 	var p Profile
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id, name, id_card_sealed, id_card_suffix4, college, major, class_name, grade, qq, avatar_url, updated_at
+		SELECT user_id, name, id_card_sealed, id_card_suffix4, college, major, class_name, grade,
+		       qq, avatar_url, exam_no, gender, study_duration, education_level, new_major,
+		       new_class_name, enrollment_status, enrollment_date, nation, political_status,
+		       home_address, train_station, personal_phone, home_phone, specialty,
+		       nickname, email, birthday, avatar_source_url, updated_at
 		  FROM user_profiles WHERE user_id = $1`, userID,
 	).Scan(&p.UserID, &p.Name, &p.IDCardSealed, &p.IDCardSuffix4,
-		&p.College, &p.Major, &p.ClassName, &p.Grade, &p.QQ, &p.AvatarURL, &p.UpdatedAt)
+		&p.College, &p.Major, &p.ClassName, &p.Grade,
+		&p.QQ, &p.AvatarURL, &p.ExamNo, &p.Gender, &p.StudyDuration, &p.EducationLevel, &p.NewMajor,
+		&p.NewClassName, &p.EnrollmentStatus, &p.EnrollmentDate, &p.Nation, &p.PoliticalStatus,
+		&p.HomeAddress, &p.TrainStation, &p.PersonalPhone, &p.HomePhone, &p.Specialty,
+		&p.Nickname, &p.Email, &p.Birthday, &p.AvatarSourceURL, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, ErrNotFound
 	}
@@ -572,6 +630,15 @@ type User struct {
 	Role      Role
 	Status    UserStatus
 	CreatedAt time.Time
+
+	// ── 登录审计（来自客户端请求头 + 登录时刻，issue #29）──────────
+	// 存在 users 而不是 profile：它们是「账号」属性，不是「画像」。
+	LastLoginIP     string
+	LastLoginDevice string
+	// LastLoginAt 零值表示从未登录。
+	// 用指针而不是 time.Time：last_login_at 在从未登录时是 SQL NULL，
+	// 直接扫进 time.Time 会报 "cannot scan NULL into *time.Time"。
+	LastLoginAt *time.Time
 }
 
 // Profile 是用户画像。学校档案字段与农屿扩展字段混在一行，
@@ -591,6 +658,35 @@ type Profile struct {
 
 	QQ        string
 	AvatarURL string
+
+	// ── 以下字段来自教务档案页 bjiben.asp（issue #29）──────────────
+	// 实测表头：考生号 | 学号 | 姓名 | 性别 | 系别 | 专业 | 学制 | 培养层次 |
+	//          年级 | 班级 | 新专业 | 新班级 | 学籍状态 | 入学日期 | 民族 |
+	//          政治面貌 | 家庭通讯地址 | 火车站点 | 个人电话 | 家庭电话 | 特长
+	ExamNo           string // 考生号
+	Gender           string // 性别
+	StudyDuration    string // 学制（四年/三年…）
+	EducationLevel   string // 培养层次（本科/研究生）
+	NewMajor         string // 新专业
+	NewClassName     string // 新班级
+	EnrollmentStatus string // 学籍状态（在读/休学…）
+	EnrollmentDate   string // 入学日期
+	Nation           string // 民族
+	PoliticalStatus  string // 政治面貌
+	HomeAddress      string // 家庭通讯地址
+	TrainStation     string // 火车站点
+	PersonalPhone    string // 个人电话
+	HomePhone        string // 家庭电话
+	Specialty        string // 特长
+
+	// ── 农屿扩展字段（本人可改，不被学校数据覆盖）──────────────────
+	Nickname string // 昵称
+	Email    string // 邮箱
+
+	// ── 以下字段来自 ywtb getUserInfo（它需要 ywtb 自己的 Bearer）────
+	// 生日：用于推算年龄；身份证本身加密存在 IDCardSealed。
+	Birthday        string
+	AvatarSourceURL string // ywtb 头像地址
 
 	UpdatedAt time.Time
 }
@@ -658,6 +754,10 @@ type UserRepo interface {
 	ByID(ctx context.Context, id int64) (User, error)
 	// SetStatus 改用户状态。
 	SetStatus(ctx context.Context, id int64, status UserStatus) error
+	// TouchLogin 记录一次成功登录的审计三元组（IP / 设备 / 时间）。
+	//
+	// 只在**登录成功**时调用一次，不要在每个请求里写（避免写放大）。
+	TouchLogin(ctx context.Context, id int64, ip, device string) error
 }
 
 // ProfileRepo 是画像的持久化能力。
@@ -858,7 +958,11 @@ func identityDDLStatements() []string {
 			role        smallint    NOT NULL DEFAULT 0 CHECK (role IN (0, 1, 2)),
 			status      smallint    NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
 			created_at  timestamptz NOT NULL DEFAULT now(),
-			updated_at  timestamptz NOT NULL DEFAULT now()
+			updated_at  timestamptz NOT NULL DEFAULT now(),
+			-- 登录审计（issue #29）：迁移用 ALTER ADD 追加，列顺序在 updated_at 之后
+			last_login_ip     text NOT NULL DEFAULT '',
+			last_login_device text NOT NULL DEFAULT '',
+			last_login_at     timestamptz
 		)`,
 		`CREATE TABLE IF NOT EXISTS user_profiles (
 			user_id         bigint      PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
@@ -871,7 +975,29 @@ func identityDDLStatements() []string {
 			grade           text        NOT NULL DEFAULT '',
 			qq              text        NOT NULL DEFAULT '',
 			avatar_url      text        NOT NULL DEFAULT '',
-			updated_at      timestamptz NOT NULL DEFAULT now()
+			updated_at      timestamptz NOT NULL DEFAULT now(),
+			-- 教务档案页字段（issue #29）：迁移用 ALTER ADD 追加，列顺序在 updated_at 之后
+			exam_no           text NOT NULL DEFAULT '',
+			gender            text NOT NULL DEFAULT '',
+			study_duration    text NOT NULL DEFAULT '',
+			education_level   text NOT NULL DEFAULT '',
+			new_major         text NOT NULL DEFAULT '',
+			new_class_name    text NOT NULL DEFAULT '',
+			enrollment_status text NOT NULL DEFAULT '',
+			enrollment_date   text NOT NULL DEFAULT '',
+			nation            text NOT NULL DEFAULT '',
+			political_status  text NOT NULL DEFAULT '',
+			home_address      text NOT NULL DEFAULT '',
+			train_station     text NOT NULL DEFAULT '',
+			personal_phone    text NOT NULL DEFAULT '',
+			home_phone        text NOT NULL DEFAULT '',
+			specialty         text NOT NULL DEFAULT '',
+			-- 农屿扩展（本人可改）
+			nickname          text NOT NULL DEFAULT '',
+			email             text NOT NULL DEFAULT '',
+			-- ywtb 字段
+			birthday          text NOT NULL DEFAULT '',
+			avatar_source_url text NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS login_methods (
 			id          bigserial   PRIMARY KEY,

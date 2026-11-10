@@ -92,6 +92,9 @@ func loginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 		signed, err := svc.Login(c.Request.Context(), Params{
 			Method:   req.Method,
 			DeviceID: req.DeviceID,
+			// 登录审计（issue #29）：IP 取自请求头。gin 的 ClientIP 会按
+			// 受信任代理设置解析 X-Forwarded-For；默认只信直连地址。
+			ClientIP: c.ClientIP(),
 			SchoolCred: login.SchoolCredential{
 				Method: req.SchoolMethod, StudentNo: req.StudentNo, Password: req.Password,
 				Phone: req.Phone, Code: req.Code, WechatCode: req.WechatCode,

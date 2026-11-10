@@ -431,7 +431,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 画像读取与修改走 user 子域。身份全部来自 context，不读请求体里的 userID。
 	if identityStore != nil {
 		if identityLoginSvc != nil && identitySessionSvc != nil && identityUserSvc != nil {
-			flowSvc := identityflow.New(identityLoginSvc, identitySessionSvc, identityUserSvc, clock)
+			// 注入 UserRepo 以记录登录审计（IP/设备/时间，issue #29）。
+			flowSvc := identityflow.New(identityLoginSvc, identitySessionSvc, identityUserSvc, clock).WithUserRepo(identityStore)
 			identityflow.Register(engine, flowSvc, tokenIssuer)
 		}
 		if identityUserSvc != nil {

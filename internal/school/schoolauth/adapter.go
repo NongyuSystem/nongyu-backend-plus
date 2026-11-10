@@ -134,6 +134,27 @@ type Identity struct {
 	ClassName string
 	Grade     string
 
+	// ── 以下来自教务档案页 bjiben.asp（issue #29）──────────────────
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
+	// ── 以下来自 ywtb getUserInfo（issue #29，需 ywtb 自己的 Bearer）──
+	Birthday        string
+	AvatarSourceURL string
+
 	// ProfileIncomplete 为真表示教务源没抓到（登录仍成功）。
 	ProfileIncomplete bool
 }
@@ -166,6 +187,10 @@ type RawIdentity struct {
 	IDCardMasked string
 	// IDCardFull 是完整身份证号（与 IDCardMasked 同源；显式命名便于上层加密存储）。
 	IDCardFull string
+	// Birthday 是生日（issue #29）；ywtb 提供，用于推算年龄。
+	Birthday string
+	// AvatarSourceURL 是 ywtb 的头像地址（issue #29）。
+	AvatarSourceURL string
 }
 
 // RawAcademic 是教务源返回的学籍字段。
@@ -173,6 +198,25 @@ type RawAcademic struct {
 	Major     string
 	ClassName string
 	Grade     string
+
+	// 以下来自同一页 bjiben.asp（issue #29）。
+	College          string
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
 	// RefreshedTGT 是换票响应里带回的**新** go-admin-tgt。
 	// 实测：调用换票接口时响应里直接给出 tgt 字段，可用于后续换票与续期，
 	// 因此不需要每次都让客户端重新登录。
@@ -248,6 +292,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 		College:       raw.College,
 		IDCardSuffix4: Suffix4FromMasked(fullID),
 		IDCardFull:    raw.IDCardFull,
+		// ywtb 字段（issue #29）
+		Birthday:        raw.Birthday,
+		AvatarSourceURL: raw.AvatarSourceURL,
 	}
 
 	// 教务：超时或失败都只影响画像完整性，不影响登录。
@@ -271,6 +318,29 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 	ident.Major = ac.Major
 	ident.ClassName = ac.ClassName
 	ident.Grade = ac.Grade
+
+	// 教务档案页其余字段（issue #29）。
+	ident.ExamNo = ac.ExamNo
+	ident.Gender = ac.Gender
+	ident.StudyDuration = ac.StudyDuration
+	ident.EducationLevel = ac.EducationLevel
+	ident.NewMajor = ac.NewMajor
+	ident.NewClassName = ac.NewClassName
+	ident.EnrollmentStatus = ac.EnrollmentStatus
+	ident.EnrollmentDate = ac.EnrollmentDate
+	ident.Nation = ac.Nation
+	ident.PoliticalStatus = ac.PoliticalStatus
+	ident.HomeAddress = ac.HomeAddress
+	ident.TrainStation = ac.TrainStation
+	ident.PersonalPhone = ac.PersonalPhone
+	ident.HomePhone = ac.HomePhone
+	ident.Specialty = ac.Specialty
+
+	// 院校字段：教务的「系别」比认证结果的「所属单位」更准，优先采用。
+	if ac.College != "" {
+		ident.College = ac.College
+	}
+
 	if ident.Major == "" && ident.ClassName == "" && ident.Grade == "" {
 		// 抓到了但字段全空，同样视为不完整。
 		ident.ProfileIncomplete = true

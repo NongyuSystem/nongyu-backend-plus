@@ -11,6 +11,7 @@ package flow
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"nongyu-backend-plus/internal/identity"
@@ -26,11 +27,32 @@ type Service struct {
 	sessions *session.Service
 	users    *identityuser.Service
 	clock    platform.Clock
+	// userRepo 用于登录审计（TouchLogin，issue #29）。可为 nil（单测注入时可省）。
+	userRepo platform.UserRepo
 }
 
 // New 构造编排层。
 func New(loginSvc *login.Service, sessionSvc *session.Service, users *identityuser.Service, clock platform.Clock) *Service {
 	return &Service{login: loginSvc, sessions: sessionSvc, users: users, clock: clock}
+}
+
+// WithUserRepo 注入用户仓储，用于记录登录审计（IP / 设备 / 时间）。
+//
+// 单独一个 setter 而不是改 New 的签名：既有调用点（含测试）不必全改，
+// 未注入时 TouchLogin 静默跳过（审计缺失不应阻断登录）。
+func (s *Service) WithUserRepo(r platform.UserRepo) *Service {
+	s.userRepo = r
+	return s
+}
+
+// touchLogin 记录一次成功登录的审计三元组；失败只记日志，不影响登录结果。
+func (s *Service) touchLogin(ctx context.Context, userID int64, ip, device string) {
+	if s.userRepo == nil {
+		return
+	}
+	if err := s.userRepo.TouchLogin(ctx, userID, ip, device); err != nil {
+		slog.Warn("记录登录审计失败（不影响登录）", "userId", userID, "err", err.Error())
+	}
 }
 
 // SignedIn 是一次成功登录的完整产物。
@@ -56,6 +78,8 @@ type Params struct {
 	Method string
 	// DeviceID 是 App 侧设备标识（单设备登录的依据）。
 	DeviceID string
+	// ClientIP 是客户端 IP（来自请求头），用于登录审计。可为空。
+	ClientIP string
 
 	// school
 	SchoolCred login.SchoolCredential
@@ -102,6 +126,9 @@ func (s *Service) Login(ctx context.Context, p Params) (SignedIn, error) {
 	if err != nil {
 		return SignedIn{}, err
 	}
+
+	// 登录审计（issue #29）：只在成功路径写一次，不挂到每个请求。
+	s.touchLogin(ctx, res.User.ID, p.ClientIP, p.DeviceID)
 
 	return SignedIn{
 		User:              res.User,

@@ -181,6 +181,24 @@ func (s *JiaowuSource) FetchAcademic(ctx context.Context, cred Credential) (RawA
 		ClassName:    acc.ClassName,
 		Grade:        acc.Grade,
 		RefreshedTGT: refreshedTGT,
+
+		// #29：同一页的其余字段。
+		College:          acc.College,
+		ExamNo:           acc.ExamNo,
+		Gender:           acc.Gender,
+		StudyDuration:    acc.StudyDuration,
+		EducationLevel:   acc.EducationLevel,
+		NewMajor:         acc.NewMajor,
+		NewClassName:     acc.NewClassName,
+		EnrollmentStatus: acc.EnrollmentStatus,
+		EnrollmentDate:   acc.EnrollmentDate,
+		Nation:           acc.Nation,
+		PoliticalStatus:  acc.PoliticalStatus,
+		HomeAddress:      acc.HomeAddress,
+		TrainStation:     acc.TrainStation,
+		PersonalPhone:    acc.PersonalPhone,
+		HomePhone:        acc.HomePhone,
+		Specialty:        acc.Specialty,
 	}, nil
 }
 

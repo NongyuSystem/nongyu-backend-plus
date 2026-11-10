@@ -41,6 +41,10 @@ type TicketIdentity struct {
 	Name      string
 	Phone     string
 	Category  string // 「本科生」等，来自 user.group[].alias
+	// Birthday 与 AvatarURL 不来自换票响应，留空即可；
+	// 需要它们的场合请用 FetchYWTBIdentity（要 Bearer）。
+	Birthday  string
+	AvatarURL string
 }
 
 // TicketExchanger 是「用 tgt 换票并顺带取身份」的能力。
