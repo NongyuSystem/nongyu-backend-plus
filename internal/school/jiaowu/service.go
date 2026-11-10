@@ -153,14 +153,28 @@ type FetchResult struct {
 	Headers http.Header
 }
 
+// 3xx 的目标判定放在**本调用方**（见 Fetch 内的说明）：真实 HTTPDoer 必须保留
+// 3xx 响应给三跳建会话用，只有代取页面这条路径需要把 3xx 转成统一错误码。
+// 口径与 platform 出站闸口的骨架期实现一致，避免两处判定漂移。
+func isGatewayHost(host string) bool {
+	return strings.EqualFold(host, "webvpn.sicau.edu.cn")
+}
+
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
 // Fetch 由后端经唯一出站闸口代取，并返回结果。
 //
 // 与 Address 的分工：Address 只给地址、客户端自己请求；Fetch 是「需要后端代做」
 // 时的那条路。二者共用同一个 school.Resolve 白名单闸门——未知名在触达出站之前
 // 就被以 CodeTargetDenied 拒绝，底层零请求。
-//
-// 302 / Set-Cookie 的处理全部在 platform 出站闸口（实现层）完成，本方法只转述错误：
-// CodeBlockedRedirect、CodeSessionExpired 由调用方（handler）映射为不同响应。
+// 3xx 的 ADR-0001 判定在本方法内完成（见下方），错误码由 handler 映射为不同响应。
 func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetName, path string) (FetchResult, error) {
 	tgt, err := school.Resolve(name)
 	if err != nil {
@@ -185,6 +199,26 @@ func (s *Service) Fetch(ctx context.Context, userID string, name school.TargetNa
 		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
+
+	// ADR-0001 第 5 条：上游 302 指向真站时立即失败，不跟随、不回显 Location。
+	//
+	// 这段判定必须在**本调用方**完成，不能放回 HTTPDoer 实现层：
+	//   - 真实 RealHTTPDoer 必须把 3xx 原样交回，因为 schoolauth 三跳建会话
+	//     要从中间跳的 302 读 Set-Cookie 与 Location；
+	//   - 而本方法（代取页面）对 3xx 的语义是「会话失效 / 真站不可达」，必须转成统一错误码。
+	// 骨架期 MockHTTPDoer(Enforce=true) 曾在 Doer 层代做这件事；换真实 Doer 后
+	// 该责任上移到这里，否则 302 会连 Location 一起回显给客户端（#22 回归，评审 B1）。
+	if isRedirectStatus(resp.StatusCode) {
+		loc := resp.Header.Get("Location")
+		target, perr := url.Parse(loc)
+		_ = resp.Body.Close()
+		if perr == nil && target.Host != "" && isGatewayHost(target.Hostname()) {
+			s.audit(ctx, userID, "fetch", "session_expired", string(tgt.Name))
+			return FetchResult{}, &school.Error{Code: school.CodeSessionExpired}
+		}
+		s.audit(ctx, userID, "fetch", "blocked_redirect", string(tgt.Name))
+		return FetchResult{}, &school.Error{Code: school.CodeBlockedRedirect}
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -11,6 +11,7 @@ package flow
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"nongyu-backend-plus/internal/identity"
@@ -26,11 +27,32 @@ type Service struct {
 	sessions *session.Service
 	users    *identityuser.Service
 	clock    platform.Clock
+	// userRepo 用于登录审计（TouchLogin，issue #29）。可为 nil（单测注入时可省）。
+	userRepo platform.UserRepo
 }
 
 // New 构造编排层。
 func New(loginSvc *login.Service, sessionSvc *session.Service, users *identityuser.Service, clock platform.Clock) *Service {
 	return &Service{login: loginSvc, sessions: sessionSvc, users: users, clock: clock}
+}
+
+// WithUserRepo 注入用户仓储，用于记录登录审计（IP / 设备 / 时间）。
+//
+// 单独一个 setter 而不是改 New 的签名：既有调用点（含测试）不必全改，
+// 未注入时 TouchLogin 静默跳过（审计缺失不应阻断登录）。
+func (s *Service) WithUserRepo(r platform.UserRepo) *Service {
+	s.userRepo = r
+	return s
+}
+
+// touchLogin 记录一次成功登录的审计三元组；失败只记日志，不影响登录结果。
+func (s *Service) touchLogin(ctx context.Context, userID int64, ip, device string) {
+	if s.userRepo == nil {
+		return
+	}
+	if err := s.userRepo.TouchLogin(ctx, userID, ip, device); err != nil {
+		slog.Warn("记录登录审计失败（不影响登录）", "userId", userID, "err", err.Error())
+	}
 }
 
 // SignedIn 是一次成功登录的完整产物。
@@ -45,6 +67,9 @@ type SignedIn struct {
 	ProfileIncomplete bool
 	// MirrorError 非空表示登录成功但密码镜像未写入（不阻断登录）。
 	MirrorError error
+	// TGTStoreError 非空表示登录成功但学校会话凭据保管失败（不阻断登录）。
+	// 由调用方决定是否记日志/告警，不静默吞掉（评审 M3）。
+	TGTStoreError error
 }
 
 // Params 是一次登录的全部输入。
@@ -53,6 +78,8 @@ type Params struct {
 	Method string
 	// DeviceID 是 App 侧设备标识（单设备登录的依据）。
 	DeviceID string
+	// ClientIP 是客户端 IP（来自请求头），用于登录审计。可为空。
+	ClientIP string
 
 	// school
 	SchoolCred login.SchoolCredential
@@ -100,6 +127,9 @@ func (s *Service) Login(ctx context.Context, p Params) (SignedIn, error) {
 		return SignedIn{}, err
 	}
 
+	// 登录审计（issue #29）：只在成功路径写一次，不挂到每个请求。
+	s.touchLogin(ctx, res.User.ID, p.ClientIP, p.DeviceID)
+
 	return SignedIn{
 		User:              res.User,
 		Profile:           res.Profile,
@@ -108,6 +138,7 @@ func (s *Service) Login(ctx context.Context, p Params) (SignedIn, error) {
 		ExpiresAt:         issued.ExpiresAt,
 		ProfileIncomplete: res.ProfileIncomplete,
 		MirrorError:       res.MirrorError,
+		TGTStoreError:     res.TGTStoreError,
 	}, nil
 }
 
@@ -143,6 +174,14 @@ func (s *Service) LoginAdmin(ctx context.Context, studentNo, password string) (S
 // Logout 吊销当前会话。
 func (s *Service) Logout(ctx context.Context, sessionID string) error {
 	return s.sessions.Revoke(ctx, sessionID)
+}
+
+// LogoutAll 吊销某用户在某 scope 下的全部会话（「退掉全部设备」）。
+//
+// 与 Logout 的区别：Logout 只按 sessionID 吊销当前这一台；LogoutAll 按
+// userID + scope 清场，用于用户主动「退出所有设备」或改密后强制下线。
+func (s *Service) LogoutAll(ctx context.Context, userID int64, scope platform.SessionScope) (int, error) {
+	return s.sessions.RevokeAll(ctx, userID, scope)
 }
 
 // SendMailCode 发送邮箱验证码。

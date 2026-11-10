@@ -1,18 +1,3 @@
-// Package schoolauth 是 school/jiaowu 与身份域之间的适配器。
-//
-// 它实现 identity/login.SchoolAuthenticator，把「客户端交上来的学校会话凭据」
-// 换成「身份域能用的学校身份」。
-//
-// 数据来自**两个源**（实测确认，见知识库「川农统一身份认证的身份证号是掩码」）：
-//   - 统一身份认证：学号、姓名、所属单位（= 学院）、掩码证件号（只取后四位）
-//   - 教务 bjiben.asp：专业、班级、年级（认证不下发这三项）
-//
-// 设计约束：
-//   - 客户端的凭据**不落库**：只在本次请求内存里用一次，用完即弃。
-//   - 教务抓取失败**不阻断登录**（维护者决定）：返回 ProfileIncomplete=true，
-//     学院仍来自认证结果，专业/班级/年级留空，下次登录重试。
-//   - 本包不 import identity 的具体实现，只依赖 platform 与 school 的接口，
-//     由 app 装配层注入。
 package schoolauth
 
 import (
@@ -25,13 +10,15 @@ import (
 	"time"
 )
 
+// ---- from adapter.go ----
 // ErrAuthFailed 表示学校认证被拒（凭据无效或已过期）。
 var ErrAuthFailed = errors.New("schoolauth: 学校认证失败")
 
 // SessionCookie 是客户端交上来的一条会话 cookie。
 //
-// 为什么是「一组」而不是一个字符串：实测确认单枚 `go-admin-tgt` **不足以**通过
-// 学校端校验，必须整套会话 cookie 一起带上。
+// 实测（2026-11-09）：**单枚 `go-admin-tgt` 就足以换票**（code=200）。
+// 早前「必须整套 cookie」的结论对当前平台已不成立；整套 cookie 仍可原样透传，
+// 但不再是前置条件。
 type SessionCookie struct {
 	Name  string
 	Value string
@@ -40,15 +27,18 @@ type SessionCookie struct {
 // Credential 是客户端交上来的学校会话凭据。
 //
 // 客户端先用自己那套方式完成学校登录（账密/微信/短信，都在客户端侧），
-// 然后把拿到的 cookie 交上来；本适配器用它去取身份，**不接触学生密码**。
+// 然后把拿到的 **`go-admin-tgt`** 交上来；本适配器用它换票取身份，
+// **不接触学生密码**。
+//
+// 只有这一种凭据形态。曾有一个 ywtb `BearerToken` 字段，已按维护者指示删除：
+// 真实链路上客户端不会有它，两条路径并存只会让「该交什么」含糊不清。
 type Credential struct {
-	// Cookies 是整套会话 cookie（实测需 laravel_session）。
+	// Cookies 是整套会话 cookie（可只含 go-admin-tgt）。
 	Cookies []SessionCookie
 	// RawCookie 是原始 Cookie 头（如 "a=1; b=2"）。给了 Cookies 时可省略。
 	RawCookie string
-	// BearerToken 是 ywtb 的访问令牌，形如 `<用户ID>|<随机串>`。
-	// **不是** XSRF-TOKEN，也不是纯 cookie——实测只带 cookie 会 401。
-	BearerToken string
+	// XSGZToken 是学工系统的 access token（唯一数据源，#28 后续）。
+	XSGZToken string
 	// UserID 是这份凭据归属的农屿用户（用于按用户保管 tgt）。
 	// 零值表示「还不知道是谁」——此时无法使用服务端保管的 tgt，
 	// 只能用本次交来的凭据做一次性取数。
@@ -122,8 +112,11 @@ func replaceCookieValue(header, name, value string) string {
 }
 
 // Empty 判断凭据是否为空。
+// Empty 判断是否「没有任何可用凭据」。
+//
+// 判据就是 cookie：真实链路上客户端登录后交来的只有 go-admin-tgt。
 func (c Credential) Empty() bool {
-	return strings.TrimSpace(c.CookieHeader()) == "" && strings.TrimSpace(c.BearerToken) == ""
+	return strings.TrimSpace(c.CookieHeader()) == ""
 }
 
 // Identity 是解析出来的学校身份。
@@ -142,6 +135,27 @@ type Identity struct {
 	Major     string
 	ClassName string
 	Grade     string
+
+	// ── 以下来自教务档案页 bjiben.asp（issue #29）──────────────────
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
+	// ── 以下来自 ywtb getUserInfo（issue #29，需 ywtb 自己的 Bearer）──
+	Birthday        string
+	AvatarSourceURL string
 
 	// ProfileIncomplete 为真表示教务源没抓到（登录仍成功）。
 	ProfileIncomplete bool
@@ -175,6 +189,15 @@ type RawIdentity struct {
 	IDCardMasked string
 	// IDCardFull 是完整身份证号（与 IDCardMasked 同源；显式命名便于上层加密存储）。
 	IDCardFull string
+	// Birthday 是生日（issue #29）；ywtb 提供，用于推算年龄。
+	Birthday string
+	// AvatarSourceURL 是 ywtb 的头像地址（issue #29）。
+	AvatarSourceURL string
+	// 以下三项在**唯一数据源**（xsgz detail）下由取身份源直接给出，
+	// 不再需要单独抓教务 GBK 页面（那两条路径已 disable）。
+	Major     string
+	ClassName string
+	Grade     string
 }
 
 // RawAcademic 是教务源返回的学籍字段。
@@ -182,6 +205,25 @@ type RawAcademic struct {
 	Major     string
 	ClassName string
 	Grade     string
+
+	// 以下来自同一页 bjiben.asp（issue #29）。
+	College          string
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
 	// RefreshedTGT 是换票响应里带回的**新** go-admin-tgt。
 	// 实测：调用换票接口时响应里直接给出 tgt 字段，可用于后续换票与续期，
 	// 因此不需要每次都让客户端重新登录。
@@ -257,6 +299,17 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 		College:       raw.College,
 		IDCardSuffix4: Suffix4FromMasked(fullID),
 		IDCardFull:    raw.IDCardFull,
+		// ywtb 字段（issue #29）
+		Birthday:        raw.Birthday,
+		AvatarSourceURL: raw.AvatarSourceURL,
+		// 唯一数据源（xsgz detail）已直接给出专业/班级/年级。
+		Major:     raw.Major,
+		ClassName: raw.ClassName,
+		Grade:     raw.Grade,
+	}
+	// 已经从唯一数据源拿到三项时，不再走教务 GBK 页面（那条路径已 disable）。
+	if ident.Major != "" && ident.ClassName != "" && ident.Grade != "" {
+		return ident, nil
 	}
 
 	// 教务：超时或失败都只影响画像完整性，不影响登录。
@@ -280,6 +333,29 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 	ident.Major = ac.Major
 	ident.ClassName = ac.ClassName
 	ident.Grade = ac.Grade
+
+	// 教务档案页其余字段（issue #29）。
+	ident.ExamNo = ac.ExamNo
+	ident.Gender = ac.Gender
+	ident.StudyDuration = ac.StudyDuration
+	ident.EducationLevel = ac.EducationLevel
+	ident.NewMajor = ac.NewMajor
+	ident.NewClassName = ac.NewClassName
+	ident.EnrollmentStatus = ac.EnrollmentStatus
+	ident.EnrollmentDate = ac.EnrollmentDate
+	ident.Nation = ac.Nation
+	ident.PoliticalStatus = ac.PoliticalStatus
+	ident.HomeAddress = ac.HomeAddress
+	ident.TrainStation = ac.TrainStation
+	ident.PersonalPhone = ac.PersonalPhone
+	ident.HomePhone = ac.HomePhone
+	ident.Specialty = ac.Specialty
+
+	// 院校字段：教务的「系别」比认证结果的「所属单位」更准，优先采用。
+	if ac.College != "" {
+		ident.College = ac.College
+	}
+
 	if ident.Major == "" && ident.ClassName == "" && ident.Grade == "" {
 		// 抓到了但字段全空，同样视为不完整。
 		ident.ProfileIncomplete = true
@@ -310,3 +386,93 @@ func Suffix4FromMasked(s string) string {
 var _ = func(c *http.Cookie) SessionCookie {
 	return SessionCookie{Name: c.Name, Value: c.Value}
 }
+
+// ---- from bridge.go ----
+// 本文件把适配器的结果接到身份域需要的形状上，而不让 schoolauth 直接 import identity。
+//
+// 做法：用**泛型化的小接口**做桥——装配层把 login.SchoolCredential 的字段
+// 以参数形式传进来，适配器不依赖 identity 包的具体类型。
+// 这样 school 与 identity 两个域之间没有直接 import；桥接逻辑放在装配层
+// （internal/app），符合「业务域不互相 import」的约束。
+
+// DomainIdentity 是身份域能接受的身份形状。
+// 由装配层把 schoolauth.Identity 映射成 identity/login.SchoolIdentity。
+type DomainIdentity struct {
+	StudentNo     string
+	Name          string
+	College       string
+	IDCardSuffix4 string
+	// IDCardFull 是完整号（空表示只有掩码）。由装配层加密后写入画像。
+	IDCardFull        string
+	Major             string
+	ClassName         string
+	Grade             string
+	ProfileIncomplete bool
+}
+
+// AsDomain 把适配器结果转成身份域形状。
+func (i Identity) AsDomain() DomainIdentity {
+	return DomainIdentity{
+		StudentNo:         i.StudentNo,
+		Name:              i.Name,
+		College:           i.College,
+		IDCardSuffix4:     i.IDCardSuffix4,
+		IDCardFull:        i.IDCardFull,
+		Major:             i.Major,
+		ClassName:         i.ClassName,
+		Grade:             i.Grade,
+		ProfileIncomplete: i.ProfileIncomplete,
+	}
+}
+
+// 已删除（#25 / Spec M10）：原 httpSource / HTTPSourceOptions / NewHTTPSource 骨架实现。
+//
+// 删除理由：
+//  1. **零生产消费者**：全仓 grep 确认只有它自己的测试在用；装配层实际注入的是
+//     YWTBSource（ywtb.go，基于 Bearer + laravel_session 的真实协议）。
+//  2. **它是「等实测确认后再填」的占位**：ParseIdentity / ParseAcademic 需外部注入，
+//     而真实协议早已通过 ywtb 与教务三跳链路实测确认并落地，占位已无意义。
+//  3. **注释与代码曾长期不一致**（标着「当前为骨架」），留在仓库里只会误导后续接手者
+//     以为「还有一条待补的第二取数路径」。
+//
+// 若将来真的需要第二条取数路径，应基于实测协议新写实现，而不是复活这个占位骨架。
+
+// ---- from doer_contract.go ----
+// 本文件记录 Cheng 教务取数对 HTTPDoer 的**行为契约**。
+//
+// 为什么单独写一份：这条约束踩过一次，症状极其误导。
+//
+// 实测（2026-11-09，真实网络）：教务建立会话是 3 跳重定向
+//
+//	caslogin.asp → check_cas.asp?sign=.. → note.asp → index1.asp
+//
+// 而 `ASPSESSIONID*` 这个会话 cookie 是在**中间跳**的 302 上下发的。
+//
+// 如果 HTTPDoer 的实现启用了自动跟随（`http.Client` 的默认行为，
+// 即 `CheckRedirect` 返回 nil），且没有配置 `cookiejar`，则：
+//   - 客户端自己跟完了所有跳转；
+//   - 中间跳的 Set-Cookie 被丢弃（没有 jar 就没处存）；
+//   - 调用方拿到的是**最终响应**（200、无 Set-Cookie）。
+//
+// JiaowuSource 据此判断「教务未下发会话 cookie」，报错退出——
+// 而真实原因跟 cookie 毫无关系，是「跳转被代理跟完了」。
+//
+// 因此 HTTPDoer 的实现必须满足：
+//
+//  1. **不自动跟随 3xx**：返回跳转响应本身，由调用方决定是否跟随。
+//     这也是出站闸口（ADR-0001）的既定要求：3xx 要能被看见与拦截，
+//     而不是被传输层悄悄吃掉。
+//  2. **不自行管理 cookie**：Cookie 由调用方显式传入请求头，
+//     响应里的 Set-Cookie 由调用方显式收集（resp.Cookies()）。
+//     闸口本来就会剥离 Set-Cookie（ADR-0001 第 5 条）——
+//     因此本条在闸口下表现为「实现方需要把 cookie 交回给调用方」。
+//
+// 若后续给 HTTPDoer 换成真实实现，务必在构造 http.Client 时设置：
+//
+//	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+//
+// 否则本包会在第一步就误判失败。
+
+// HTTPDoerContract 仅作文档占位，说明 JiaowuSource 对 HTTPDoer 的行为要求。
+// 详见本文件顶部说明。
+const HTTPDoerContract = "must-not-follow-redirects"

@@ -26,12 +26,14 @@ type schoolauthBridge struct {
 // 因此 tgt 保管此时只能先以「客户端本次交来的」为准；
 // 登录成功、有了 userID 之后再落库（由 flow 层在成功路径调用 TGTManager.Save）。
 func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCredential) (login.SchoolIdentity, error) {
-	// 只支持 cookie/token 形态：客户端完成学校登录后交凭据上来。
-	// 其它形态（直接给学校账密）需要服务端发起 CAS 流程，当前未实现。
+	// 凭据形态只有一种：客户端完成学校登录后交来的 go-admin-tgt（及其同域 cookie）。
+	// 曾经的 BearerToken 已删除（#28）：真实链路里客户端没有它，
+	// 且换票响应本身就带身份，不需要第二条取数路径。
 	cred := schoolauth.Credential{
-		RawCookie:   in.CookieHeader,
-		BearerToken: in.BearerToken,
-		UserID:      in.UserID,
+		RawCookie: in.CookieHeader,
+		UserID:    in.UserID,
+		// 学工系统 token（唯一数据源，#28 后续）。
+		XSGZToken: in.XSGZToken,
 	}
 	// 教务换票需要 go-admin-tgt（auth 域 cookie）。
 	if in.GoAdminTgt != "" {
@@ -73,11 +75,18 @@ type tgtSaverBridge struct {
 }
 
 // Save 实现 login.TGTSaver。
-func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt string) error {
+func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt, cookieHeader string) error {
 	if b.mgr == nil {
 		return nil
 	}
-	return b.mgr.Save(ctx, strconv.FormatInt(userID, 10), tgt)
+	// 整套 cookie 里必须含 go-admin-tgt；客户端可能只交了 tgt 值而没交完整头，
+	// 这时补上 tgt 本身，保证至少有一份可续期的最小凭据。
+	cred := schoolauth.Credential{RawCookie: cookieHeader}
+	full := cred.FullCookieHeader(tgt)
+	return b.mgr.Save(ctx, strconv.FormatInt(userID, 10), schoolauth.TGTBundle{
+		TGT:          tgt,
+		CookieHeader: full,
+	})
 }
 
 // 编译期断言。

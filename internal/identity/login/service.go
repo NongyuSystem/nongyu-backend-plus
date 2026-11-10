@@ -47,13 +47,21 @@ type SchoolCredential struct {
 	CookieHeader string
 	// Cookies 是结构化的一组 cookie；与 CookieHeader 二者给其一即可。
 	Cookies []SchoolCookie
-	// BearerToken 是 ywtb 访问令牌（形如 `用户ID|随机串`）。
-	// 实测：只带 cookie 在真实环境 401，必须同时带它。
-	BearerToken string
+	// GoAdminTgt 是统一身份认证登录后的全局登录态 cookie。
+	//
+	// 这是**唯一必需**的学校凭据（实测 2026-11-09）：后端拿它换票即可取到身份与
+	// 教务数据。曾有一个 ywtb `BearerToken` 字段，已按维护者指示删除——
+	// 真实链路上客户端不会有它，换票响应本身就带身份（#28）。
 	// GoAdminTgt 是统一身份认证的全局登录态 cookie（10 天有效）。
 	// 教务换票需要它：后端用它换一张教务 service ticket，再抓 bjiben.asp 取学籍。
 	// 由客户端在 auth 域登录后交来。
 	GoAdminTgt string
+	// XSGZToken 是学工系统（xsgz）的 access token（main-app-access-token）。
+	//
+	// 唯一数据源（#28 后续）：客户端完成统一登录后，把这张 token 交上来，
+	// 后端就能用它调 xsgz detail 端点取到**全部**档案字段（13 个分组）。
+	// 与 ywtb 的 Bearer 同为「客户端交 token、后端取数」模式。
+	XSGZToken string
 	// UserID 是这份凭据归属的农屿用户；供服务端按用户保管 tgt。
 	// 首次登录时还不知道（为零），此时只能用本次交来的凭据做一次性取数。
 	UserID int64
@@ -119,6 +127,27 @@ type SchoolIdentity struct {
 	Major     string
 	ClassName string
 	Grade     string
+
+	// ── 以下来自教务档案页 bjiben.asp（issue #29）──────────────────
+	ExamNo           string
+	Gender           string
+	StudyDuration    string
+	EducationLevel   string
+	NewMajor         string
+	NewClassName     string
+	EnrollmentStatus string
+	EnrollmentDate   string
+	Nation           string
+	PoliticalStatus  string
+	HomeAddress      string
+	TrainStation     string
+	PersonalPhone    string
+	HomePhone        string
+	Specialty        string
+
+	// ── 以下来自 ywtb getUserInfo（issue #29）──────────────────────
+	Birthday        string
+	AvatarSourceURL string
 
 	// ProfileIncomplete 为真表示教务源没抓到，画像缺专业/班级/年级。
 	// 此时**登录照常成功**（维护者决定），由客户端提示用户，下次登录重试。
@@ -200,8 +229,10 @@ func New(o Options) *Service {
 // 为什么放在登录子域：只有这里同时知道「是谁」（userID）与「用了哪份学校凭据」。
 // 由装配层把 schoolauth.TGTManager 适配成这个接口注入，业务域不 import school。
 type TGTSaver interface {
-	// Save 按用户保管 tgt（实现方负责加密与过期）。
-	Save(ctx context.Context, userID int64, tgt string) error
+	// Save 按用户保管整套登录态（tgt + 配套 cookie）。
+	// cookieHeader 是客户端交来的整套同域 cookie：实测换票必须带全套，
+	// 只存单枚 tgt 会导致续期失败（见 Spec #18 M5）。
+	Save(ctx context.Context, userID int64, tgt, cookieHeader string) error
 }
 
 // Result 是一次登录的结果。
@@ -216,6 +247,9 @@ type Result struct {
 	// MirrorError 非空表示登录成功但密码镜像没写进去（不阻断登录）。
 	// 由调用方决定是否记日志/告警——静默失败会让问题无从排查。
 	MirrorError error
+	// TGTStoreError 非空表示登录成功但学校会话凭据保管失败（不阻断登录）。
+	// 与 MirrorError 同理：不能静默吞掉，否则后续取学籍会莫名要求重交凭据。
+	TGTStoreError error
 }
 
 // LoginBySchool 走学校统一身份认证登录。
@@ -261,6 +295,27 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 		Grade:         ident.Grade,
 		IDCardSealed:  sealedID,
 		IDCardSuffix4: ident.IDCardSuffix4,
+
+		// 教务档案页字段（#29）
+		ExamNo:           ident.ExamNo,
+		Gender:           ident.Gender,
+		StudyDuration:    ident.StudyDuration,
+		EducationLevel:   ident.EducationLevel,
+		NewMajor:         ident.NewMajor,
+		NewClassName:     ident.NewClassName,
+		EnrollmentStatus: ident.EnrollmentStatus,
+		EnrollmentDate:   ident.EnrollmentDate,
+		Nation:           ident.Nation,
+		PoliticalStatus:  ident.PoliticalStatus,
+		HomeAddress:      ident.HomeAddress,
+		TrainStation:     ident.TrainStation,
+		PersonalPhone:    ident.PersonalPhone,
+		HomePhone:        ident.HomePhone,
+		Specialty:        ident.Specialty,
+
+		// ywtb 字段（#29）
+		Birthday:        ident.Birthday,
+		AvatarSourceURL: ident.AvatarSourceURL,
 	})
 	if err != nil {
 		return Result{}, err
@@ -279,12 +334,14 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginSchool, u.StudentNo, nil)
 
 	// 保管学校会话凭据：现在才知道 userID，正好按用户存下来。
-	// 失败不阻断登录（只是后续取学籍时需要客户端重交凭据）。
+	// 失败不阻断登录，但**必须透传错误**（评审 M3）：静默吞掉会让后续取学籍
+	// 莫名要求重交凭据，且日志/审计里零痕迹。
+	var tgtStoreErr error
 	if s.tgtSaver != nil && cred.GoAdminTgt != "" {
-		_ = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt)
+		tgtStoreErr = s.tgtSaver.Save(ctx, u.ID, cred.GoAdminTgt, cred.CookieHeader)
 	}
 
-	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr}, nil
+	return Result{User: u, Profile: prof, IsNew: isNew, ProfileIncomplete: ident.ProfileIncomplete, MirrorError: mirrorErr, TGTStoreError: tgtStoreErr}, nil
 }
 
 // LoginByPassword 走农屿账密登录。

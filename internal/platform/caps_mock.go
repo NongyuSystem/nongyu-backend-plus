@@ -122,6 +122,15 @@ var errInvalidSealed = errors.New("platform: 无效的 sealed 数据（格式错
 // MockCipher 是 Cipher 的实现：AES-256-GCM 认证加密。
 // 名字沿用骨架期类型名以免改动装配层与既有调用方，但算法已是生产级 AEAD。
 //
+// AESCipher 是 MockCipher 的**真实实现名**：本类型实为生产级 AES-256-GCM，
+// 不是内存桩。命名误导来自骨架期，改名会波及大量既有调用与测试，故用类型别名
+// 提供一个一眼可辨的真名，装配层新代码应优先用 NewAESCipher。
+// 这是 #21 / Spec M9 的处置：命名可区分，且零破坏。
+type AESCipher = MockCipher
+
+// NewAESCipher 构造真实 AES-256-GCM 加密器（与 NewMockCipher 同一实现）。
+func NewAESCipher(key string) *AESCipher { return NewMockCipher(key) }
+
 // 密钥来自配置注入，接口本身不暴露密钥；每次 Seal 用 crypto/rand 生成新 nonce，
 // 因此同一明文两次封装产出不同密文。密文自带认证标签，篡改/错误密钥/截断一律拒绝。
 type MockCipher struct {

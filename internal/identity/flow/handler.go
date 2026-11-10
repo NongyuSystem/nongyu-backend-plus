@@ -6,6 +6,7 @@ package flow
 //   - POST /identity/login            四种登录方式，成功后签发 App 会话
 //   - POST /identity/login/admin      管理台登录，签发 admin 会话
 //   - POST /identity/logout           吊销当前会话
+//   - POST /identity/logout/all       吊销该用户 App 域的全部会话（退全部设备）
 //   - POST /identity/mailcode/send    发送邮箱验证码
 //
 // 响应里返回**令牌**：令牌只携带 session_id，由调用方放进 Authorization: Bearer。
@@ -18,6 +19,7 @@ import (
 
 	"nongyu-backend-plus/internal/identity"
 	"nongyu-backend-plus/internal/identity/login"
+	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/server"
 )
 
@@ -33,6 +35,7 @@ func Register(r gin.IRouter, svc *Service, issuer TokenIssuer) {
 	r.POST("/identity/login", loginHandler(svc, issuer))
 	r.POST("/identity/login/admin", adminLoginHandler(svc, issuer))
 	r.POST("/identity/logout", logoutHandler(svc, server.CurrentSessionID))
+	r.POST("/identity/logout/all", logoutAllHandler(svc, server.CurrentUserID))
 	r.POST("/identity/mailcode/send", sendMailCodeHandler(svc))
 }
 
@@ -52,6 +55,8 @@ type loginReq struct {
 	Cookie string `json:"cookie"`
 	// GoAdminTgt 是统一身份认证的全局登录态 cookie；教务取数（专业/班级/年级）需要它。
 	GoAdminTgt string `json:"goAdminTgt"`
+	// XSGZToken 是学工系统的 access token；唯一数据源取全量档案需要它。
+	XSGZToken string `json:"xsgzToken"`
 
 	// mailcode
 	Email string `json:"email"`
@@ -89,10 +94,13 @@ func loginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 		signed, err := svc.Login(c.Request.Context(), Params{
 			Method:   req.Method,
 			DeviceID: req.DeviceID,
+			// 登录审计（issue #29）：IP 取自请求头。gin 的 ClientIP 会按
+			// 受信任代理设置解析 X-Forwarded-For；默认只信直连地址。
+			ClientIP: c.ClientIP(),
 			SchoolCred: login.SchoolCredential{
 				Method: req.SchoolMethod, StudentNo: req.StudentNo, Password: req.Password,
 				Phone: req.Phone, Code: req.Code, WechatCode: req.WechatCode,
-				CookieHeader: req.Cookie, GoAdminTgt: req.GoAdminTgt,
+				CookieHeader: req.Cookie, GoAdminTgt: req.GoAdminTgt, XSGZToken: req.XSGZToken,
 			},
 			StudentNo:     req.StudentNo,
 			Password:      req.Password,
@@ -137,6 +145,25 @@ func logoutHandler(svc *Service, ctxSessionID func(*gin.Context) (string, bool))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
+// logoutAllHandler 吊销当前已认证用户在 App 域的全部会话。
+// 身份只从 context 取（由可吊销鉴权中间件注入），**不接受请求体里的 userID**，
+// 避免调用方借这个端点把别人的会话全踢掉。
+func logoutAllHandler(svc *Service, ctxUserID func(*gin.Context) (int64, bool)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := ctxUserID(c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"code": string(identity.CodeUnauthorized)})
+			return
+		}
+		n, err := svc.LogoutAll(c.Request.Context(), uid, platform.ScopeApp)
+		if err != nil {
+			writeIdentityError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "revoked": n})
 	}
 }
 

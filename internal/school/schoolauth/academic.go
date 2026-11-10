@@ -33,6 +33,23 @@ type Academic struct {
 	Major     string
 	ClassName string
 	Grade     string
+
+	// 以下字段来自同一页 bjiben.asp（#29）。实测 2026-11-09 确认表头存在。
+	ExamNo           string // 考生号
+	Gender           string // 性别
+	StudyDuration    string // 学制（四年/三年…）
+	EducationLevel   string // 培养层次（本科/研究生）
+	NewMajor         string // 新专业
+	NewClassName     string // 新班级
+	EnrollmentStatus string // 学籍状态（在读/休学…）
+	EnrollmentDate   string // 入学日期（Y-M-D）
+	Nation           string // 民族
+	PoliticalStatus  string // 政治面貌
+	HomeAddress      string // 家庭通讯地址
+	TrainStation     string // 火车站点
+	PersonalPhone    string // 个人电话
+	HomePhone        string // 家庭电话
+	Specialty        string // 特长
 }
 
 var (
@@ -64,6 +81,21 @@ var (
 	keyMajorNew  = []string{"新专业"}
 	keyClassOld  = []string{"班级"}
 	keyClassNew  = []string{"新班级"}
+
+	// #29：同一页的其余字段（实测表头见文件头注释）。
+	keyExamNo           = []string{"考生号", "考号"}
+	keyGender           = []string{"性别"}
+	keyStudyDuration    = []string{"学制"}
+	keyEducationLevel   = []string{"培养层次", "层次"}
+	keyEnrollmentStatus = []string{"学籍状态", "状态"}
+	keyEnrollmentDate   = []string{"入学日期", "入学时间"}
+	keyNation           = []string{"民族"}
+	keyPoliticalStatus  = []string{"政治面貌"}
+	keyHomeAddress      = []string{"家庭通讯地址", "家庭地址", "通讯地址"}
+	keyTrainStation     = []string{"火车站点", "站点"}
+	keyPersonalPhone    = []string{"个人电话", "手机"}
+	keyHomePhone        = []string{"家庭电话"}
+	keySpecialty        = []string{"特长"}
 )
 
 // ParseAcademic 解析 bjiben.asp 的响应字节（**GBK 编码**）为学籍字段。
@@ -114,17 +146,19 @@ func ParseAcademic(body []byte) (Academic, error) {
 	//  1. **表头更长者优先**：「新专业」也包含「专业」，若先匹配到「新专业」就取错了。
 	//     所以对候选表头按长度降序遍历，保证更具体的表头先被命中。
 	//  2. **结果确定**：map 遍历顺序随机，因此必须显式排序，不能依赖随机顺序。
-	lookup := func(keys ...string) string {
-		headersSorted := make([]string, 0, len(fields))
-		for h := range fields {
-			headersSorted = append(headersSorted, h)
+	headersSorted := make([]string, 0, len(fields))
+	for h := range fields {
+		headersSorted = append(headersSorted, h)
+	}
+	sort.Slice(headersSorted, func(i, j int) bool {
+		if len(headersSorted[i]) != len(headersSorted[j]) {
+			return len(headersSorted[i]) > len(headersSorted[j])
 		}
-		sort.Slice(headersSorted, func(i, j int) bool {
-			if len(headersSorted[i]) != len(headersSorted[j]) {
-				return len(headersSorted[i]) > len(headersSorted[j])
-			}
-			return headersSorted[i] < headersSorted[j]
-		})
+		return headersSorted[i] < headersSorted[j]
+	})
+
+	// lookup 按关键字包含匹配取值；更长表头优先。
+	lookup := func(keys ...string) string {
 		for _, k := range keys {
 			for _, header := range headersSorted {
 				if strings.Contains(header, k) {
@@ -137,12 +171,41 @@ func ParseAcademic(body []byte) (Academic, error) {
 		return ""
 	}
 
+	// lookupExcluding 同 lookup，但跳过表头里含 exclude 任一词的列。
+	//
+	// 用途：「专业」要取原始列，不能被「新专业」抢走——而两者都包含「专业」。
+	lookupExcluding := func(exclude []string, keys ...string) string {
+		for _, k := range keys {
+			for _, header := range headersSorted {
+				skip := false
+				for _, ex := range exclude {
+					if strings.Contains(header, ex) {
+						skip = true
+						break
+					}
+				}
+				if skip {
+					continue
+				}
+				if strings.Contains(header, k) {
+					if cv := CleanValue(fields[header]); cv != "" {
+						return cv
+					}
+				}
+			}
+		}
+		return ""
+	}
+
 	// 专业/班级：优先原始列，缺失再取「新」列。
-	major := lookup(keyMajorOld...)
+	//
+	// 注意：「新专业」也包含「专业」，直接按包含匹配会串值。
+	// 因此原始列用**排除新列**的取值器（lookupExcluding），确保互不侵占。
+	major := lookupExcluding([]string{"新"}, keyMajorOld...)
 	if major == "" {
 		major = lookup(keyMajorNew...)
 	}
-	className := lookup(keyClassOld...)
+	className := lookupExcluding([]string{"新"}, keyClassOld...)
 	if className == "" {
 		className = lookup(keyClassNew...)
 	}
@@ -154,6 +217,23 @@ func ParseAcademic(body []byte) (Academic, error) {
 		Major:     major,
 		ClassName: className,
 		Grade:     lookup(keyGrade...),
+
+		// #29：同一页的其余字段。
+		ExamNo:           lookup(keyExamNo...),
+		Gender:           lookup(keyGender...),
+		StudyDuration:    lookup(keyStudyDuration...),
+		EducationLevel:   lookup(keyEducationLevel...),
+		NewMajor:         lookup(keyMajorNew...),
+		NewClassName:     lookup(keyClassNew...),
+		EnrollmentStatus: lookup(keyEnrollmentStatus...),
+		EnrollmentDate:   lookup(keyEnrollmentDate...),
+		Nation:           lookup(keyNation...),
+		PoliticalStatus:  lookup(keyPoliticalStatus...),
+		HomeAddress:      lookup(keyHomeAddress...),
+		TrainStation:     lookup(keyTrainStation...),
+		PersonalPhone:    lookup(keyPersonalPhone...),
+		HomePhone:        lookup(keyHomePhone...),
+		Specialty:        lookup(keySpecialty...),
 	}
 	if acc.StudentNo == "" && acc.Name == "" {
 		return Academic{}, fmt.Errorf("schoolauth: 学籍表里没有学号也没有姓名（页面结构可能已变）")

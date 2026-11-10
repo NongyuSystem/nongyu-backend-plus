@@ -44,6 +44,27 @@ type SchoolProfile struct {
 	IDCardSealed []byte
 	// IDCardSuffix4 是从身份证号派生的后四位（明文，供登录方式④校验）。
 	IDCardSuffix4 string
+
+	// ── 以下来自教务档案页 bjiben.asp（issue #29）──────────────────
+	ExamNo           string // 考生号
+	Gender           string // 性别
+	StudyDuration    string // 学制
+	EducationLevel   string // 培养层次
+	NewMajor         string // 新专业
+	NewClassName     string // 新班级
+	EnrollmentStatus string // 学籍状态
+	EnrollmentDate   string // 入学日期
+	Nation           string // 民族
+	PoliticalStatus  string // 政治面貌
+	HomeAddress      string // 家庭通讯地址
+	TrainStation     string // 火车站点
+	PersonalPhone    string // 个人电话
+	HomePhone        string // 家庭电话
+	Specialty        string // 特长
+
+	// ── 以下来自 ywtb getUserInfo（需它自己的 Bearer）──────────────
+	Birthday        string // 生日（推算年龄用）
+	AvatarSourceURL string // ywtb 头像地址
 }
 
 // Extras 是农屿自建、只允许本人修改的扩展字段。
@@ -120,6 +141,31 @@ func (s *Service) SyncSchoolProfile(ctx context.Context, userID int64, sp School
 		Grade:         sp.Grade,
 		IDCardSealed:  sp.IDCardSealed,
 		IDCardSuffix4: sp.IDCardSuffix4,
+
+		// 教务档案页字段（#29）
+		ExamNo:           sp.ExamNo,
+		Gender:           sp.Gender,
+		StudyDuration:    sp.StudyDuration,
+		EducationLevel:   sp.EducationLevel,
+		NewMajor:         sp.NewMajor,
+		NewClassName:     sp.NewClassName,
+		EnrollmentStatus: sp.EnrollmentStatus,
+		EnrollmentDate:   sp.EnrollmentDate,
+		Nation:           sp.Nation,
+		PoliticalStatus:  sp.PoliticalStatus,
+		HomeAddress:      sp.HomeAddress,
+		TrainStation:     sp.TrainStation,
+		PersonalPhone:    sp.PersonalPhone,
+		HomePhone:        sp.HomePhone,
+		Specialty:        sp.Specialty,
+
+		// ywtb 字段（#29）
+		Birthday:        sp.Birthday,
+		AvatarSourceURL: sp.AvatarSourceURL,
+
+		// 农屿扩展字段：同样保留本人已填的值，不被学校数据覆盖。
+		Nickname: existing.Nickname,
+		Email:    existing.Email,
 	}
 	if err := s.profiles.Upsert(ctx, p); err != nil {
 		return platform.Profile{}, identity.WrapError(identity.CodeInternal, "写入画像失败", err)
