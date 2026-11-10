@@ -3,6 +3,8 @@ package jiaowu
 import (
 	"context"
 	"hash/fnv"
+	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,6 +27,18 @@ const (
 	staggerSlots = 16
 	// renewBatchLimit 是单轮续期扫描最多处理的候选数，避免一次扫全表。
 	renewBatchLimit = 64
+	// slotGap 是相邻错峰槽之间的基础延迟。
+	//
+	// 为什么要有它：16 个槽位如果同一瞬间全发出去，对学校侧仍是一次 16 并发
+	// 的尖峰。按槽位拉开间距后，请求在时间轴上摊平，既降 TPS 峰值，也让流量
+	// 形态更接近「不同用户各自在不同时间登录」，而不是一批机器同时打。
+	slotGap = 2 * time.Second
+	// jitterMax 是每个槽位上的额外随机延迟上限。
+	//
+	// 槽位本身是 userID 的确定性哈希（同一用户永远落同一槽，行为稳定、不像
+	// 扫描器）；但若完全确定，同一批用户每轮都会落在完全相同的时间点，长期看
+	// 反而是一条可被识别的规律。加一层真随机抖动打破这种周期性。
+	jitterMax = 3 * time.Second
 )
 
 // RenewItem 是续期计划里的一项：用户 + 相对调度偏移。
@@ -48,17 +62,59 @@ type RenewScheduler struct {
 	stopOnce  sync.Once
 	stopChan  chan struct{}
 	runOnceMu sync.Mutex
+	// sleep 是可注入的等待函数（测试传 no-op，生产用真实 sleep）。
+	// 注入而不是直接 time.Sleep：错峰延迟会有秒级等待，单测不能真等。
+	sleep func(ctx context.Context, d time.Duration) bool
+	// jitter 返回 [0, jitterMax) 的随机抖动；可注入以便测试确定化。
+	jitter func() time.Duration
 }
 
 // NewRenewScheduler 构造续期调度器；初始观测周期取观察期上限。
 // 不接收 HTTPDoer：出站只能经 Service 的闸口，调度器不持有任何出站能力。
 func NewRenewScheduler(tickets platform.TicketStore, clock platform.Clock) *RenewScheduler {
-	return &RenewScheduler{
+	s := &RenewScheduler{
 		tickets:  tickets,
 		clock:    clock,
 		observed: observationWindow,
 		stopChan: make(chan struct{}),
 	}
+	s.sleep = realSleep
+	s.jitter = realJitter
+	return s
+}
+
+// WithPacing 注入自定义的等待与抖动函数（主要给测试用；传 nil 保持默认）。
+func (s *RenewScheduler) WithPacing(sleep func(ctx context.Context, d time.Duration) bool, jitter func() time.Duration) *RenewScheduler {
+	if sleep != nil {
+		s.sleep = sleep
+	}
+	if jitter != nil {
+		s.jitter = jitter
+	}
+	return s
+}
+
+// realSleep 是可被 ctx 打断的等待；返回 false 表示 ctx 已取消。
+func realSleep(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// realJitter 返回 [0, jitterMax) 内的随机时长。
+func realJitter() time.Duration {
+	if jitterMax <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(jitterMax)))
 }
 
 // Plan 挑出过期时刻早于 before 的候选（最多 limit 条），按 userID 散列到错峰槽位。
@@ -127,9 +183,16 @@ func (s *RenewScheduler) RecordFailure(at time.Time) {
 	}
 }
 
-// RunOnce 执行一轮续期扫描：用观测周期算候选窗口 → Plan 挑选 → 逐个交给 exec。
-// 这是 Plan/PlanningWindow 的**生产调用点**，让「观测 → 周期 → 候选」闭环真正运转。
-// 返回本轮交给 exec 的候选数；exec 为 nil 时只统计、不执行。
+// RunOnce 执行一轮续期扫描：用观测周期算候选窗口 → Plan 挑选 → 按错峰槽位
+// 分批交给 exec。这是 Plan/PlanningWindow 的**生产调用点**，让「观测 → 周期
+// → 候选 → 错峰」闭环真正运转。
+//
+// 错峰怎么落地：Plan 已把每个候选散列到 0..staggerSlots-1 的槽位。这里按槽位
+// 分组，**槽位之间**等 slotGap（+ 随机抖动），槽位内连续执行。这样一轮 64 个
+// 候选不会在同一瞬间全打出去，峰值被摊平到约 16 个时间点。
+//
+// 返回本轮交给 exec 的候选数；exec 为 nil 时只统计、不执行（此时也不等待）。
+// ctx 取消会中断剩余的等待并返回已处理数。
 func (s *RenewScheduler) RunOnce(ctx context.Context, exec RenewExecutor) (int, error) {
 	s.runOnceMu.Lock()
 	defer s.runOnceMu.Unlock()
@@ -139,12 +202,41 @@ func (s *RenewScheduler) RunOnce(ctx context.Context, exec RenewExecutor) (int, 
 	if err != nil {
 		return 0, err
 	}
+	if exec == nil {
+		return len(plan), nil
+	}
+
+	// 按槽位分组（槽位由 Plan 用 userID 哈希算出，同一用户永远同槽）。
+	buckets := make(map[int64][]string, staggerSlots)
 	for _, item := range plan {
-		if exec != nil {
-			exec(ctx, item.UserID)
+		buckets[item.Offset] = append(buckets[item.Offset], item.UserID)
+	}
+	// 槽位按序号升序处理，保证同一轮内顺序可预期。
+	slots := make([]int64, 0, len(buckets))
+	for k := range buckets {
+		slots = append(slots, k)
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
+
+	done := 0
+	for i, slot := range slots {
+		// 第一个槽位不等待；之后每个槽位前等 slotGap + 抖动。
+		if i > 0 {
+			wait := slotGap
+			if s.jitter != nil {
+				wait += s.jitter()
+			}
+			if !s.sleep(ctx, wait) {
+				// ctx 已取消：停止本轮剩余候选，不再对外发请求。
+				return done, nil
+			}
+		}
+		for _, userID := range buckets[slot] {
+			exec(ctx, userID)
+			done++
 		}
 	}
-	return len(plan), nil
+	return done, nil
 }
 
 // Run 拉起定时续期循环，返回在 ctx 取消或 Stop() 后关闭的 done channel。
