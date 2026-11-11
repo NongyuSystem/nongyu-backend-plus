@@ -664,6 +664,37 @@ func TestAppNew_LoginEndpointNotBlockedByAuth(t *testing.T) {
 	}
 }
 
+func TestAppNew_UnsignedLoginRejectedWhenAppSignEnabled(t *testing.T) {
+	cfg := config.Config{
+		Addr: ":0", AppEnv: "test", ShutdownTimeoutSec: 1,
+		TicketKey: "test-ticket-key-32-bytes-min!!", HTTPTimeoutSec: 3,
+		AuthKey: "test-auth-key", RateLimitPerMinute: 60,
+		HTTPEnforce:    false,
+		AppSigningKeys: map[string][]byte{"dev": []byte("nongyu-dev-app-sign-key-v1-32b!!")},
+	}
+	a, err := app.New(cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	defer a.Shutdown(time.Second)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/identity/login", nil)
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("配了签名密钥后，未签名登录应 401，实际 %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app_sign_invalid") {
+		t.Fatalf("应是请求签名拒绝，不是用户鉴权：%s", w.Body.String())
+	}
+
+	probe := httptest.NewRecorder()
+	a.Handler().ServeHTTP(probe, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if probe.Code != http.StatusOK {
+		t.Fatalf("探针仍应免签名，实际 %d", probe.Code)
+	}
+}
+
 // ---- from status_test.go ----
 // #21 M6（Spec #18）：观测出口必须反映真实依赖状态，不是硬编码 ok。
 // seam = HTTP 端点 /status；期望值来自真实 Ping 结果。

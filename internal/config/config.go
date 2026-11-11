@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -41,6 +42,10 @@ type Config struct {
 	// AuthKey 是认证令牌 HMAC 签名密钥。生产必须显式配置（强校验）。
 	// 空值表示「不挂认证中间件」，仅供本地开发与单测使用。
 	AuthKey string
+	// AppSigningKeys 是 Android 请求签名密钥（kid → 原始 HMAC 密钥）。
+	// 证明「请求来自持有密钥的客户端」，与 AuthKey 的「用户是谁」分开。
+	// 空表示不挂签名中间件（仅本地开发）。prod 必须非空。见 ADR-0003。
+	AppSigningKeys map[string][]byte
 	// AllowInsecureDev 是**仅 dev 生效**的显式开关：开启后允许 AUTH_KEY 为空时
 	// 仍不挂认证中间件（仅限本地开发，会打显眼 WARN）。
 	// 生产环境此开关无效（prod 下 AUTH_KEY 为空一律由 Load() 强校验拦住）。
@@ -139,6 +144,12 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("HTTP_TIMEOUT_SEC 必须为正整数，当前值：%d", cfg.HTTPTimeoutSec)
 	}
 
+	signingKeys, err := ParseAppSigningKeys(os.Getenv("APP_SIGNING_KEYS"))
+	if err != nil {
+		return Config{}, fmt.Errorf("APP_SIGNING_KEYS 无法解析：%w", err)
+	}
+	cfg.AppSigningKeys = signingKeys
+
 	// 生产强校验：ADR-0001 的安全不变量不得被默认值或环境变量悄悄弱化。
 	if isProduction(cfg.AppEnv) {
 		if cfg.TicketKey == placeholderTicketKey || strings.TrimSpace(cfg.TicketKey) == "" {
@@ -159,8 +170,66 @@ func Load() (Config, error) {
 		if strings.TrimSpace(cfg.RedisAddr) == "" {
 			return Config{}, fmt.Errorf("prod 环境必须配置 REDIS_ADDR（票据需外置持久，内存实现重启即丢）")
 		}
+		if len(cfg.AppSigningKeys) == 0 {
+			return Config{}, fmt.Errorf("prod 环境必须显式配置 APP_SIGNING_KEYS（Android 请求签名密钥，格式 kid:base64url）")
+		}
 	}
 	return cfg, nil
+}
+
+// ParseAppSigningKeys 解析 APP_SIGNING_KEYS。
+// 格式：kid:base64url[,kid2:base64url]。base64url 无 padding，解码后至少 32 字节。
+// 空串返回 nil, nil。格式错误无论环境都拒绝，避免悄悄用错密钥。
+func ParseAppSigningKeys(raw string) (map[string][]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := make(map[string][]byte)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, b64, ok := strings.Cut(part, ":")
+		if !ok || !validAppSigningKeyID(id) {
+			return nil, fmt.Errorf("条目 %q 必须是 kid:base64url", part)
+		}
+		key, err := base64.RawURLEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("kid %s 的密钥不是无 padding 的 base64url：%w", id, err)
+		}
+		if len(key) < 32 {
+			return nil, fmt.Errorf("kid %s 的密钥至少 32 字节，当前 %d", id, len(key))
+		}
+		if _, exists := out[id]; exists {
+			return nil, fmt.Errorf("kid %s 重复", id)
+		}
+		out[id] = key
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("没有解析出任何密钥")
+	}
+	return out, nil
+}
+
+func validAppSigningKeyID(id string) bool {
+	if id == "" || len(id) > 32 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // isProduction 判断运行环境是否为生产（大小写不敏感，prod/production 均算）。

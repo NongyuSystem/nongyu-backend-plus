@@ -31,6 +31,7 @@ func TestLoad_AcceptsStrongKeyInProduction(t *testing.T) {
 	t.Setenv("AUTH_KEY", "a-real-auth-signing-key-for-tests")
 	t.Setenv("TICKET_KEY", "a-32-byte-minimum-secret-key-here-abcdefg")
 	t.Setenv("REDIS_ADDR", "127.0.0.1:6379")
+	t.Setenv("APP_SIGNING_KEYS", "dev:bm9uZ3l1LWRldi1hcHAtc2lnbi1rZXktdjEtMzJiISE")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("强密钥应通过：%v", err)
@@ -80,5 +81,32 @@ func TestLoad_RejectsMissingRedisInProduction(t *testing.T) {
 	t.Setenv("REDIS_ADDR", "")
 	if _, err := config.Load(); err == nil {
 		t.Fatal("prod 环境必须配置 REDIS_ADDR")
+	}
+}
+
+func TestLoad_RejectsMissingAppSigningKeysInProduction(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("AUTH_KEY", "a-real-auth-signing-key-for-tests")
+	t.Setenv("TICKET_KEY", "a-32-byte-minimum-secret-key-here-abcdefg")
+	t.Setenv("REDIS_ADDR", "127.0.0.1:6379")
+	t.Setenv("APP_SIGNING_KEYS", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("prod 环境必须配置 APP_SIGNING_KEYS")
+	}
+}
+
+func TestParseAppSigningKeys(t *testing.T) {
+	keys, err := config.ParseAppSigningKeys("dev:bm9uZ3l1LWRldi1hcHAtc2lnbi1rZXktdjEtMzJiISE")
+	if err != nil {
+		t.Fatalf("合法密钥应解析成功：%v", err)
+	}
+	if string(keys["dev"]) != "nongyu-dev-app-sign-key-v1-32b!!" {
+		t.Fatalf("密钥字节不符：%q", keys["dev"])
+	}
+	if _, err := config.ParseAppSigningKeys("dev:YQ"); err == nil {
+		t.Fatal("短密钥必须拒绝")
+	}
+	if _, err := config.ParseAppSigningKeys("not a key"); err == nil {
+		t.Fatal("格式错误必须拒绝")
 	}
 }

@@ -105,6 +105,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if config.IsProductionLike(cfg.AppEnv) && strings.TrimSpace(cfg.AuthKey) == "" && cfg.AllowInsecureDev {
 		logger.Warn("ALLOW_INSECURE_DEV 已开启：AUTH_KEY 为空，认证中间件未挂载，所有业务端点无身份校验；仅限本地开发")
 	}
+	if config.IsProductionLike(cfg.AppEnv) && len(cfg.AppSigningKeys) == 0 && !cfg.AllowInsecureDev {
+		return nil, fmt.Errorf("app: APP_SIGNING_KEYS 为空且未开启 ALLOW_INSECURE_DEV：请求签名中间件不会挂载，接口可被任意客户端仿造；生产/预发布必须配置 APP_SIGNING_KEYS")
+	}
+	if config.IsProductionLike(cfg.AppEnv) && len(cfg.AppSigningKeys) == 0 && cfg.AllowInsecureDev {
+		logger.Warn("ALLOW_INSECURE_DEV 已开启：APP_SIGNING_KEYS 为空，请求签名中间件未挂载；仅限本地开发")
+	}
 	// 迁移（issue #23 / Spec M4）：配了 DATABASE_URL 时，启动即把 migrations/*.sql
 	// 幂等执行一遍。必须排在**所有 Postgres 仓储构造之前**——PGAuditStore 的
 	// Ping、PGIdentityStore 的 Ping 都只探测连通性、不建表，业务查询要求表已存在。
@@ -436,6 +442,20 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("身份域未启用：未配置 DATABASE_URL，用户与会话能力不可用")
 	}
 
+	// 请求签名先于用户鉴权：登录、发验证码这些公开路径也要证明来自客户端。
+	// 探针 /healthz、/status 在中间件内豁免，给负载均衡留门。
+	// 密钥为空时不挂（本地开发 / 既有单测）；prod 已由 Load / 上面的检查拦住。
+	if len(cfg.AppSigningKeys) > 0 {
+		var nonces server.NonceStore
+		if cache != nil {
+			nonces = server.NewRedisNonceStore(cache)
+		} else {
+			nonces = server.NewMemoryNonceStore(clock)
+			logger.Warn("请求签名 nonce 使用进程内存：多实例无法共享重放防护，仅限本地开发")
+		}
+		engine.Use(server.AppSignMiddleware(cfg.AppSigningKeys, nonces, clock, logger))
+	}
+
 	// 认证与限流：AuthKey 非空时挂到所有业务路由之前（gin 的 Use 必须先于路由注册）。
 	//
 	// 身份域可用时用**可吊销**中间件：令牌只带会话标识，验签后还要查会话，
@@ -598,7 +618,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		"store", storeBackend, "tickets", ticketsBackend,
 		"outboundEnforce", cfg.HTTPEnforce, "outboundDoer", outboundDoer,
 		"accelEnabled", cfg.AccelEnabled,
-		"authEnabled", cfg.AuthKey != "", "cacheEnabled", cache != nil,
+		"authEnabled", cfg.AuthKey != "", "appSignEnabled", len(cfg.AppSigningKeys) > 0,
+		"cacheEnabled", cache != nil,
 		"identityEnabled", identityStore != nil, "auditEnabled", pgAudit != nil,
 		"sessionCacheEnabled", sessionCache != nil)
 	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
@@ -606,6 +627,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if cfg.AuthKey == "" {
 		logger.Warn("认证中间件未启用：所有业务端点无身份校验，仅限本地开发/测试使用",
 			"reason", "AUTH_KEY 为空")
+	}
+	if len(cfg.AppSigningKeys) == 0 {
+		logger.Warn("请求签名中间件未启用：未配置 APP_SIGNING_KEYS，接口不校验客户端签名，仅限本地开发/测试")
 	}
 	return a, nil
 }

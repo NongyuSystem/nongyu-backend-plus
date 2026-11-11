@@ -306,6 +306,30 @@ func (c *RedisCache) TryAcquire(ctx context.Context, key string, ttl time.Durati
 	return ok, nil
 }
 
+// ClaimOnce 原子占一个短命键（SET NX + 精确 TTL），失败必须返回 error。
+//
+// 与 TryAcquire 的区别：TryAcquire 在熔断时返回 (false, nil)，调用方分不清
+// 「已被占用」和「存储不可用」。请求签名的重放防护必须 fail-closed，
+// 所以熔断或 Redis 错误都返回 error，不伪装成没占到。TTL 不加抖动。
+func (c *RedisCache) ClaimOnce(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if c == nil {
+		return false, fmt.Errorf("platform: ClaimOnce 需要 RedisCache")
+	}
+	if ttl <= 0 {
+		return false, fmt.Errorf("platform: ClaimOnce ttl 必须为正")
+	}
+	if !c.breaker.allow() {
+		return false, fmt.Errorf("platform: 缓存已熔断，无法占位（key=%s）", key)
+	}
+	ok, err := c.client.SetNX(ctx, c.fullKey(key), []byte("1"), ttl).Result()
+	if err != nil {
+		c.breaker.onFailure()
+		return false, err
+	}
+	c.breaker.onSuccess()
+	return ok, nil
+}
+
 // PendingBackfill 返回待回灌条目数（降级期间写入、尚未同步到 Redis 的数量）。
 func (c *RedisCache) PendingBackfill() int {
 	c.mu.Lock()
