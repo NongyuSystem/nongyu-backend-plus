@@ -1,0 +1,299 @@
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+
+<html>
+
+<!--include file="../conn/sql_zr_test.asp"-->
+
+<link href="../../../css/style_head_tab.css" type="text/css" rel="stylesheet">
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<head>
+
+<LINK href="../../../Css/style_haitan.css" rel=stylesheet type="text/css">
+
+
+
+<SCRIPT language="JavaScript">
+  function onColor(TD)
+  {
+  TD.style.backgroundColor='#99CC99';
+  }
+  function offColor(TD)
+  {
+  TD.style.backgroundColor='';
+  }
+  </SCRIPT>
+
+<script language=javascript>
+function yn_del()
+{
+     if(!  confirm('是否删除所选数据') )
+     {
+     	window.event.returnValue = false
+	return false
+     }
+     document.jcrj.act.value='del';document.jcrj.action='../../../table/table/table/del.asp';document.jcrj.submit()
+}
+
+</script> 
+
+
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<style type="text/css">
+<!--
+.STYLE1 {font-size: 14px}
+-->
+</style>
+</HEAD>
+
+
+
+<BODY leftMargin=0 topMargin=0>
+<div align="center">
+
+
+<link rel="stylesheet" type="text/css" href="http://jiaowu.sicau.edu.cn/jiaoshi/bangong/main/static/h-ui/css/H-ui.max.css" />
+<link rel="stylesheet" type="text/css" href="http://jiaowu.sicau.edu.cn/jiaoshi/bangong/main/static/h-ui.admin/css/H-ui.admin.css" />
+<link rel="stylesheet" type="text/css" href="http://jiaowu.sicau.edu.cn/jiaoshi/bangong/main/lib/Hui-iconfont/1.0.8/iconfont.css" />
+<link rel="stylesheet" type="text/css" href="http://jiaowu.sicau.edu.cn/jiaoshi/bangong/main/static/h-ui.admin/skin/default/skin.css" id="skin" />
+<link rel="stylesheet" type="text/css" href="http://jiaowu.sicau.edu.cn/jiaoshi/bangong/main/static/h-ui.admin/css/style.css" />
+<nav class="breadcrumb">
+  <div align="left" class="STYLE1"><a class=menu href="../../../jiaoshi/bangong/main/xqzt.asp?dizhi=8602739786113592900523318609273786770417814088838806721488013334814015538995643186089577973413498931403681476863814015539003126181470273819889748939981688176305861557728817630597268779973695898813925589314036906887188806721490699278880532349067647886618552899605418668257281981514813995139004959188016074" title="点击更改学期设置"> 当前学期状态：2026-2027-1 点击更改 </a>&nbsp;&nbsp;&nbsp;<a class="btn btn-success radius r" style="line-height:1.6em;margin-top:3px" href="javascript:location.replace(location.href);" title="刷新" >刷新当前页 <i class="Hui-iconfont">&#xe68f;</i></a></div>
+</nav>
+
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+
+
+<table width="1003" height="40" border="0" cellpadding="0" cellspacing="0" background="../../../images/menu.gif">
+
+
+  
+
+  <TR>
+    <TD height=20 width=80 align="center">
+      　
+    </TD>
+    
+    <td align="left"><a href="xuefen_2023.asp?title_id1=1"><font color=blue>学业进度统计▼</font></a></td>
+    
+
+
+
+     <!--TD height=20 width=150 align="center">
+      &nbsp; <a  class=menu href="xuefen.asp" >【学业进度统计】</a>　
+    </TD-->  
+    
+    <td align="left"><a href="kc_tj.asp?title_id1=2"><font color=#CC6600>【课程修读统计】</font></a></td>
+    
+
+
+     <TD height=20 width=20 align="center">
+      　
+    </TD>
+  </TR>
+</TBODY>
+</TABLE>
+  </center>
+</div>
+<body background="../Images/bgimage.jpg">
+
+
+
+<head>
+<link rel="stylesheet" type="text/css" href="../../../css/style.css">
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<title>学业进度</title>
+<style type="text/css">
+  <!--
+
+  .style11 {font-size: 20px;font-weight: bold;font-family: "宋体";line-height: 48px; }
+  .style5 {font-size: 10; font-family: "宋体"; line-height: 15px;color:#999999;}
+  .style6 { font-size: 14; font-family: "宋体"; font-style: normal;line-height: 16px; }
+  .style7 {font-size: 14; font-family: "宋体"; font-style: normal; line-height: 48px; font-weight: bold; }
+  .style8 {font-size: 14; font-family: "宋体"; font-style: normal; line-height: 24px; font-weight: bold; }
+  .style9 {font-size: 14; font-family: "宋体"; font-style: normal; line-height: 48px; }
+  .style4 {font-size: 14; font-family: "宋体"; font-style: normal; line-height: 24px; color:rgba(197, 77, 8, 0.822);}
+  @media print{.noprint{display:none}}
+  body {
+
+  }
+  -->
+</style>
+</head>
+
+<body>
+
+
+<center>
+
+<table border=1 width="98%" bordercolor="##99CCFF" style="border-collapse: collapse">
+			
+	<tr bgcolor="#d0d0d0"><td align="center" bgcolor="#0099CC" height="25" colspan=7><strong><font color="#FFFFFF" class="style11">【数据科学与大数据技术2025】姚一飞(20230XXXXX)学业进度统计</font></strong></td></tr>
+
+  <tr>
+    <td width="20%" colspan="2" align="center" class="style7">课程性质</td>
+    <td width="10%" align="center" class="style7">应修学分</td>
+    <td width="20%" align="center" class="style7">已修学分</td>
+    <td width="20%" align="center" class="style7">学分差(已修-应修)</td>
+    <td width="10%" align="center" class="style7">可结转学分</td>
+    <td width="20%" align="center" class="style7">分段完成进度</td>
+  </tr>
+  <tr>
+    <td rowspan="2" class="style7" align="center">必修类</td>
+    <td class="style8" align="center">必修<br>（含专业基础与专业核心）</td>
+    <td align="center" class="style9">
+      108.5
+    </td>
+    <td align="center" class="style6">
+      40.5
+
+    </td>
+    <td align="center" class="style6">
+        -68
+    </td>
+    <td align="center" class="style6">
+        0
+    </td>
+
+    <td align="center" class="style6" valign="middle">37.33%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="37.33%" height="10"></td>
+          </tr>
+        </table>
+    </td>
+
+  </tr>
+  <tr>
+    <td class="style7" align="center">通识与专业实践</td>
+    <td align="center" class="style9">
+      24.5   
+    </td>
+    <td align="center" class="style6">
+      0.5
+    </td>
+    <td align="center" class="style6">
+      -24
+    </td>
+    <td align="center" class="style6">
+        0
+    </td>    
+    <td align="center" class="style6">2.04%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="2.04%"  height="10"></td>
+          </tr>
+        </table>
+    </td>
+  </tr>
+  <tr>
+    <td rowspan="3" class="style7" align="center">选修类</td>
+    <td class="style8" align="center">专业方向课</td>
+    <td align="center" class="style9">
+      23
+    </td>
+    <td align="center" class="style6">
+      6
+    </td>
+    <td align="center" class="style6">
+      -17
+    </td>
+    <td align="center" class="style6">
+        0
+    </td>
+    <td align="center" class="style6">26.09%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="26.09%"  height="10"></td>
+          </tr>
+        </table>
+    </td>
+  </tr>
+  <tr>
+    <td class="style7" align="center">通识选修</td>
+    <td align="center" class="style9">
+      8   
+    </td>
+    <td align="center" class="style6">
+      0<span class=style5></span>
+    </td>
+    <td align="center" class="style6">
+      -8
+    </td>
+    <td align="center" class="style6">
+      0
+    </td>    
+    <td align="center" class="style6">0%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="0%"  height="10"></td>
+          </tr>
+        </table>
+    </td>
+  </tr>
+  <tr>
+    <td height="40" class="style8" align="center">专业拓展课<br>（含专业类型课）</td>
+    <td align="center" class="style9">
+      6    
+    </td>
+    <td align="center" class="style6">
+        0
+    </td>
+    <td align="center" class="style6">
+      -6      
+    </td>
+    <td align="center" class="style6">/</td>    
+    <td align="center" class="style6">0%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="0%"  height="10"></td>
+          </tr>
+        </table>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" class="style7" align="center">合 计</td>
+    <td align="center" class="style9">
+       170   
+    </td>
+    <td align="center" class="style6">
+        47
+    </td>
+    <td align="center" class="style6">
+        -123
+    </td>
+    <td align="center" class="style6">/</td>    
+    <td align="center" class="style6">
+      27.65%
+        <table width="100%" border="1" cellpadding="0" cellspacing="1" bordercolor="#C0DCC0">
+          <tr>
+            <td align=left bordercolor="#C0DCC0" bgcolor="#C0DCC0"><img src="../../../Images/jd_pic.png"  width="27.65%"  height="10"></td>
+          </tr>
+        </table>
+      
+      
+    </td>
+  </tr>
+
+</table>
+</center>
+<table border=1 width="98%" bordercolor="##99CCFF" style="border-collapse: collapse">
+  <tr>
+    <td class="style4">
+      
+      特别提示：<br>1、“可结转学分”为非“专业拓展课”类已修学分超出“应修学分”部分，系统自动记入“专业拓展课”的“已修学分”，原则上应至少修一门外专业课程作为本专业的专业拓展课；<br>2、任何一个“分段完成进度”未达到100%，均表示未达到毕业学分要求；<br>3、是否达到毕业要求以实际毕业审核为准，此进度仅供参考。
+      
+    </td>
+  </tr>
+</table>
+
+
+</body>
+</html>
+
+
+
+
+
+
+
