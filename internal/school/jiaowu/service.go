@@ -30,6 +30,12 @@ type Service struct {
 	scheduler    *RenewScheduler
 	// audit_store 是可选的审计持久化通道；为 nil 时只写 slog。
 	audit_store platform.AuditStore
+	// cache 是回传数据的缓存层，可选依赖：为 nil 时缓存端点回 503。
+	// 由 BindCache 注入，只依赖 CacheStore 接口，不绑 *platform.RedisCache。
+	cache CacheStore
+	// schema 是回传体的形状校验器（#41），由 BindSchemaValidator 注入。
+	// 为 nil 时缓存读写直接报错——没有校验器就绝不能放数据进缓存。
+	schema *SchemaValidator
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "teacherInfo payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "gender": { "type": "string" },
+        "campus": { "type": "string" },
+        "department": { "type": "string" },
+        "joinDate": { "type": "string" },
+        "ethnicity": { "type": "string" },
+        "education": { "type": "string" },
+        "degree": { "type": "string" },
+        "title": { "type": "string" },
+        "partyPosition": { "type": "string" },
+        "teachingUnit": { "type": "string" },
+        "section": { "type": "string" },
+        "graduateSchool": { "type": "string" },
+        "graduateMajor": { "type": "string" },
+        "officePhone": { "type": "string" },
+        "mobilePhone": { "type": "string" },
+        "officeAddress": { "type": "string" },
+        "qq": { "type": "string" },
+        "email": { "type": "string" },
+        "mainCourses": { "type": "string" },
+        "researchDirection": { "type": "string" },
+        "achievements": { "type": "string" },
+        "teacherMessage": { "type": "string" },
+        "updateDate": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "progress payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": ["type", "required", "earned"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "required": { "type": "string" },
+          "earned": { "type": "string" },
+          "diff": { "type": "string" },
+          "transfer": { "type": "string" },
+          "progress": { "type": "string" }
+        }
+      }
+    }
+  }
+}

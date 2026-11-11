@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "kaike payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["semester", "courses"],
+      "properties": {
+        "semester": { "type": "string" },
+        "courses": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": ["index", "courseName"],
+            "properties": {
+              "index": { "type": "string", "pattern": "^[0-9]+$" },
+              "courseCode": { "type": "string" },
+              "department": { "type": "string" },
+              "courseIdWithName": { "type": "string" },
+              "courseName": { "type": "string", "minLength": 1 },
+              "courseType": { "type": "string" },
+              "classroom": { "type": "string" },
+              "scheduleTime": { "type": "string" },
+              "weekRange": { "type": "string" },
+              "credits": { "type": "string" },
+              "lectureHours": { "type": "string" },
+              "labHours": { "type": "string" },
+              "practiceHours": { "type": "string" },
+              "totalHours": { "type": "string" },
+              "teacher": { "type": "string" },
+              "plannedCount": { "type": "string" },
+              "selectedCount": { "type": "string" },
+              "remainingCount": { "type": "string" },
+              "className": { "type": "string" },
+              "isLocked": { "type": "string" },
+              "campus": { "type": "string" },
+              "courseCategory": { "type": "string" },
+              "courseSystem": { "type": "string" },
+              "scheduleType": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

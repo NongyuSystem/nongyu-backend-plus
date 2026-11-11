@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["title", "courses"],
+      "properties": {
+        "title": { "type": "string" },
+        "courses": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": ["courseCode"],
+            "properties": {
+              "courseCode": { "type": "string", "minLength": 1 },
+              "courseName": { "type": "string" },
+              "englishName": { "type": "string" },
+              "courseType": { "type": "string" },
+              "courseSystem": { "type": "string" },
+              "credits": { "type": "string" },
+              "totalHours": { "type": "string" },
+              "lectureHours": { "type": "string" },
+              "labHours": { "type": "string" },
+              "practiceHours": { "type": "string" },
+              "selfStudyHours": { "type": "string" },
+              "weeklyHours": {
+                "type": "array",
+                "maxItems": 10,
+                "items": { "type": "string" }
+              },
+              "execSemester": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

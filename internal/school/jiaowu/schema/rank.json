@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rank payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["studentId", "name"],
+      "properties": {
+        "index": { "type": "string" },
+        "campus": { "type": "string" },
+        "college": { "type": "string" },
+        "major": { "type": "string" },
+        "grade": { "type": "string" },
+        "studentId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "className": { "type": "string" },
+        "weightedScore": { "type": "string" },
+        "majorRank": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    }
+  }
+}

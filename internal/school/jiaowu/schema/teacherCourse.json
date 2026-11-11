@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "teacherCourse payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["teacherName", "semester", "slots"],
+      "properties": {
+        "teacherName": { "type": "string" },
+        "semester": { "type": "string" },
+        "slots": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "required": ["dayOfWeek", "period", "slot", "courses"],
+            "properties": {
+              "dayOfWeek": { "type": "integer", "minimum": 1, "maximum": 7 },
+              "period": { "type": "string" },
+              "slot": { "type": "string" },
+              "courses": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "object",
+                  "required": ["courseName"],
+                  "properties": {
+                    "courseName": { "type": "string", "minLength": 1 },
+                    "courseType": { "type": "string" },
+                    "classId": { "type": "string" },
+                    "location": { "type": "string" },
+                    "weekRange": { "type": "string" },
+                    "weekPattern": { "type": "string", "enum": ["", "单", "双"] },
+                    "isExperiment": { "type": "boolean" },
+                    "isContinuous": { "type": "boolean" },
+                    "hoursUnit": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

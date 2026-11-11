@@ -465,6 +465,32 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc.BindAuditStore(auditStore)
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
+	// 回传缓存子域（#40/#41/#32/#34）：把缓存层与 schema 校验器注入教务子域，
+	// 再挂 GET/POST/DELETE /school/cache/:dataType。
+	//
+	// 这两件能力都是「有则启用、无则端点回 503」的可选依赖：
+	//   - cache 为 nil：没配 REDIS_ADDR，纯缓存语义无处落地；
+	//   - schema 编译失败：意味着某类回传永远不会被校验，宁可让端点不可用，
+	//     也不能放未校验的数据进缓存。
+	cacheSubdomainReady := false
+	if cache != nil {
+		validator, verr := jiaowu.NewSchemaValidator()
+		if verr != nil {
+			// fail-fast 的边界：这里不让整个进程起不来（其它子域不受影响），
+			// 但必须显式告警且不挂缓存路由——挂上去也只会写入未校验数据。
+			logger.Error("回传缓存子域未启用：schema 校验器编译失败", "err", verr)
+		} else {
+			jiaowuSvc.BindCache(cache)
+			jiaowuSvc.BindSchemaValidator(validator)
+			jiaowu.RegisterCache(engine, jiaowuSvc)
+			cacheSubdomainReady = true
+		}
+	}
+	if !cacheSubdomainReady {
+		logger.Warn("回传缓存端点未挂载：需要 REDIS_ADDR 且 schema 全部编译通过",
+			"cache_configured", cache != nil)
+	}
+
 	// 身份域路由：登录/登出走编排层 flow（它负责「登录成功后签发会话」），
 	// 画像读取与修改走 user 子域。身份全部来自 context，不读请求体里的 userID。
 	if identityStore != nil {

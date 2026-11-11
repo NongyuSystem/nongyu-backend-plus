@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "personal payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "required": ["studentId", "name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "studentId": { "type": "string", "minLength": 1 },
+        "gender": { "type": "string" },
+        "college": { "type": "string" },
+        "major": { "type": "string" },
+        "grade": { "type": "string" },
+        "className": { "type": "string" },
+        "identity": { "type": "string" },
+        "studentStatus": { "type": "string" },
+        "enrollmentDate": { "type": "string" },
+        "ethnicity": { "type": "string" },
+        "politicalStatus": { "type": "string" },
+        "phone": { "type": "string" },
+        "examId": { "type": "string" },
+        "homeAddress": { "type": "string" },
+        "campus": { "type": "string" }
+      }
+    }
+  }
+}

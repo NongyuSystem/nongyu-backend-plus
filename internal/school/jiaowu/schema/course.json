@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "course payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": ["courseName"],
+        "properties": {
+          "courseName": { "type": "string", "minLength": 1 },
+          "campus": { "type": "string" },
+          "courseId": { "type": "string" },
+          "weeks": { "type": "string" },
+          "classroom": { "type": "string" },
+          "scheduleTime": { "type": "string" },
+          "credit": { "type": "string" },
+          "hours": { "type": "string" },
+          "weeklyHours": { "type": "string" },
+          "labHours": { "type": "string" },
+          "assessmentMethod": { "type": "string" },
+          "teacher": { "type": "string" },
+          "enrollmentType": { "type": "string" },
+          "blendedTeaching": { "type": "string" }
+        }
+      }
+    }
+  }
+}

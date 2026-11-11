@@ -278,6 +278,34 @@ func (c *RedisCache) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// TryAcquire 在缓存命名空间里原子地占一个短命标记键（SET NX + TTL）。
+//
+// 用途是「同一用户 + 同一资源在 N 秒内只允许做一次某动作」这类**间隔节流**：
+// 占到即可执行，占不到说明窗口内已经做过，调用方据此拒绝。
+//
+// 与 IdempotentLock 的分工：后者带持有者令牌与「只释放自己的锁」语义，适合
+// 需要显式释放的互斥；这里要的恰好相反——**不释放、到期自动放开**，所以直接
+// 用 SET NX 更贴切，也免掉令牌簿记。
+//
+// 键仍落 <prefix>cache:<key>，与其它缓存键同域，便于按前缀观测。
+// 熔断/Redis 不可用时不抛错，返回 (false, nil) 让调用方按「不可判定」处理，
+// 避免把缓存故障升级成业务拒绝。
+func (c *RedisCache) TryAcquire(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		ttl = c.opts.DefaultTTL
+	}
+	if !c.breaker.allow() {
+		return false, nil
+	}
+	ok, err := c.client.SetNX(ctx, c.fullKey(key), []byte("1"), ttl).Result()
+	if err != nil {
+		c.breaker.onFailure()
+		return false, err
+	}
+	c.breaker.onSuccess()
+	return ok, nil
+}
+
 // PendingBackfill 返回待回灌条目数（降级期间写入、尚未同步到 Redis 的数量）。
 func (c *RedisCache) PendingBackfill() int {
 	c.mu.Lock()

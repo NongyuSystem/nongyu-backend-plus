@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "classroomInfo payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["array", "null"],
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": ["index", "location"],
+        "properties": {
+          "index": { "type": "string", "pattern": "^[0-9]+$" },
+          "campus": { "type": "string" },
+          "location": { "type": "string", "minLength": 1 },
+          "capacity": { "type": "string" },
+          "type": { "type": "string" },
+          "classroomId": { "type": "string" }
+        }
+      }
+    }
+  }
+}
