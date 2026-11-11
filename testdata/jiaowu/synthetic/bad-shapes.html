@@ -1,0 +1,86 @@
+<!-- 手工构造的「坏样例」：上游改版 / 空壳页 的表现，用于验证解析器**能识别失败**而不是静默返回空数组。
+     来源：**手工构造**。每个 <section> 对应一种失败形态，解析器对每种都应给出「失败」判定。
+
+     为什么需要它：旧仓三个解析器的 `success` 布尔被实测证伪（红字提示会被当课程名、空壳页 success:true）。
+     这些夹具就是用来钉死「这几种页必须被判失败」的。 -->
+
+<html>
+<head><meta http-equiv="Content-Type" content="text/html; charset=gb2312"></head>
+<body>
+
+<!-- ===== 形态 A：登录超时页（HTTP 200 但正文是超时提示）=====
+     期望：解析器判定 session 失效，绝不产出数据。 -->
+<table>
+  <tr><td>
+    <script>alert('登录超时，请重新登录！');location.href='../../../jiaoshi/bangong/index.asp';</script>
+  </td></tr>
+</table>
+
+<!-- ===== 形态 B：空壳课表页（有表格、有表头，但零数据行）=====
+     期望：解析器产出**空数组且明确标记「无数据」**，不得把表头或提示文字当课程名。 -->
+<table class="tablebody">
+  <tr>
+    <td class="g_title">校区</td>
+    <td class="g_title">课程名称</td>
+    <td class="g_title">上课时间</td>
+    <td class="g_title">周次</td>
+    <td class="g_title">教室</td>
+  </tr>
+  <tr><td colspan="5" align="center">没有找到符合条件的记录</td></tr>
+</table>
+
+<!-- ===== 形态 C：表头全变（列名被教务改掉）=====
+     期望：解析器**识别不出列**，判定失败或全部字段为空 —— 但绝不能用错位方式产出「看起来有值」的行。 -->
+<table class="tablebody">
+  <tr>
+    <td class="g_title">备注一</td>
+    <td class="g_title">备注二</td>
+    <td class="g_title">备注三</td>
+  </tr>
+  <tr>
+    <td class="g_body">随意内容A</td>
+    <td class="g_body">随意内容B</td>
+    <td class="g_body">随意内容C</td>
+  </tr>
+</table>
+
+<!-- ===== 形态 D：红字提示混在课表里（旧仓假阳性的经典形态）=====
+     期望：解析器**不得**把「特别提示：...」当课程名产出。 -->
+<table class="tablebody">
+  <tr>
+    <td class="g_title">课程名称</td>
+    <td class="g_title">上课时间</td>
+  </tr>
+  <tr>
+    <td class="g_body"><font color="red">特别提示：本学期课表尚未发布</font></td>
+    <td class="g_body"></td>
+  </tr>
+</table>
+
+<!-- ===== 形态 E：成绩表有表头有行，但成绩列全空 =====
+     期望：按旧仓行有效性规则（courseName && score），这些行应被**丢弃**，产出空数组。 -->
+<table class="tablebody">
+  <tr>
+    <td class="g_title">课程名称</td>
+    <td class="g_title">最终成绩</td>
+    <td class="g_title">学分</td>
+  </tr>
+  <tr>
+    <td class="g_body">某课程</td>
+    <td class="g_body"></td>
+    <td class="g_body">2</td>
+  </tr>
+</table>
+
+<!-- ===== 形态 F：截断页（HTML 在中途断掉）=====
+     期望：解析器不崩、判定失败。 -->
+<table class="tablebody">
+  <tr>
+    <td class="g_title">课程名称</td>
+    <td class="g_title">上课时间</td>
+  </tr>
+  <tr>
+    <td class="g_body">Web设计与应用
+
+</body>
+</html>

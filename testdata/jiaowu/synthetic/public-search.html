@@ -1,0 +1,115 @@
+<!-- 手工构造的最小夹具：教务公开查询页（教室搜索 / 教师搜索）。
+     用途：给前端 classroomInfo / teacherInfo / classroomCourse / teacherCourse 解析器做回归。
+     来源：**手工构造，非真实页面**。结构依据见
+     docs/tech/教务学生端功能与查询参数清单.md §1.2 与 docs/tech/实测-教务6页真实HTML与表头.md。
+
+     与真实页的差异：具体教室名/教师名/编号是编的；表结构与列序按调研记录写。
+     注意：真实页是 GBK，这里给 UTF-8 便于阅读；前端回归时若需测 GBK 解码，
+     须自行按 README.md 的「如何重采 GBK 原始字节」重新抓取。 -->
+
+<html>
+<head><meta http-equiv="Content-Type" content="text/html; charset=gb2312"></head>
+<body>
+
+<!-- ========== 教室搜索列表（jshi_new.asp?bj=<教室名>） ========== -->
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="tablebody">
+  <tr>
+    <td class="g_title" align="center" width="60">序号</td>
+    <td class="g_title" align="center">教室</td>
+    <td class="g_title" align="center" width="120">校区</td>
+    <td class="g_title" align="center" width="120">容量</td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">1</td>
+    <td class="g_body" align="left">雅安校区-10教-A101</td>
+    <td class="g_body" align="center">雅安</td>
+    <td class="g_body" align="center">120</td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">2</td>
+    <td class="g_body" align="left">雅安校区-10教-A102</td>
+    <td class="g_body" align="center">雅安</td>
+    <td class="g_body" align="center">80</td>
+  </tr>
+</table>
+
+<!-- ========== 教室课表详情（kbjshi_new.asp?bianhao=<id>） ========== -->
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="tablebody">
+  <tr>
+    <td class="g_title" align="center" width="80">节次</td>
+    <td class="g_title" align="center" width="80">星期一</td>
+    <td class="g_title" align="center" width="80">星期二</td>
+    <td class="g_title" align="center" width="80">星期三</td>
+    <td class="g_title" align="center" width="80">星期四</td>
+    <td class="g_title" align="center" width="80">星期五</td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">1-2</td>
+    <td class="g_body" align="left">Web设计与应用<br>张XX<br>1-16周</td>
+    <td class="g_body" align="left"></td>
+    <td class="g_body" align="left">数据库原理<br>李XX<br>1-16周</td>
+    <td class="g_body" align="left"></td>
+    <td class="g_body" align="left"></td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">3-4</td>
+    <td class="g_body" align="left"></td>
+    <td class="g_body" align="left">计算机网络<br>王XX<br>1-8周</td>
+    <td class="g_body" align="left"></td>
+    <td class="g_body" align="left">操作系统<br>赵XX<br>9-16周</td>
+    <td class="g_body" align="left"></td>
+  </tr>
+</table>
+
+<!-- ========== 教师搜索列表（jiaoshi_new.asp?xm=<GBK姓名>） ========== -->
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="tablebody">
+  <tr>
+    <td class="g_title" align="center" width="60">序号</td>
+    <td class="g_title" align="center">姓名</td>
+    <td class="g_title" align="center" width="160">工号</td>
+    <td class="g_title" align="center" width="200">所在单位</td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">1</td>
+    <td class="g_body" align="left"><a href="/web/web/lanmu/jiaoshikb_new.asp?bianhao=0000000000000000000000000000aa01">张XX</a></td>
+    <td class="g_body" align="center">T0001</td>
+    <td class="g_body" align="center">信息工程学院</td>
+  </tr>
+</table>
+
+<!-- ========== 教师课表详情（jiaoshikb_new.asp?bianhao=<32位id>） ========== -->
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="tablebody">
+  <tr>
+    <td class="g_title" align="center" width="80">节次</td>
+    <td class="g_title" align="center" width="80">星期一</td>
+    <td class="g_title" align="center" width="80">星期二</td>
+  </tr>
+  <tr>
+    <td class="g_body" align="center">1-2</td>
+    <td class="g_body" align="left">Web设计与应用<br>雅安校区-10教-A101<br>大数据202503<br>1-16周</td>
+    <td class="g_body" align="left"></td>
+  </tr>
+</table>
+
+<!-- ========== 教师信息（jiaoshishow.asp?title_id1=2&xingming=<工号>） ========== -->
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="tablebody">
+  <tr>
+    <td class="g_column" align="left" width="120">姓名</td>
+    <td class="g_body" align="left">张XX</td>
+  </tr>
+  <tr>
+    <td class="g_column" align="left" width="120">工号</td>
+    <td class="g_body" align="left">T0001</td>
+  </tr>
+  <tr>
+    <td class="g_column" align="left" width="120">所在单位</td>
+    <td class="g_body" align="left">信息工程学院</td>
+  </tr>
+  <tr>
+    <td class="g_column" align="left" width="120">职称</td>
+    <td class="g_body" align="left">副教授</td>
+  </tr>
+</table>
+
+</body>
+</html>
