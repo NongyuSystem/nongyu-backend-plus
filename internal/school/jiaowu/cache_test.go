@@ -568,3 +568,159 @@ func TestCache_SuccessFieldIsAuditOnly(t *testing.T) {
 		t.Fatalf("success=true 但形状不对时必须拒收，实际 %d body=%v", code, resp)
 	}
 }
+
+// ── Spec 验收门槛补测 ─────────────────────────────────────────────────────
+
+// recordingAuditStore 记录所有审计条目，用来断言 Action/Result 的口径。
+type recordingAuditStore struct {
+	mu      sync.Mutex
+	entries []platform.AuditEntry
+}
+
+func (r *recordingAuditStore) Append(_ context.Context, e platform.AuditEntry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = append(r.entries, e)
+	return nil
+}
+func (r *recordingAuditStore) Flush(context.Context) error { return nil }
+func (r *recordingAuditStore) Dropped() int64              { return 0 }
+func (r *recordingAuditStore) Close() error                { return nil }
+
+func (r *recordingAuditStore) results(action string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, e := range r.entries {
+		if e.Action == action {
+			out = append(out, e.Result)
+		}
+	}
+	return out
+}
+
+// TestCache_AuditResults 验证审计口径（#40 定 Action=cache_submit 三种 Result、
+// #34 定 Action=cache_invalidate）。
+//
+// 审计是这条链路唯一的可观测面——后端看不到前端直连教务那一段（ADR-0001:43），
+// 所以「提交成功/被拒/限流」这三种结局必须从这里读得出来。
+func TestCache_AuditResults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	clock := newFakeClock()
+	cache := newMemCache(func() time.Time { return clock.Now() })
+	audit := &recordingAuditStore{}
+
+	svc := NewWithAuth(platform.NewMockHTTPDoer(platform.DoerPolicy{}), platform.NewMockTicketStore(),
+		platform.NewMockCipher("k"), clock, nil)
+	validator, err := NewSchemaValidator()
+	if err != nil {
+		t.Fatalf("编译 schema 失败: %v", err)
+	}
+	svc.BindCache(cache)
+	svc.BindSchemaValidator(validator)
+	svc.BindAuditStore(audit)
+
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-audit"); c.Next() })
+	RegisterCache(engine, svc)
+
+	// 1) 成功回传 → ok
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+		t.Fatalf("回传失败")
+	}
+	// 2) 坏数据 → schema_rejected
+	doJSON(t, engine, http.MethodPost, "/school/cache/course", `{"schemaVersion":1,"payload":[{"weeks":"1"}]}`)
+	// 3) 失效成功 → ok
+	doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+	// 4) 立即再失效 → too_soon
+	doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+
+	submit := audit.results("cache_submit")
+	wantSubmit := []string{"ok", "schema_rejected"}
+	if len(submit) != len(wantSubmit) {
+		t.Fatalf("cache_submit 审计条数 = %d (%v), 期望 %d", len(submit), submit, len(wantSubmit))
+	}
+	for i := range wantSubmit {
+		if submit[i] != wantSubmit[i] {
+			t.Errorf("cache_submit[%d] = %q, 期望 %q", i, submit[i], wantSubmit[i])
+		}
+	}
+
+	inv := audit.results("cache_invalidate")
+	wantInv := []string{"ok", "too_soon"}
+	if len(inv) != len(wantInv) {
+		t.Fatalf("cache_invalidate 审计条数 = %d (%v), 期望 %d", len(inv), inv, len(wantInv))
+	}
+	for i := range wantInv {
+		if inv[i] != wantInv[i] {
+			t.Errorf("cache_invalidate[%d] = %q, 期望 %q", i, inv[i], wantInv[i])
+		}
+	}
+
+	// 审计条目里绝不能出现 payload 内容或凭据（mail.go 的铁律）。
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	for _, e := range audit.entries {
+		blob := e.RequestID + e.UserID + e.Action + e.Target + e.Result
+		if strings.Contains(blob, "Web设计与应用") {
+			t.Fatalf("审计条目泄漏了 payload 内容: %+v", e)
+		}
+	}
+}
+
+// TestCache_DegradesToMemory 验证 Spec 验收门槛第 7 条「降级可用」。
+//
+// 用真实 RedisCache 配 FallbackEnabled + 一个不可达的 Redis 地址：
+// 写入应落到进程内存兜底，读取仍能拿到数据。这条不测「Redis 正常」，
+// 恰恰测「Redis 挂了还能用」——缓存层是可选依赖，挂了不该让业务失败。
+func TestCache_DegradesToMemory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	clock := newFakeClock()
+
+	// 127.0.0.1:1 几乎必然连接被拒，用作「Redis 不可用」的模拟。
+	redisCache, err := platform.NewRedisCache(
+		platform.RedisOptions{Addr: "127.0.0.1:1", Prefix: "degrade:"},
+		platform.CacheOptions{
+			DefaultTTL:      time.Hour,
+			JitterRatio:     0,
+			FallbackEnabled: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("构造 RedisCache 失败: %v", err)
+	}
+	defer func() { _ = redisCache.Close() }()
+
+	validator, err := NewSchemaValidator()
+	if err != nil {
+		t.Fatalf("编译 schema 失败: %v", err)
+	}
+
+	svc := NewWithAuth(platform.NewMockHTTPDoer(platform.DoerPolicy{}), platform.NewMockTicketStore(),
+		platform.NewMockCipher("k"), clock, nil)
+	svc.BindCache(redisCache)
+	svc.BindSchemaValidator(validator)
+
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-degrade"); c.Next() })
+	RegisterCache(engine, svc)
+
+	// Redis 不可达，但写入应降级到内存成功。
+	code, body := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody)
+	if code != http.StatusOK {
+		t.Fatalf("Redis 不可用时回传应降级成功，实际 %d body=%v", code, body)
+	}
+
+	// 读取也应能从内存兜底拿到。
+	code, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK {
+		t.Fatalf("Redis 不可用时读取应降级成功，实际 %d", code)
+	}
+	if body["code"] == "cache_miss" {
+		t.Fatal("降级后读不到刚写入的数据（内存兜底未生效）")
+	}
+	payload, _ := body["payload"].([]any)
+	if len(payload) != 1 {
+		t.Fatalf("降级读取的 payload 不对: %v", body["payload"])
+	}
+}
