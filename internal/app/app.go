@@ -388,6 +388,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		identityUserSvc = identityuser.New(st, st)
 		identitySessionSvc = identitysession.New(st, st, clock)
 
+		// 公告的读者画像解析器：userID → 学号 → 学院/年级。
+		// 没有它，「按学院/年级定向」的公告对所有人不可见（fail-closed）。
+		installProfileResolver(newProfileResolver(st, identityUserSvc))
+
 		// 会话 Redis 副本：可用则加速鉴权读，不可用不影响正确性（回落 PG）。
 		if cfg.RedisAddr != "" {
 			if rc, err := platform.NewRedisSessionCache(platform.RedisOptions{
