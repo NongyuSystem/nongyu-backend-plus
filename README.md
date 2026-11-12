@@ -22,20 +22,20 @@
 nongyu-backend-plus/
 ├── cmd/server/            # 唯一入口：装配 + 启动 + 优雅关停
 ├── internal/
-│   ├── app/               # 装配层（composition root）：依赖注入只发生在这里
-│   ├── config/            # 环境变量读取与校验
-│   ├── server/            # Gin 适配层：路由、中间件、/healthz
-│   ├── platform/          # 外部能力接缝：Store 接口 + Mock 实现
-│   └── <业务域>/          # 待 PRD/Spec 到位后按业务能力新增（如 skin/、config/、auth/）
-├── migrations/            # schema 变更（单向有序）
+│   ├── app/               # 装配层：依赖注入只在这里；notify/ 是跨域编排单元
+│   ├── config/            # 环境变量读取与校验（见 .env.example，37 变量）
+│   ├── server/            # Gin 适配层：路由、中间件、/healthz、/status
+│   ├── platform/          # 外部能力接缝；真实实现放 pgstore/、objectstore/
+│   └── <业务域>/          # content/{post,announcement}・message・track・identity・school
+├── migrations/            # schema 变更（单向有序；启动时幂等执行）
 ├── deploy/                # 部署示例（Dockerfile / systemd / compose）
 ├── docs/
 │   ├── specs/             # 规格文档（SDD：PRD → Spec → 编码）
-│   ├── tech/              # 技术方案（需要时）
+│   ├── tech/              # 技术方案与决策记录
 │   └── plans/             # 实施计划（需要时）
 ├── go.mod / go.sum
-├── Makefile
-├── .env.example           # 配置模板（真实值不入库）
+├── Makefile / scripts/dev-start.sh   # 常用命令；本机启动脚本（读 .env + 探测）
+├── .env.example           # 配置模板（37 变量全量，真实值不入库）
 └── README.md
 ```
 
