@@ -77,6 +77,9 @@ func (r *PostMemoryRepo) Update(_ context.Context, p *post.Post) error {
 	cp.CreatedAt = old.CreatedAt
 	cp.UpdatedAt = r.nowFn()
 	r.posts[p.ID] = cp
+	// **回写到入参**：调用方（服务层）随后会把 p 直接当响应返回，
+	// 只更新副本会让客户端拿到旧 updatedAt，看起来像「保存没生效」。
+	p.CreatedAt, p.UpdatedAt = cp.CreatedAt, cp.UpdatedAt
 	return nil
 }
 

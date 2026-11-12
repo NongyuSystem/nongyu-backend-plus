@@ -138,3 +138,46 @@ func TestAudit_NilStoreDoesNotPanic(t *testing.T) {
 type fixedClockAt struct{ now time.Time }
 
 func (f fixedClockAt) Now() time.Time { return f.now }
+
+// TestUpdate_WritesBackUpdatedAt 锁住「Update 之后入参的 UpdatedAt 是新的」。
+//
+// 内存与 PG 两个实现都曾只更新内部副本、不回写入参。服务层会把
+// 传入的结构体直接当响应返回，于是客户端拿到旧 updatedAt——
+// 用户看到的现象是「改了但时间没变」，像是没保存成功。
+func TestUpdate_WritesBackUpdatedAt(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	later := t0.Add(time.Hour)
+
+	// 用可推进时钟：先 t0 建，再 later 改，才能看出回写有没有生效。
+	now := t0
+	repo := pgstore.NewAnnouncementMemoryRepo(func() time.Time { return now })
+	svc := announcement.New(announcement.Options{
+		Repo:  repo,
+		Clock: clockFunc(func() time.Time { return now }),
+	})
+
+	a, err := svc.Create(context.Background(), announcement.CreateInput{
+		Title: "t", Body: "b",
+		Audience: announcement.Audience{Scope: announcement.AudienceAll},
+	})
+	if err != nil {
+		t.Fatalf("创建失败：%v", err)
+	}
+	createdAt := a.UpdatedAt
+
+	now = later
+	title := "改过的标题"
+	updated, err := svc.Update(context.Background(), a.ID, announcement.UpdateInput{Title: &title})
+	if err != nil {
+		t.Fatalf("更新失败：%v", err)
+	}
+	if !updated.UpdatedAt.After(createdAt) {
+		t.Fatalf("UpdatedAt 应被回写为新时间：创建时 %v，更新后仍是 %v",
+			createdAt, updated.UpdatedAt)
+	}
+}
+
+// clockFunc 让普通函数满足 platform.Clock。
+type clockFunc func() time.Time
+
+func (f clockFunc) Now() time.Time { return f() }

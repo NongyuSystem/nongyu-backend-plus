@@ -70,6 +70,9 @@ func (r *AnnouncementMemoryRepo) Update(_ context.Context, a *announcement.Annou
 	cp.CreatedAt = old.CreatedAt
 	cp.UpdatedAt = r.nowFn()
 	r.rows[a.ID] = cp
+	// **回写到入参**：服务层会把 a 直接当响应返回，只更新副本
+	// 会让客户端拿到旧 updatedAt（看起来像「保存没生效」）。
+	a.CreatedAt, a.UpdatedAt = cp.CreatedAt, cp.UpdatedAt
 	return nil
 }
 

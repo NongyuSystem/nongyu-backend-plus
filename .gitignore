@@ -39,3 +39,8 @@ docs/agents/
 
 # implement-spec ����ʱ worktree������⣩
 /.wt/
+
+# 本地启动脚本（scripts/dev-start.sh）的运行时产物：
+# 日志可能含请求路径与错误细节，PID 只在本机有意义。两者都不该进仓库。
+.dev-server.log
+.dev-server.pid
