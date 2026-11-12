@@ -118,13 +118,26 @@ echo
 echo "[start] 编译并启动（日志：$LOG_FILE）"
 ( go run ./cmd/server > "$LOG_FILE" 2>&1 & echo $! > "$PID_FILE" )
 
-# 等端口就绪（最多 30 秒）——go run 首次编译可能较慢。
-for i in $(seq 1 60); do
-  if [[ -n "$(curl.exe -sS -o /dev/null -w '%{http_code}' --max-time 1 "$BASE/healthz" 2>/dev/null)" ]]; then
+# 等端口就绪（最多 60 秒）——go run 首次编译可能较慢。
+#
+# 关键：必须比对**真实状态码**，不能只判「输出非空」。
+# 早先写成 `[[ -n "$(...)" ]]`，而 curl 在服务未起时也可能输出 "000"
+# （非空！），于是第一次循环就 break、然后在服务还没编译完时去探测，
+# 结果所有端点都报 000——看起来像服务挂了，其实只是探早了。
+ready=0
+for i in $(seq 1 120); do
+  code="$(curl.exe -sS -o /dev/null -w '%{http_code}' --max-time 1 "$BASE/healthz" 2>/dev/null)"
+  if [[ "$code" == "200" ]]; then
+    ready=1
     break
   fi
   sleep 0.5
 done
+if [[ "$ready" -ne 1 ]]; then
+  echo "[start] ⚠️  等待就绪超时（60s）；服务可能仍在编译或启动失败。"
+  echo "        最近日志："
+  tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/          /'
+fi
 
 echo "[start] 装配摘要（来自日志）："
 grep -o '"msg":"装配完成"[^}]*}' "$LOG_FILE" 2>/dev/null | head -1 || echo "  (未取到装配完成行：可能仍在编译，请稍后 tail 日志)"
