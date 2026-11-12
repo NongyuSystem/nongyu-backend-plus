@@ -2,6 +2,7 @@ package announcement
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"nongyu-backend-plus/internal/content"
@@ -27,6 +28,15 @@ type Options struct {
 	// Clock 必填（失败即 panic，与仓储解析器的做法一致：
 	// 依赖缺失应该在装配期暴露，而不是在第一个请求进来时空指针）。
 	Clock platform.Clock
+	// Audit 可选。非 nil 时每个管理动作记一条 `<域>.<动作>` 审计。
+	//
+	// 为什么审计是可选注入而不是必填：公告的**读者侧**只需要 Repo+Clock，
+	// 强制装配层提供 AuditStore 会让「没有 Postgres 的本地开发」无法起服务。
+	// 但管理动作一旦有了 AuditStore 就必须留痕——这是 #46 Q3 的要求。
+	Audit platform.AuditStore
+	// AuditRequestID 从 gin.Context 取请求追踪号，供审计关联。
+	// 由 handler 层在调用前注入到 context 里（避免 service 依赖 gin）。
+	AuditUserID func(ctx context.Context) string
 }
 
 // Service 是公告的业务逻辑。
@@ -36,6 +46,9 @@ type Options struct {
 type Service struct {
 	repo  Repo
 	clock platform.Clock
+	audit platform.AuditStore
+	// userIDFromCtx 取当前操作者，供审计记录。可为 nil。
+	userIDFromCtx func(ctx context.Context) string
 }
 
 // New 构造 Service。
@@ -46,7 +59,49 @@ func New(opts Options) *Service {
 	if opts.Clock == nil {
 		opts.Clock = platform.NewRealClock()
 	}
-	return &Service{repo: opts.Repo, clock: opts.Clock}
+	return &Service{
+		repo:          opts.Repo,
+		clock:         opts.Clock,
+		audit:         opts.Audit,
+		userIDFromCtx: opts.AuditUserID,
+	}
+}
+
+// auditCtxKey 是请求上下文里携带追踪号的键。
+//
+// 用私有 key 类型避免与其它包的 context key 撞车。
+type auditCtxKey struct{}
+
+// WithAuditContext 把请求追踪号与操作者写进 context，供 service 记审计。
+//
+// handler 在调用 service 之前调它一次；这样 service 不必 import gin。
+func WithAuditContext(ctx context.Context, requestID, userID string) context.Context {
+	return context.WithValue(ctx, auditCtxKey{}, auditInfo{requestID: requestID, userID: userID})
+}
+
+type auditInfo struct{ requestID, userID string }
+
+// recordAudit 记一条审计。
+//
+// **旁路语义**：失败只吞掉（审计实现本身应非阻塞），绝不影响业务返回。
+// 只记标识性字段：action、target（`announcement:<id>`）、result。
+func (s *Service) recordAudit(ctx context.Context, action string, id int64, result string) {
+	if s.audit == nil {
+		return
+	}
+	info, _ := ctx.Value(auditCtxKey{}).(auditInfo)
+	uid := info.userID
+	if uid == "" && s.userIDFromCtx != nil {
+		uid = s.userIDFromCtx(ctx)
+	}
+	_ = s.audit.Append(ctx, platform.AuditEntry{
+		RequestID:  info.requestID,
+		UserID:     uid,
+		Action:     action,
+		Target:     "announcement:" + strconv.FormatInt(id, 10),
+		Result:     result,
+		OccurredAt: s.clock.Now(),
+	})
 }
 
 // ListResult 是读者侧列表的一次返回。
@@ -178,6 +233,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Announcement, er
 	if err := s.repo.Create(ctx, a); err != nil {
 		return nil, err
 	}
+	s.recordAudit(ctx, "announcement.create", a.ID, "ok")
 	return a, nil
 }
 
@@ -227,6 +283,7 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*Announ
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, err
 	}
+	s.recordAudit(ctx, "announcement.update", a.ID, "ok")
 	return a, nil
 }
 
@@ -270,6 +327,7 @@ func (s *Service) Publish(ctx context.Context, id int64) (*Announcement, error) 
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, err
 	}
+	s.recordAudit(ctx, "announcement.publish", a.ID, "ok")
 	return a, nil
 }
 
@@ -285,12 +343,13 @@ func (s *Service) Revoke(ctx context.Context, id int64) (*Announcement, error) {
 		return nil, content.Errorf(content.CodeValidationFailed, "草稿不能撤回")
 	}
 	if a.Status == StatusRevoked {
-		return a, nil // 幂等
+		return a, nil // 幂等，不重复记审计
 	}
 	a.Status = StatusRevoked
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, err
 	}
+	s.recordAudit(ctx, "announcement.revoke", a.ID, "ok")
 	return a, nil
 }
 
@@ -299,7 +358,11 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return content.Errorf(content.CodeValidationFailed, "公告 id 非法")
 	}
-	return s.repo.MarkDeleted(ctx, id, s.clock.Now())
+	if err := s.repo.MarkDeleted(ctx, id, s.clock.Now()); err != nil {
+		return err
+	}
+	s.recordAudit(ctx, "announcement.delete", id, "ok")
+	return nil
 }
 
 // AdminListResult 是管理端列表的一次返回（含草稿与已撤回）。

@@ -38,3 +38,11 @@ func announcementViewerOf(c *gin.Context) announcement.Viewer {
 		Role:          role,
 	}
 }
+
+// announcementUserIDOf 取当前会话用户 id，供公告域记审计用。
+//
+// 与 announcementViewerOf 分开是有意的：读者视图需要「角色」这个业务事实，
+// 审计只需要「谁」。把两者混在一个函数里会让内容域对身份域的依赖变宽。
+func announcementUserIDOf(c *gin.Context) (int64, bool) {
+	return server.CurrentUserID(c)
+}

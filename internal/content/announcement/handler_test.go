@@ -48,7 +48,15 @@ func newTestServer(t *testing.T) (*gin.Engine, *announcement.Service) {
 
 	r := gin.New()
 	announcement.RegisterPublic(r, svc, testViewer)
-	announcement.RegisterAdmin(r, svc)
+	// 管理端也需要「取当前用户」注入（记审计用）。测试里从请求头取。
+	announcement.RegisterAdmin(r, svc, func(c *gin.Context) (int64, bool) {
+		if v := c.GetHeader("X-Test-UID"); v != "" {
+			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return id, true
+			}
+		}
+		return 0, false
+	})
 	return r, svc
 }
 

@@ -562,7 +562,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				server.ScopeAdmin),
 			server.AdminOnly(platform.RoleAdmin),
 		)
-		announcement.RegisterAdmin(adminGroup, announcementSvc)
+		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
 	} else {
 		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
 	}

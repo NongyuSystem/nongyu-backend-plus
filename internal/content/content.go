@@ -11,70 +11,54 @@
 package content
 
 import (
-	"errors"
-	"fmt"
+	"nongyu-backend-plus/internal/apperr"
 )
 
-// Code 是内容域的统一错误码。
+// Code 是内容域使用的错误码。
 //
-// 取值固定自 docs/specs/spec-六类常见功能.md 的「错误码」节，
-// 不允许在 handler 里临时拼字符串——否则客户端无法稳定分支。
-type Code string
+// **它是 apperr.Code 的类型别名，不是另一套枚举**：早先 content 与 apperr
+// 各定义了一份 Code / Error / Errorf / CodeOf，四者完全平行，导致
+//   - 同一个业务错误在两处被判成不同类型（apperr.CodeOf 认不出 content.Error，
+//     于是 400 被错报成 500）；
+//   - 新增错误码要改两个地方。
+//
+// 现在 content 只保留「内容域会用到的码」这些常量，底层类型与构造/判定
+// 一律复用 apperr，判定入口仍只有 apperr.CodeOf 一处。
+type Code = apperr.Code
 
 const (
 	// CodeNotFound 目标不存在（或对当前调用方不可见，两者刻意不区分，
 	// 避免用 404/403 的差异探测资源是否存在）。
-	CodeNotFound Code = "not_found"
+	CodeNotFound = apperr.CodeNotFound
 	// CodeForbidden 已认证但无权进行该操作（如非作者编辑他人帖子）。
-	CodeForbidden Code = "forbidden"
+	CodeForbidden = apperr.CodeForbidden
 	// CodeValidationFailed 入参形状或取值非法。
-	CodeValidationFailed Code = "validation_failed"
+	CodeValidationFailed = apperr.CodeValidationFailed
 	// CodeInvalidCursor 分页游标无法解析。
-	CodeInvalidCursor Code = "invalid_cursor"
+	CodeInvalidCursor = apperr.CodeInvalidCursor
 	// CodeLocked 操作因业务窗口关闭而被拒（如超过 24 小时编辑窗口）。
-	CodeLocked Code = "locked"
+	CodeLocked = apperr.CodeLocked
 	// CodeTooManyAttachments 附件数量超上限。
-	CodeTooManyAttachments Code = "too_many_attachments"
+	CodeTooManyAttachments = apperr.CodeTooManyAttachments
 	// CodeAttachmentTooLarge 单个附件体积超上限。
-	CodeAttachmentTooLarge Code = "attachment_too_large"
+	CodeAttachmentTooLarge = apperr.CodeAttachmentTooLarge
 	// CodeUnsupportedMediaType 附件格式不在白名单内。
-	CodeUnsupportedMediaType Code = "unsupported_media_type"
+	CodeUnsupportedMediaType = apperr.CodeUnsupportedMedia
 	// CodePayloadTooLarge 请求体整体超上限。
-	CodePayloadTooLarge Code = "payload_too_large"
+	CodePayloadTooLarge = apperr.CodePayloadTooLarge
 )
 
-// Error 是带错误码的领域错误。
-//
-// 与 school 包的 Code 做法保持一致：handler 只做码 → HTTP 状态的映射，
-// 业务层不感知 HTTP。
-type Error struct {
-	Code    Code
-	Message string
-}
+// Error / Errorf / CodeOf 直接复用 apperr，不再各写一份。
+type Error = apperr.Error
 
-// Error 实现 error。
-func (e *Error) Error() string {
-	if e == nil {
-		return ""
-	}
-	return string(e.Code) + ": " + e.Message
-}
-
-// Errorf 构造一个带错误码的领域错误。
+// Errorf 构造一个带错误码的领域错误（复用 apperr）。
 func Errorf(code Code, format string, args ...any) *Error {
-	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+	return apperr.Errorf(code, format, args...)
 }
 
-// CodeOf 从错误链里取出内容域错误码。
-//
-// 只认 *Error；其它错误（数据库故障、上游超时等）一律返回 false，
-// 由调用方映射成 5xx，绝不把内部错误包成 4xx 骗客户端。
+// CodeOf 从错误链里取出错误码（复用 apperr，全仓唯一判定入口）。
 func CodeOf(err error) (Code, bool) {
-	var e *Error
-	if errors.As(err, &e) {
-		return e.Code, true
-	}
-	return "", false
+	return apperr.CodeOf(err)
 }
 
 // Board 是帖子的板块。

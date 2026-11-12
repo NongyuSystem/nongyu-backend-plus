@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/content"
 )
 
@@ -22,6 +23,14 @@ import (
 //
 // 返回零值 Viewer（Authenticated=false）表示匿名读者：只能看到「全员」公告。
 type ViewerFunc func(*gin.Context) Viewer
+
+// UserIDFunc 从请求上下文取当前会话用户。
+//
+// 为什么需要它（而不是直接 c.GetString(server.CtxUserID)）：内容域若 import
+// server，就成了「业务域反向依赖框架适配层」，违反 README 架构约束第 1、2 条。
+// 由装配层注入提取函数，业务域只声明「我需要一个当前用户 id」。
+// 与 message.UserIDFunc 同构。
+type UserIDFunc func(*gin.Context) (int64, bool)
 
 // RegisterPublic 挂载读者侧的三条只读路由。
 //
@@ -45,11 +54,14 @@ func RegisterPublic(r gin.IRouter, svc *Service, viewerOf ViewerFunc) {
 // 调用方（装配层）负责把这个 Register 挂在一个已经套了
 // RevocableAuthMiddleware(ScopeAdmin) + server.AdminOnly 的路由组上——
 // 本包不重复做鉴权，避免「两处都判、口径还可能不一致」。
-func RegisterAdmin(r gin.IRouter, svc *Service) {
+func RegisterAdmin(r gin.IRouter, svc *Service, userIDOf UserIDFunc) {
+	if userIDOf == nil {
+		userIDOf = func(*gin.Context) (int64, bool) { return 0, false }
+	}
 	r.GET("/admin/announcements", adminListHandler(svc))
-	r.POST("/admin/announcements", adminCreateHandler(svc))
-	r.PATCH("/admin/announcements/:id", adminUpdateHandler(svc))
-	r.DELETE("/admin/announcements/:id", adminDeleteHandler(svc))
+	r.POST("/admin/announcements", adminCreateHandler(svc, userIDOf))
+	r.PATCH("/admin/announcements/:id", adminUpdateHandler(svc, userIDOf))
+	r.DELETE("/admin/announcements/:id", adminDeleteHandler(svc, userIDOf))
 }
 
 // ---------- 响应体 ----------
@@ -128,18 +140,18 @@ func listHandler(svc *Service, viewerOf ViewerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		after, err := decodeCursor(c.Query("cursor"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		limit, err := parseLimit(c.Query("limit"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 
 		res, err := svc.List(c.Request.Context(), viewerOf(c), after, limit)
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 
@@ -162,7 +174,7 @@ func getOrLatestHandler(svc *Service, viewerOf ViewerFunc) gin.HandlerFunc {
 		if raw == "latest" {
 			a, err := svc.Latest(c.Request.Context(), v)
 			if err != nil {
-				writeError(c, err)
+				apperr.WriteGin(c, err)
 				return
 			}
 			// 没有符合条件的公告时回 data:null 而不是 404：
@@ -177,16 +189,33 @@ func getOrLatestHandler(svc *Service, viewerOf ViewerFunc) gin.HandlerFunc {
 
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id <= 0 {
-			writeError(c, content.Errorf(content.CodeValidationFailed, "公告 id 非法"))
+			apperr.WriteGin(c, content.Errorf(content.CodeValidationFailed, "公告 id 非法"))
 			return
 		}
 		a, err := svc.Get(c.Request.Context(), v, id)
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": toPublic(a)})
 	}
+}
+
+// withAudit 把请求追踪号与操作者写进 context，供 service 记审计。
+//
+// 追踪号复用 server 写入的 X-Request-Id（既有 RequestIDMiddleware），
+// 操作者取已认证 userID。两者都没有时留空——审计实现按「未认证场景」处理。
+func withAudit(c *gin.Context, uid int64) *gin.Context {
+	rid := c.GetHeader("X-Request-Id")
+	if rid == "" {
+		rid = c.GetString("requestID")
+	}
+	userID := ""
+	if uid > 0 {
+		userID = strconv.FormatInt(uid, 10)
+	}
+	c.Request = c.Request.WithContext(WithAuditContext(c.Request.Context(), rid, userID))
+	return c
 }
 
 // ---------- 管理端 handler ----------
@@ -195,17 +224,17 @@ func adminListHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		after, err := decodeCursor(c.Query("cursor"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		limit, err := parseLimit(c.Query("limit"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		res, err := svc.AdminList(c.Request.Context(), after, limit)
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		out := adminListResponse{Items: make([]adminView, 0, len(res.Items))}
@@ -230,16 +259,18 @@ type createRequest struct {
 	Publish       bool         `json:"publish"`
 }
 
-func adminCreateHandler(svc *Service) gin.HandlerFunc {
+func adminCreateHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		uid, _ := userIDOf(c)
+		c = withAudit(c, uid)
 		var in createRequest
 		if err := c.ShouldBindJSON(&in); err != nil {
-			writeError(c, content.Errorf(content.CodeValidationFailed, "请求体非法"))
+			apperr.WriteGin(c, content.Errorf(content.CodeValidationFailed, "请求体非法"))
 			return
 		}
 		aud, err := toAudience(in.Audience)
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		a, err := svc.Create(c.Request.Context(), CreateInput{
@@ -248,7 +279,7 @@ func adminCreateHandler(svc *Service) gin.HandlerFunc {
 			Pinned: in.Pinned, Audience: aud, Publish: in.Publish,
 		})
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		c.JSON(http.StatusCreated, gin.H{"data": toAdmin(a)})
@@ -269,16 +300,18 @@ type updateRequest struct {
 	Action string `json:"action"`
 }
 
-func adminUpdateHandler(svc *Service) gin.HandlerFunc {
+func adminUpdateHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		uid, _ := userIDOf(c)
+		c = withAudit(c, uid)
 		id, err := parseID(c.Param("id"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		var in updateRequest
 		if err := c.ShouldBindJSON(&in); err != nil {
-			writeError(c, content.Errorf(content.CodeValidationFailed, "请求体非法"))
+			apperr.WriteGin(c, content.Errorf(content.CodeValidationFailed, "请求体非法"))
 			return
 		}
 
@@ -286,7 +319,7 @@ func adminUpdateHandler(svc *Service) gin.HandlerFunc {
 		if in.Audience != nil {
 			conv, cerr := toAudience(*in.Audience)
 			if cerr != nil {
-				writeError(c, cerr)
+				apperr.WriteGin(c, cerr)
 				return
 			}
 			aud = &conv
@@ -305,7 +338,7 @@ func adminUpdateHandler(svc *Service) gin.HandlerFunc {
 				Pinned: in.Pinned, Audience: aud,
 			})
 			if err != nil {
-				writeError(c, err)
+				apperr.WriteGin(c, err)
 				return
 			}
 		}
@@ -313,7 +346,7 @@ func adminUpdateHandler(svc *Service) gin.HandlerFunc {
 		switch in.Action {
 		case "":
 			if a == nil {
-				writeError(c, content.Errorf(content.CodeValidationFailed, "没有任何要变更的内容"))
+				apperr.WriteGin(c, content.Errorf(content.CodeValidationFailed, "没有任何要变更的内容"))
 				return
 			}
 		case "publish":
@@ -321,26 +354,28 @@ func adminUpdateHandler(svc *Service) gin.HandlerFunc {
 		case "revoke":
 			a, err = svc.Revoke(c.Request.Context(), id)
 		default:
-			writeError(c, content.Errorf(content.CodeValidationFailed, "未知动作"))
+			apperr.WriteGin(c, content.Errorf(content.CodeValidationFailed, "未知动作"))
 			return
 		}
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": toAdmin(a)})
 	}
 }
 
-func adminDeleteHandler(svc *Service) gin.HandlerFunc {
+func adminDeleteHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		uid, _ := userIDOf(c)
+		c = withAudit(c, uid)
 		id, err := parseID(c.Param("id"))
 		if err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		if err := svc.Delete(c.Request.Context(), id); err != nil {
-			writeError(c, err)
+			apperr.WriteGin(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -423,36 +458,4 @@ func decodeCursor(raw string) (PageCursor, error) {
 		PublishedAt: time.Unix(0, ns).UTC(),
 		ID:          id,
 	}, nil
-}
-
-// errorResponse 与仓库既有端点的错误形状一致。
-type errorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-// writeError 把领域错误映射为 HTTP 状态。
-//
-// 只有内容域错误码会映射成 4xx；其余（数据库故障等）一律 500 且不泄露内部
-// 细节——绝不把内部错误包成 4xx 骗客户端。
-func writeError(c *gin.Context, err error) {
-	code, ok := content.CodeOf(err)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, errorResponse{Code: "internal", Message: "服务内部错误"})
-		return
-	}
-	status := http.StatusBadRequest
-	switch code {
-	case content.CodeNotFound:
-		status = http.StatusNotFound
-	case content.CodeForbidden:
-		status = http.StatusForbidden
-	case content.CodeLocked:
-		status = http.StatusConflict
-	case content.CodeAttachmentTooLarge, content.CodePayloadTooLarge:
-		status = http.StatusRequestEntityTooLarge
-	case content.CodeUnsupportedMediaType:
-		status = http.StatusUnsupportedMediaType
-	}
-	c.JSON(status, errorResponse{Code: string(code), Message: err.Error()})
 }
