@@ -89,9 +89,10 @@ func (e *authError) Error() string { return e.msg }
 // 请求体或 query 里的 userID 一律不读取、不生效。
 func AuthMiddleware(verifier *TokenVerifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 公开路径（存活探针、观测出口、登录、发验证码）不需要认证。
-		// 与 RevocableAuthMiddleware 共用同一个 IsPublicPath，避免两份清单漂移（评审 M5）。
-		if IsPublicPath(c.Request.URL.Path) {
+		// 免认证请求：取得身份类 + 公开可读内容（仅 GET）。
+		// 与 RevocableAuthMiddleware 共用同一个 AllowedWithoutAuth，
+		// 避免两份清单漂移（评审 M5）。
+		if AllowedWithoutAuth(c.Request.Method, c.Request.URL.Path) {
 			c.Next()
 			return
 		}

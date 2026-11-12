@@ -77,6 +77,13 @@ type SessionInfo struct {
 	StudentNo string
 	Role      int
 	DeviceID  string
+	// Scope 是该会话所属的范围（app / admin）。
+	//
+	// 它是「这套令牌当初是给谁签的」这一事实，与 Role（用户是谁）是两件事：
+	// 一个管理员用 App 登录拿到的是 scope=app 的会话，不该凭它进管理台。
+	// 零值表示解析器没有提供该信息——此时**按 admin 门槛校验时视为不合格**
+	// （fail-closed），见 RevocableAuthMiddleware 里的说明。
+	Scope platform.SessionScope
 }
 
 // SessionResolver 把 session_id 解析成一个有效会话。
@@ -131,10 +138,14 @@ func (v *TokenVerifier) parseSession(token string) (string, error) {
 	return claims.SessionID, nil
 }
 
-// publicPaths 是**不需要已认证身份**的路径（无尾斜杠形式）。
+// publicPaths 是**不需要已认证身份**的「取得身份类」路径（无尾斜杠形式）。
 //
-// 这是全仓**唯一**的公开路径来源：RevocableAuthMiddleware / AuthMiddleware
-// 都通过 IsPublicPath 判定，避免三处清单各自为政（评审 M5/N6）。
+// 注意它与 publicReadablePaths 的分工：这里是「登录、发验证码、健康探针」
+// ——这些端点的作用本身就是取得身份或探活，要求先有身份会成为鸡生蛋问题。
+// 业务侧的**公开可读内容**（公告/帖子列表与详情）不放在这里，放
+// publicReadablePaths。两份清单语义不同，但**共用同一个判定入口**
+// IsPublicPath，避免「三处清单各自为政（评审 M5/N6）」重演。
+//
 // 注意不要在这里加尾斜杠——匹配规则是「精确相等 or 以 p+"/" 为前缀」，
 // 这样 "/identity/login" 既能命中自己，也能命中 "/identity/login/admin"。
 //
@@ -149,22 +160,86 @@ var publicPaths = []string{
 	"/identity/register", // 独立注册入口
 }
 
-// IsPublicPath 判断一个请求路径是否不需要已认证身份。
+// publicReadablePaths 是**公开可读的业务内容**路径（无尾斜杠形式）。
 //
-// 匹配规则：精确相等，或以 "<p>/" 为前缀。刻意不用裸 HasPrefix(path, p)，
-// 否则 "/identity/login" 会误命中 "/identity/loginx" 这类路径。
+// 与 publicPaths 的区别是语义而不是机制：这里装的是「产品上允许未登录读者
+// 查看的内容」，不是「取得身份」的入口。分开维护的理由是两者会朝不同方向
+// 演化——内容侧会随业务增加（以后可能还有公开的帖子板块），身份侧只在
+// 登录方式变化时动；混在一张表里会让「这张表到底代表什么」越来越模糊。
+//
+// 清单严格受限：只有 map #43 子票 #46 Q1 定下的 5 个只读端点。写操作、
+// 消息、埋点上报、以及全部 /admin/* 一律不在此列。
+//
+// 前导斜杠与匹配规则由 IsPublicPath 统一处理；新增条目时**不要**加尾斜杠。
+var publicReadablePaths = []string{
+	"/announcements",     // 公告列表
+	"/announcements/latest", // 首页最新一条公告
+	"/posts",             // 帖子列表
+}
+
+// IsPublicPath 判断一个请求路径是否属于**取得身份类**的免认证路径。
+//
+// 只看 publicPaths，不看 publicReadablePaths：内容侧的公开可读还需要
+// 叠加 HTTP 方法（见 IsPublicReadable）。中间件真正使用的是
+// AllowedWithoutAuth（两者的并），不要直接拿 IsPublicPath 当「免认证」结论。
 func IsPublicPath(path string) bool {
-	for _, p := range publicPaths {
+	return hasPathPrefix(publicPaths, path)
+}
+
+// IsPublicReadable 判断这次请求是否是「公开可读业务内容」的读取。
+//
+// **必须叠加方法维度**，否则会出现一个严重的安全漏洞：`publicReadablePaths`
+// 里有 "/posts"，而 `/posts/attachments`（上传，写操作）、`/posts/42/replies`
+// （留言）、`/posts/42/like`（点赞）全都落在 "/posts/" 前缀下——只按路径判定
+// 会把它们一起豁免掉鉴权。这个漏洞在实现期由
+// TestIsPublicPath_StillRequiresAuth 抓到。
+//
+// 因此这里限定：只有 GET / HEAD 才算「公开可读」。写操作一律要求会话，
+// 与 Spec 的「公开读 5 端点」表述一致（那里说的是**只读**端点）。
+func IsPublicReadable(method, path string) bool {
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	return hasPathPrefix(publicReadablePaths, path)
+}
+
+// AllowedWithoutAuth 是「这次请求是否需要已认证身份」的**唯一**判定入口。
+//
+// 两个中间件（RevocableAuthMiddleware / AuthMiddleware）都只调它一次，
+// 不各自维护清单，避免「三处清单各自为政（评审 M5/N6）」重演。
+func AllowedWithoutAuth(method, path string) bool {
+	return IsPublicPath(path) || IsPublicReadable(method, path)
+}
+
+// hasPathPrefix 是两张清单共用的匹配规则：精确相等，或以 p+"/" 为前缀。
+//
+// 刻意不用裸 HasPrefix(path, p)，否则 "/identity/login" 会误命中
+// "/identity/loginx"；也刻意不在这里处理尾斜杠——清单里不该出现尾斜杠。
+func hasPathPrefix(list []string, path string) bool {
+	for _, p := range list {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return true
 		}
 	}
 	return false
 }
-func RevocableAuthMiddleware(verifier *TokenVerifier, resolver SessionResolver, _ Scope) gin.HandlerFunc {
+// RevocableAuthMiddleware 校验可吊销会话，并把身份写入 context。
+//
+// requiredScope 决定「这套中间件接受哪一类会话」：
+//   - ScopeApp（默认/零值）：接受 App 会话。为兼容既有装配与测试，
+//     **不强制**会话必须标记为 app —— 只要求会话本身有效。
+//   - ScopeAdmin：**必须**是 admin 会话。这是管理台的第二道门：管理员用
+//     App 登录拿到的 app 会话进不来（map #43 子票 #46 Q2）。
+//
+// 早期版本把这个参数写成 `_` 忽略掉了，于是「admin 会话」这一层从未被校验，
+// 管理端点只靠 role 门槛把关 —— 那意味着任何管理员的 App 会话都能进管理台。
+// 现在按 requiredScope 真正判定；会话没带 scope 信息时对 admin 门槛一律拒绝
+// （fail-closed）。
+func RevocableAuthMiddleware(verifier *TokenVerifier, resolver SessionResolver, requiredScope Scope) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 公开端点（健康探针、登录、发验证码）不需要已认证身份。
-		if IsPublicPath(c.Request.URL.Path) {
+		// 免认证端点：取得身份类（健康探针、登录、发验证码）+ 公开可读内容
+		// （公告/帖子的 GET）。后者已叠加方法维度，写操作不会被误放行。
+		if AllowedWithoutAuth(c.Request.Method, c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -188,6 +263,19 @@ func RevocableAuthMiddleware(verifier *TokenVerifier, resolver SessionResolver, 
 				return
 			}
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"code": "auth_unavailable"})
+			return
+		}
+
+		// admin 门槛：必须是 admin 会话。
+		//
+		// 会话没带 scope（零值）时一律拒绝：宁可让一个本该进来的管理员
+		// 重新登录一次，也不能让 app 会话混进管理台。这条 fail-closed
+		// 与 RequireRole 的取向一致。
+		if requiredScope == ScopeAdmin && info.Scope != ScopeAdmin {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    "forbidden",
+				"message": "需要管理台会话",
+			})
 			return
 		}
 
@@ -247,6 +335,7 @@ func (r *SessionStoreResolver) ResolveSession(ctx context.Context, sessionID str
 		StudentNo: u.StudentNo,
 		Role:      int(u.Role),
 		DeviceID:  sess.DeviceID,
+		Scope:     sess.Scope,
 	}, nil
 }
 

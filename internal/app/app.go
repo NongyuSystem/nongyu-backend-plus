@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/config"
+	"nongyu-backend-plus/internal/content/announcement"
 	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	identitysession "nongyu-backend-plus/internal/identity/session"
@@ -535,6 +536,35 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		5*time.Minute,
 	)
 	presence.Register(engine, presenceSvc)
+
+	// 内容域（map #43 / Spec 六类常见功能）：公告的读者侧与管理端。
+	//
+	// 装配要点：
+	//   - 仓储现在用内存实现。PostgreSQL 实现（platform/pgstore）尚未落地，
+	//     迁移脚本 migrations/0005_content.sql 已就位；切 PG 时只换这一行的
+	//     构造，业务域与路由都不用动（这正是「实现放 platform」的目的）。
+	//   - 读者视图由装配层注入：内容域不 import 身份域，只声明需要哪些事实。
+	//   - 管理端挂在**独立路由组**上：全局中间件只校验会话存在与有效，
+	//     这里再叠一层 admin scope 与角色门槛。两者缺一不可——
+	//     scope 回答「这套令牌是不是给管理台签的」，role 回答「这个人够不够格」。
+	announcementSvc := announcement.New(announcement.Options{
+		Repo:  announcement.NewMemoryRepo(clock.Now),
+		Clock: clock,
+	})
+	announcement.RegisterPublic(engine, announcementSvc, announcementViewerOf)
+
+	// 管理端路由组：仅当身份域可用时才挂（否则 admin 会话无从校验）。
+	if identityStore != nil && cfg.AuthKey != "" {
+		adminGroup := engine.Group("/",
+			server.RevocableAuthMiddleware(tokenIssuer,
+				server.NewSessionStoreResolver(identityStore, identityStore, clock),
+				server.ScopeAdmin),
+			server.AdminOnly(platform.RoleAdmin),
+		)
+		announcement.RegisterAdmin(adminGroup, announcementSvc)
+	} else {
+		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
+	}
 
 	// #24 / Spec M6：观测出口 /status。与 /healthz 分开——后者只报进程存活、不探下游。
 	// 探针用真实依赖的 Ping，Redis 掉线后本端点会如实报 down。
