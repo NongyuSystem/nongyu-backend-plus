@@ -58,6 +58,9 @@ func RegisterAdmin(r gin.IRouter, svc *Service, userIDOf UserIDFunc) {
 		userIDOf = func(*gin.Context) (int64, bool) { return 0, false }
 	}
 	r.GET("/admin/announcements", adminListHandler(svc))
+	// 管理端单条详情：处理「这条公告为什么没发出去/为什么被撤回」时必须能看单条。
+	// 与帖子域 /admin/posts/:id 对齐，两个管理端入口保持同一形态。
+	r.GET("/admin/announcements/:id", adminGetHandler(svc))
 	r.POST("/admin/announcements", adminCreateHandler(svc, userIDOf))
 	r.PATCH("/admin/announcements/:id", adminUpdateHandler(svc, userIDOf))
 	r.DELETE("/admin/announcements/:id", adminDeleteHandler(svc, userIDOf))
@@ -297,6 +300,28 @@ type updateRequest struct {
 	Audience           *audienceView `json:"audience"`
 	// Action 是状态机动作：publish / revoke。为空表示只改字段。
 	Action string `json:"action"`
+}
+
+// adminGetHandler 是管理端单条详情。
+//
+// 用 AdminGet 而不是读者侧 Get：管理端要能看到**草稿与已撤回**的公告
+// （读者侧那些是不可见的），且要带 status / publishRevision / audience 等
+// 管理字段（adminView）。软删的公告也返回 200 并带 deletedAt——
+// 用 404 会让人以为记录不存在，而实际是「被删了，需要排查为什么」。
+func adminGetHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := parseID(c.Param("id"))
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		a, err := svc.AdminGet(c.Request.Context(), id)
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": toAdmin(a), "deletedAt": a.DeletedAt})
+	}
 }
 
 func adminUpdateHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {

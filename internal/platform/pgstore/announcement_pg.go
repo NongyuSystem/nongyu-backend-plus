@@ -109,12 +109,12 @@ func (r *AnnouncementPGRepo) Update(ctx context.Context, a *announcement.Announc
 	return nil
 }
 
-// FindByID 实现 announcement.Repo：软删的行视为不存在。
+// FindByID 实现 announcement.Repo：**含已软删的行**。
 //
 // 不做可见性过滤（草稿、已撤回都返回），是否允许读者看到由服务层判定。
 func (r *AnnouncementPGRepo) FindByID(ctx context.Context, id int64) (*announcement.Announcement, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT `+announcementColumns+` FROM announcements WHERE id = $1 AND deleted_at IS NULL`, id)
+		`SELECT `+announcementColumns+` FROM announcements WHERE id = $1`, id)
 	a, err := scanAnnouncement(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, content.Errorf(content.CodeNotFound, "公告不存在")

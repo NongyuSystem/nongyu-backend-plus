@@ -181,3 +181,92 @@ func TestUpdate_WritesBackUpdatedAt(t *testing.T) {
 type clockFunc func() time.Time
 
 func (f clockFunc) Now() time.Time { return f() }
+
+// TestAdminGet_SeesDraftAndDeleted 锁住管理端单条详情能看草稿与已软删。
+//
+// 读者侧对这些一律不可见（404/不在列表），但管理端排查
+// 「这条为什么没发出去 / 为什么被删」必须看得到。
+func TestAdminGet_SeesDraftAndDeleted(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	svc := announcement.New(announcement.Options{
+		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
+		Clock: fixedClockAt{now: t0},
+	})
+	ctx := context.Background()
+
+	// 草稿：读者侧看不到，管理端要能看到
+	a, err := svc.Create(ctx, announcement.CreateInput{
+		Title: "草稿", Body: "b",
+		Audience: announcement.Audience{Scope: announcement.AudienceAll},
+	})
+	if err != nil {
+		t.Fatalf("创建失败：%v", err)
+	}
+	got, err := svc.AdminGet(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("管理端应能读草稿：%v", err)
+	}
+	if got.Status != announcement.StatusDraft {
+		t.Fatalf("状态应为草稿，得到 %v", got.Status)
+	}
+
+	// 软删后仍可读（排查「为什么被删」需要）
+	if err := svc.Delete(ctx, a.ID); err != nil {
+		t.Fatalf("删除失败：%v", err)
+	}
+	got, err = svc.AdminGet(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("管理端应能读已软删的公告：%v", err)
+	}
+	if got.DeletedAt == nil {
+		t.Fatal("已软删的公告应带 deletedAt")
+	}
+
+	// 非法 id 应被拒
+	if _, err := svc.AdminGet(ctx, 0); err == nil {
+		t.Fatal("id=0 应被拒")
+	}
+}
+
+// TestSoftDeleted_CannotBeEditedOrRepublished 锁住「软删之后不可再动」。
+//
+// 背景：为了让管理端能查到已软删的公告，FindByID 改为返回含软删的行。
+// 这带来一个必须补的洞——Update/Publish/Revoke 若不自己判 softDelete，
+// 软删的公告就能被继续编辑甚至重新发布，软删形同虚设。
+func TestSoftDeleted_CannotBeEditedOrRepublished(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	svc := announcement.New(announcement.Options{
+		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
+		Clock: fixedClockAt{now: t0},
+	})
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, announcement.CreateInput{
+		Title: "t", Body: "b",
+		Audience: announcement.Audience{Scope: announcement.AudienceAll},
+	})
+	if err != nil {
+		t.Fatalf("创建失败：%v", err)
+	}
+	if err := svc.Delete(ctx, a.ID); err != nil {
+		t.Fatalf("删除失败：%v", err)
+	}
+
+	// 编辑
+	title := "改"
+	if _, err := svc.Update(ctx, a.ID, announcement.UpdateInput{Title: &title}); err == nil {
+		t.Fatal("已软删的公告不该能被编辑")
+	}
+	// 发布
+	if _, err := svc.Publish(ctx, a.ID); err == nil {
+		t.Fatal("已软删的公告不该能被发布")
+	}
+	// 撤回
+	if _, err := svc.Revoke(ctx, a.ID); err == nil {
+		t.Fatal("已软删的公告不该能被撤回")
+	}
+	// 删除本身是幂等的（重复删不报错）
+	if err := svc.Delete(ctx, a.ID); err != nil {
+		t.Fatalf("重复删除应幂等：%v", err)
+	}
+}

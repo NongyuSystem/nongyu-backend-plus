@@ -81,9 +81,13 @@ func (r *AnnouncementMemoryRepo) FindByID(_ context.Context, id int64) (*announc
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	a, ok := r.rows[id]
-	if !ok || a.DeletedAt != nil {
+	if !ok {
 		return nil, content.Errorf(content.CodeNotFound, "公告不存在")
 	}
+	// **含已软删的行**：可见性判定归服务层（读者侧看不到、管理端要能看到）。
+	// 与帖子域的 PostMemoryRepo.FindByID 保持一致——两个域同为「软删不物理删」，
+	// 若一个过滤、一个不过滤，管理端排障时行为会莫名不同。
+	// 过滤软删的职责在 Service.Get / Listable，不在存储层。
 	return cloneAnnouncement(a), nil
 }
 

@@ -258,6 +258,11 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*Announ
 	if err != nil {
 		return nil, err
 	}
+	// 已软删的公告不可编辑：存储层现在会返回含软删的行（管理端排障需要），
+	// 所以「软删 = 不存在」这条业务判定必须由服务层自己兜。
+	if a.Deleted() {
+		return nil, content.Errorf(content.CodeNotFound, "公告不存在")
+	}
 	if in.Title != nil {
 		a.Title = *in.Title
 	}
@@ -309,6 +314,10 @@ func (s *Service) Publish(ctx context.Context, id int64) (*Announcement, error) 
 	if err != nil {
 		return nil, err
 	}
+	// 已软删的公告不能再发布（否则软删形同虚设）。
+	if a.Deleted() {
+		return nil, content.Errorf(content.CodeNotFound, "公告不存在")
+	}
 
 	switch a.Status {
 	case StatusDraft:
@@ -345,6 +354,10 @@ func (s *Service) Revoke(ctx context.Context, id int64) (*Announcement, error) {
 	a, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	// 已软删的公告不能再撤回。
+	if a.Deleted() {
+		return nil, content.Errorf(content.CodeNotFound, "公告不存在")
 	}
 	// draft 不能直接撤回：它从来没发布过，「撤回」无从谈起。
 	if a.Status == StatusDraft {
