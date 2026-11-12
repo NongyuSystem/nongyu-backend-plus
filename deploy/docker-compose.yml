@@ -1,0 +1,116 @@
+# 本地/单机部署用 compose：把服务跑起来所需的最小依赖集。
+#
+# 用途是**本地联调**与「一台机器上看全貌」，不是生产编排
+# （生产请用 K8s / 云托管的 PG+Redis+对象存储，注意 .env 里的强校验项）。
+#
+# 用法：
+#   cp .env.example .env      # 按需改；下面已把关键项指到本 compose 的容器名
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   curl http://127.0.0.1:8080/status
+#
+# 关键点：
+#   - 服务**启动时会自动跑 migrations/*.sql**，不需要单独的迁移容器；
+#   - 服务对 Postgres / MinIO 都是「连不上就拒绝启动」，所以用
+#     depends_on + healthcheck 保证顺序，否则冷启动必失败；
+#   - MinIO 的桶必须**先存在**（本服务不自动建桶），用 minio-init 一次性建。
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: nongyu
+      POSTGRES_PASSWORD: nongyu-dev-password
+      POSTGRES_DB: nongyu
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nongyu -d nongyu"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "nongyu-dev-password"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "nongyu-dev-password", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: nongyu
+      MINIO_ROOT_PASSWORD: nongyu-dev-password
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 控制台
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 一次性任务：建桶。
+  # 本服务**不自动建桶**（避免「配置写错桶名」变成「悄悄多了个空桶」），
+  # 所以这里显式建一次。--ignore-existing 保证重复 up 不会报错。
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 nongyu nongyu-dev-password &&
+      mc mb --ignore-existing local/nongyu &&
+      echo '桶 nongyu 已就绪'
+      "
+    restart: "no"
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # 下面这些值**只用于本地联调**。生产务必换掉并走密钥管理。
+      APP_ENV: dev
+      ADDR: ":8080"
+      # 认证与签名：dev 下配一个固定值，让端点表现为「需要登录」而不是裸奔。
+      AUTH_KEY: "local-dev-auth-key-change-me-32bytes"
+      TICKET_KEY: "local-dev-ticket-key-change-me-32bytes"
+      # 已确认「未配 APP_SIGNING_KEYS 时 dev 不校验」，
+      # 本地联调若不需要模拟 App 签名可留空（日志会有 WARN）。
+      APP_SIGNING_KEYS: ""
+      DATABASE_URL: "postgres://nongyu:nongyu-dev-password@postgres:5432/nongyu?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "nongyu-dev-password"
+      # 注意：**不带 scheme**（minio-go 的约定，带 http:// 会解析失败）
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "nongyu"
+      MINIO_SECRET_KEY: "nongyu-dev-password"
+      MINIO_BUCKET: "nongyu"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # 镜像里没有 curl（distroless），所以不在容器内做 HTTP 探活。
+      # 若用 K8s，请配 httpGet probe 打 /healthz（见 deploy/k8s-note.md）。
+      disable: true
+
+volumes:
+  pgdata:
+  miniodata:

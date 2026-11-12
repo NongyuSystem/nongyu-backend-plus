@@ -30,6 +30,7 @@ BASE="http://127.0.0.1:${PORT}"
 # ---------- 读 .env（不覆盖已存在的环境变量）----------
 if [[ -f "$ROOT/.env" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$''}"
     [[ -z "$line" || "$line" == \#* ]] && continue
     key="${line%%=*}"
     val="${line#*=}"
@@ -145,6 +146,17 @@ echo
 echo "[start] 未启用能力告警："
 grep -o '"level":"WARN","msg":"[^"]*"' "$LOG_FILE" 2>/dev/null | sed 's/.*"msg":"/  - /; s/"$//' | sort -u || true
 
+
+# 装配失败时不要谎报「服务在运行」——之前无论成败都打印同一句，
+# 导致人对着 000 去查网络，而真实原因在日志里（装配失败那一行）。
+if grep -q '"msg":"装配失败"' "$LOG_FILE" 2>/dev/null; then
+  echo
+  echo "[start] 装配失败（服务未启动）。真实原因："
+  grep -o '"msg":"装配失败".*' "$LOG_FILE" | tail -1 | sed 's/^/          /'
+  echo "          修复后重试；完整日志：$LOG_FILE"
+  rm -f "$PID_FILE"
+  exit 1
+fi
 probe
 
 echo
