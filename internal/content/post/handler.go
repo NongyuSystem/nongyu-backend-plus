@@ -53,6 +53,9 @@ func RegisterSession(r gin.IRouter, svc *Service, userIDOf UserIDFunc) {
 // RegisterAdmin 挂载管理端两条路由（装配层负责 admin scope + 角色门槛）。
 func RegisterAdmin(r gin.IRouter, svc *Service) {
 	r.GET("/admin/posts", adminListHandler(svc))
+	// 管理端单帖详情：处理举报/申诉时必须能看单条（列表不够）。
+	// 它带真实作者（adminView），而读者侧详情不带——这正是两个入口分开的理由。
+	r.GET("/admin/posts/:id", adminGetHandler(svc))
 	r.DELETE("/admin/posts/:id", adminDeleteHandler(svc))
 }
 
@@ -71,6 +74,10 @@ type publicView struct {
 	PublishedAt   time.Time  `json:"publishedAt"`
 	EditedAt      *time.Time `json:"editedAt"`
 	IsMine        bool       `json:"isMine"`
+	// 反应状态：**只有登录用户**看到自己的；匿名读者恒 false。
+	// 这两个字段不进列表响应（列表不逐条查反应，成本高且用途低）。
+	LikedByMe     bool `json:"likedByMe"`
+	FavoritedByMe bool `json:"favoritedByMe"`
 }
 
 // adminView 多带真实作者（管理端处理问题时需要，且该读取记审计）。
@@ -84,6 +91,9 @@ type replyView struct {
 	PostID      int64     `json:"postId"`
 	Body        string    `json:"body"`
 	PublishedAt time.Time `json:"publishedAt"`
+	// 留言作者**不下发**（匿名），但「我是否赞过这条留言」要下发，
+	// 否则前端无法把点赞按钮画成已选中态。
+	LikedByMe bool `json:"likedByMe"`
 }
 
 func toPublic(p *Post, viewerID int64) publicView {
@@ -161,11 +171,22 @@ func getHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 		viewerID, _ := userIDOf(c)
 		v := toPublic(d.Post, viewerID)
 		v.AttachmentURL = d.AttachmentURLs
+
+		// 反应状态逐请求现算（不缓存）：点赞数是高频变化的量，
+		// 缓存它带来的不一致比省下的查询更贵。
+		if viewerID > 0 {
+			st := svc.ReactionStateOf(c.Request.Context(), TargetPost, d.Post.ID, viewerID)
+			v.LikedByMe = st.LikedByMe
+			v.FavoritedByMe = st.FavoritedByMe
+		}
+
 		replies := make([]replyView, 0, len(d.Replies))
 		for _, r := range d.Replies {
-			replies = append(replies, replyView{
-				ID: r.ID, PostID: r.PostID, Body: r.Body, PublishedAt: r.PublishedAt,
-			})
+			rv := replyView{ID: r.ID, PostID: r.PostID, Body: r.Body, PublishedAt: r.PublishedAt}
+			if viewerID > 0 {
+				rv.LikedByMe = svc.ReactionStateOf(c.Request.Context(), TargetComment, r.ID, viewerID).LikedByMe
+			}
+			replies = append(replies, rv)
 		}
 		c.JSON(http.StatusOK, gin.H{"data": v, "replies": replies})
 	}
@@ -380,6 +401,28 @@ func adminListHandler(svc *Service) gin.HandlerFunc {
 			out["next"] = encodeCursor(*res.Next)
 		}
 		c.JSON(http.StatusOK, out)
+	}
+}
+
+// adminGetHandler 是管理端单帖详情（含真实作者、含已软删状态）。
+func adminGetHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := parseID(c.Param("id"))
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		// 用 FindPost 而不是 Get：管理端要看得到已软删的帖子
+		//（否则「为什么这条被删了」无从排查）。
+		p, err := svc.FindPost(c.Request.Context(), id)
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		v := toAdmin(p)
+		// 已软删的帖子也回 200，并在响应里带 deletedAt，
+		// 由管理端 UI 自己决定怎么标红——用 404 会让人以为「记录不存在」。
+		c.JSON(http.StatusOK, gin.H{"data": v, "deletedAt": p.DeletedAt})
 	}
 }
 

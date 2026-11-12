@@ -463,3 +463,102 @@ func TestAdminList_IncludesAuthorID(t *testing.T) {
 		t.Fatal("管理端列表必须带 authorId（读者侧才匿名）")
 	}
 }
+
+// TestDetail_IncludesReactionStateForViewer 锁住「详情页知道自己赞没赞」。
+//
+// ReactionStateOf 曾写了但没接进 handler，导致 likedByMe 永远 false——
+// 前端无法把点赞按钮画成已选中态，功能看起来「点了没反应」。
+func TestDetail_IncludesReactionStateForViewer(t *testing.T) {
+	r, _, _, _ := newEnv(t)
+	id := createPost(t, r, "7", "t")
+	p := "/posts/" + strconv.FormatInt(id, 10)
+
+	// 用户 9 点赞 + 收藏
+	if code, _ := do(t, r, http.MethodPost, p+"/like", "9", nil); code != http.StatusOK {
+		t.Fatal("点赞失败")
+	}
+	if code, _ := do(t, r, http.MethodPost, p+"/favorite", "9", nil); code != http.StatusOK {
+		t.Fatal("收藏失败")
+	}
+
+	// 用户 9 看详情：两个布尔都应为 true
+	_, body := do(t, r, http.MethodGet, p, "9", nil)
+	data := body["data"].(map[string]any)
+	if data["likedByMe"] != true {
+		t.Fatalf("本人已点赞，likedByMe 应为 true，得到 %v", data["likedByMe"])
+	}
+	if data["favoritedByMe"] != true {
+		t.Fatalf("本人已收藏，favoritedByMe 应为 true，得到 %v", data["favoritedByMe"])
+	}
+
+	// 其他用户看：应为 false
+	_, body = do(t, r, http.MethodGet, p, "10", nil)
+	data = body["data"].(map[string]any)
+	if data["likedByMe"] != false {
+		t.Fatal("别人看 likedByMe 应为 false")
+	}
+
+	// 匿名看：也是 false（无身份）
+	_, body = do(t, r, http.MethodGet, p, "", nil)
+	data = body["data"].(map[string]any)
+	if data["likedByMe"] != false {
+		t.Fatal("匿名读者 likedByMe 应为 false")
+	}
+}
+
+// TestDetail_ReplyLikedByMe 锁住留言的点赞状态也要下发。
+func TestDetail_ReplyLikedByMe(t *testing.T) {
+	r, _, _, _ := newEnv(t)
+	id := createPost(t, r, "7", "t")
+	p := "/posts/" + strconv.FormatInt(id, 10)
+
+	_, rb := do(t, r, http.MethodPost, p+"/replies", "8", map[string]any{"body": "留言"})
+	replyID := int64(rb["data"].(map[string]any)["id"].(float64))
+
+	// 用户 9 给留言点赞
+	if code, _ := do(t, r, http.MethodPost,
+		p+"/replies/"+strconv.FormatInt(replyID, 10)+"/like", "9", nil); code != http.StatusOK {
+		t.Fatal("留言点赞失败")
+	}
+
+	_, body := do(t, r, http.MethodGet, p, "9", nil)
+	replies, _ := body["replies"].([]any)
+	if len(replies) != 1 {
+		t.Fatalf("应有 1 条留言，得到 %d", len(replies))
+	}
+	rv := replies[0].(map[string]any)
+	if rv["likedByMe"] != true {
+		t.Fatalf("本人赞过该留言，likedByMe 应为 true，得到 %v", rv["likedByMe"])
+	}
+	// 关键：留言作者仍然不下发（匿名性不变）
+	if _, has := rv["authorId"]; has {
+		t.Fatal("留言不该下发 authorId（匿名）")
+	}
+}
+
+// TestAdminGet_ReturnsDeletedPost 锁住管理端能查到已软删的帖子。
+func TestAdminGet_ReturnsDeletedPost(t *testing.T) {
+	r, _, _, _ := newEnv(t)
+	id := createPost(t, r, "7", "要删的帖")
+	p := "/posts/" + strconv.FormatInt(id, 10)
+
+	if code, _ := do(t, r, http.MethodDelete, p, "7", nil); code != http.StatusOK {
+		t.Fatal("删帖失败")
+	}
+
+	// 读者侧：404
+	if code, _ := do(t, r, http.MethodGet, p, "", nil); code != http.StatusNotFound {
+		t.Fatalf("读者侧应 404，得到 %d", code)
+	}
+	// 管理端：200 且带 deletedAt（排查「为什么被删」需要）
+	code, body := do(t, r, http.MethodGet, "/admin/posts/"+strconv.FormatInt(id, 10), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("管理端应 200，得到 %d %v", code, body)
+	}
+	if body["deletedAt"] == nil {
+		t.Fatal("管理端应能看到 deletedAt")
+	}
+	if _, has := body["data"].(map[string]any)["authorId"]; !has {
+		t.Fatal("管理端详情应带真实作者")
+	}
+}
