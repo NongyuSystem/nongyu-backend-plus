@@ -96,6 +96,12 @@ const (
 	// DefaultCacheTTL 是列表/详情缓存的短 TTL。
 	DefaultCacheTTL = 30 * time.Second
 
+	// cleanupTimeout 是异步附件清理的单次超时。
+	//
+	// 旁路任务必须自我约束：不设期限时，对象存储挂住会让 goroutine
+	// 无限期阻塞，反复删帖就泄漏 goroutine。
+	cleanupTimeout = 10 * time.Second
+
 	// objectKeyPrefix 是帖子附件的对象 key 前缀。Spec 预留的
 	// announcements/ 前缀本期不实现（ValidateAttachments 会拒掉）。
 	objectKeyPrefix = "posts"

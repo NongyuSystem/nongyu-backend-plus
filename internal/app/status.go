@@ -21,6 +21,12 @@ type StatusProbe struct {
 	Redis    func() bool
 	Breaker  func() string
 	Storage  func() string
+	// AttachmentCleanup 返回异步附件清理的累计失败数。
+	//
+	// 与 Track 同理：附件清理是「失败只记日志」的旁路，没有计数
+	// 运维永远不知道对象存储一直在报错、附件一直没被清理。
+	// 允许为 nil（未装配帖子域时）。
+	AttachmentCleanup func() int64
 	// Track 返回埋点缓冲的 (已写入, 已丢弃)。
 	//
 	// 为什么放进 /status：Spec 明确要求把 dropped 暴露成可观测指标——
@@ -38,6 +44,9 @@ type StatusReport struct {
 	Storage  string `json:"storage"`
 	// Track 是埋点缓冲的计数（未装配时为 null）。
 	Track *TrackStats `json:"track,omitempty"`
+	// AttachmentCleanupFailures 是异步附件清理的累计失败数
+	//（未装配帖子域时为 null）。
+	AttachmentCleanupFailures *int64 `json:"attachmentCleanupFailures,omitempty"`
 }
 
 // RegisterStatus 把 /status 挂到 gin.IRouter。
@@ -54,6 +63,10 @@ func RegisterStatus(r gin.IRouter, p StatusProbe) {
 		if p.Track != nil {
 			w, d := p.Track()
 			report.Track = &TrackStats{Written: w, Dropped: d}
+		}
+		if p.AttachmentCleanup != nil {
+			n := p.AttachmentCleanup()
+			report.AttachmentCleanupFailures = &n
 		}
 		// 依赖全挂时不返回 200 会让编排误杀进程（与 /healthz 同理），
 		// 因此状态码恒 200，真实情况放在 body 里由监控侧判断。
@@ -85,6 +98,7 @@ func newStatusProbe(
 	breaker func() string,
 	storage string,
 	track func() (int64, int64),
+	attachmentCleanup func() int64,
 ) StatusProbe {
 	probe := func(ping func(context.Context) error) func() bool {
 		return func() bool {
@@ -97,11 +111,12 @@ func newStatusProbe(
 		}
 	}
 	return StatusProbe{
-		Postgres: probe(pgPing),
-		Redis:    probe(redisPing),
-		Breaker:  breaker,
-		Storage:  func() string { return storage },
-		Track:    track,
+		Postgres:          probe(pgPing),
+		Redis:             probe(redisPing),
+		Breaker:           breaker,
+		Storage:           func() string { return storage },
+		Track:             track,
+		AttachmentCleanup: attachmentCleanup,
 	}
 }
 

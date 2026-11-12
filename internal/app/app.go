@@ -716,6 +716,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return 0, 0
 		}
 		return trackSvc.Written(), trackSvc.Dropped()
+	}, func() int64 {
+		if postSvc == nil {
+			return 0
+		}
+		return postSvc.CleanupFailureCount()
 	}))
 
 	a := &App{

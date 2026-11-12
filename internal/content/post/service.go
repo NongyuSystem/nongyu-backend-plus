@@ -284,7 +284,11 @@ func (s *Service) cleanupAttachments(keys []string) {
 	}
 	store, logger := s.store, s.logger
 	go func() {
-		ctx := context.Background()
+		// **必须带超时**：用 Background 且不设期限的话，对象存储挂住时
+		// 这个 goroutine 会无限期阻塞；反复删帖就会不断泄漏 goroutine，
+		// 最终把进程拖死。旁路任务更应该自我约束，而不是指望下游会返回。
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
 		for _, k := range keys {
 			if err := store.Delete(ctx, k); err != nil {
 				s.cleanupFailures.Add(1)
