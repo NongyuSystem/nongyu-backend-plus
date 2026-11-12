@@ -116,6 +116,28 @@ func (r *PostMemoryRepo) List(_ context.Context, board post.Board, after post.Pa
 	return out, nil
 }
 
+// ListAll 实现 post.Repo（管理端：跨板块）。
+func (r *PostMemoryRepo) ListAll(_ context.Context, after post.PageCursor, limit int) ([]*post.Post, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]*post.Post, 0, len(r.posts))
+	for _, p := range r.posts {
+		if p.DeletedAt != nil {
+			continue
+		}
+		if !post.AfterCursor(p, after) {
+			continue
+		}
+		out = append(out, clonePost(p))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return post.LessForOrder(out[i], out[j]) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // MarkDeleted 实现 post.Repo。
 func (r *PostMemoryRepo) MarkDeleted(_ context.Context, id int64, at time.Time) error {
 	r.mu.Lock()
@@ -195,7 +217,7 @@ func (r *PostMemoryRepo) AddReaction(_ context.Context, rn *post.Reaction) (bool
 }
 
 // RemoveReaction 实现 post.Repo。
-func (r *PostMemoryRepo) RemoveReaction(_ context.Context, rt post.ReactionKind, tt post.TargetType, targetID, userID int64) (bool, error) {
+func (r *PostMemoryRepo) RemoveReaction(_ context.Context, tt post.TargetType, targetID int64, rt post.ReactionKind, userID int64) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := reactionKey(rt, tt, targetID, userID)
@@ -226,7 +248,7 @@ func (r *PostMemoryRepo) ReactionCounts(_ context.Context, tt post.TargetType, t
 }
 
 // HasReaction 实现 post.Repo。
-func (r *PostMemoryRepo) HasReaction(_ context.Context, rt post.ReactionKind, tt post.TargetType, targetID, userID int64) (bool, error) {
+func (r *PostMemoryRepo) HasReaction(_ context.Context, tt post.TargetType, targetID int64, rt post.ReactionKind, userID int64) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.reaction[reactionKey(rt, tt, targetID, userID)]

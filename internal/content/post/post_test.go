@@ -112,7 +112,7 @@ func newEnv(t *testing.T) (*gin.Engine, *post.Service, *pgstore.PostMemoryRepo, 
 	repo := pgstore.NewPostMemoryRepo(func() time.Time { return t0 })
 	store := platform.NewMemoryObjectStore()
 	svc := post.New(post.Options{
-		Repo: repo, Clock: fixedClock{now: t0}, Store: store,
+		Repo: repo, Clock: fixedClock{now: t0}, ObjectStore: store,
 	})
 	uidOf := func(c *gin.Context) (int64, bool) {
 		raw := c.GetHeader("X-Test-UID")

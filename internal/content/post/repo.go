@@ -18,8 +18,15 @@ type Repo interface {
 	// FindByID 取一条（含已软删，供归属与编辑窗口判定）；不存在返回 not_found。
 	FindByID(ctx context.Context, id int64) (*Post, error)
 	// List 按 board 过滤（零值表示不过滤）+ publishedAt 倒序 + 游标分页，
-	// 只返回未软删的行。
+	// 只返回未软删的行。读者侧用它。
 	List(ctx context.Context, board Board, after PageCursor, limit int) ([]*Post, error)
+
+	// ListAll 是管理端列表：跨板块、与 List 同排序与游标口径。
+	//
+	// 单列一个方法而不是给 List 传「零值 board 表示不过滤」：读者侧与管理侧
+	// 混用一个入口时，很容易出现「管理端误传到零值就变成看全部未删帖」这种
+	// 静默越权；两个方法名把意图写进签名里。
+	ListAll(ctx context.Context, after PageCursor, limit int) ([]*Post, error)
 	// MarkDeleted 软删帖子（幂等）。
 	MarkDeleted(ctx context.Context, id int64, at time.Time) error
 
@@ -33,11 +40,14 @@ type Repo interface {
 	// AddReaction 建立一条点赞/收藏。同键已存在时返回 created=false（幂等 no-op）。
 	AddReaction(ctx context.Context, r *Reaction) (created bool, err error)
 	// RemoveReaction 删除一条点赞/收藏。不存在时返回 removed=false（幂等）。
-	RemoveReaction(ctx context.Context, rt ReactionKind, tt TargetType, targetID int64, userID int64) (removed bool, err error)
+	//
+	// 参数顺序与 AddReaction 的字段次序保持一致（靶子 → 反应 → 用户），
+	// 避免调用方在四个相邻参数间搞错 targetID 与 userID。
+	RemoveReaction(ctx context.Context, tt TargetType, targetID int64, rt ReactionKind, userID int64) (removed bool, err error)
 	// ReactionCounts 返回某靶子的点赞数、收藏数。
 	ReactionCounts(ctx context.Context, tt TargetType, targetID int64) (likes, favorites int, err error)
-	// HasReaction 判断某用户是否对某靶子有某反应。
-	HasReaction(ctx context.Context, rt ReactionKind, tt TargetType, targetID int64, userID int64) (bool, error)
+	// HasReaction 判断某用户是否对某靶子有某反应。参数顺序同 RemoveReaction。
+	HasReaction(ctx context.Context, tt TargetType, targetID int64, rt ReactionKind, userID int64) (bool, error)
 }
 
 // PageCursor 是帖子列表的游标。

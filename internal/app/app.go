@@ -576,9 +576,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 换真实实现时只改这一行的构造。
 	objectStore := platform.NewMemoryObjectStore()
 	postSvc := post.New(post.Options{
-		Repo:  pgstore.NewPostMemoryRepo(clock.Now),
-		Clock: clock,
-		Store: objectStore,
+		Repo:        pgstore.NewPostMemoryRepo(clock.Now),
+		Clock:       clock,
+		ObjectStore: objectStore,
+		Logger:      logger,
 	})
 	post.RegisterPublic(engine, postSvc, currentUserIDOf)
 	post.RegisterSession(engine, postSvc, currentUserIDOf)

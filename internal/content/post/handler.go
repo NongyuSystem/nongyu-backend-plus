@@ -119,18 +119,28 @@ func listHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 			apperr.WriteGin(c, err)
 			return
 		}
-		rows, next, err := svc.List(c.Request.Context(), c.Query("board"), after, limit)
+		// board 为空表示不过滤；非空必须是合法枚举。
+		var board Board
+		if raw := c.Query("board"); raw != "" {
+			b, verr := ValidateBoard(raw)
+			if verr != nil {
+				apperr.WriteGin(c, verr)
+				return
+			}
+			board = b
+		}
+		res, err := svc.List(c.Request.Context(), board, after, limit)
 		if err != nil {
 			apperr.WriteGin(c, err)
 			return
 		}
 		viewerID, _ := userIDOf(c)
-		out := listResponse{Items: make([]publicView, 0, len(rows))}
-		for _, p := range rows {
+		out := listResponse{Items: make([]publicView, 0, len(res.Items))}
+		for _, p := range res.Items {
 			out.Items = append(out.Items, toPublic(p, viewerID))
 		}
-		if next != nil {
-			out.Next = encodeCursor(*next)
+		if res.Next != nil {
+			out.Next = encodeCursor(*res.Next)
 		}
 		c.JSON(http.StatusOK, out)
 	}
@@ -354,18 +364,20 @@ func adminListHandler(svc *Service) gin.HandlerFunc {
 			apperr.WriteGin(c, err)
 			return
 		}
-		rows, next, err := svc.List(c.Request.Context(), c.Query("board"), after, limit)
+		// 管理端走 AdminList（跨板块）：与读者侧分开入口，避免
+		// 「误传零值 board 变成看全部」这类静默越权。
+		res, err := svc.AdminList(c.Request.Context(), after, limit)
 		if err != nil {
 			apperr.WriteGin(c, err)
 			return
 		}
-		items := make([]adminView, 0, len(rows))
-		for _, p := range rows {
+		items := make([]adminView, 0, len(res.Items))
+		for _, p := range res.Items {
 			items = append(items, toAdmin(p))
 		}
 		out := gin.H{"items": items}
-		if next != nil {
-			out["next"] = encodeCursor(*next)
+		if res.Next != nil {
+			out["next"] = encodeCursor(*res.Next)
 		}
 		c.JSON(http.StatusOK, out)
 	}

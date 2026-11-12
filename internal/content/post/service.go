@@ -2,43 +2,60 @@ package post
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/platform"
 )
 
-// Cache 是帖子域需要的缓存能力（只 Get/Set/Delete，不暴露 Redis 语义）。
+// Options 是构造 Service 的依赖。
+type Options struct {
+	// Repo 必填。
+	Repo Repo
+	// Clock 缺省用真实时钟。
+	Clock platform.Clock
+	// ObjectStore 可选：为 nil 时详情不返回预签名 URL、软删不做对象清理、
+	// 上传端点返回 validation_failed（仅测试/骨架期）。
+	ObjectStore platform.ObjectStore
+	// Cache 可选：帖子列表与详情的短 TTL 缓存。为 nil 时退化为直查（不缓存）。
+	Cache Cache
+	// PresignTTL 是附件预签名 URL 的有效期，缺省 DefaultPresignTTL。
+	PresignTTL time.Duration
+	// Logger 可选：异步清理失败时记日志，为 nil 时丢弃。
+	Logger *slog.Logger
+}
+
+// Cache 是帖子域需要的缓存能力。
+//
+// 只要 Get/Set/Delete 三个方法，避免把整个 RedisCache 的语义泄进业务域，
+// 也让测试可以塞一个 map 假件。注入是**可选**的：nil 时 Service 退化为不缓存。
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool)
 	Set(ctx context.Context, key string, val []byte, ttl time.Duration) error
 	Delete(ctx context.Context, keys ...string) error
 }
 
-// Options 是构造 Service 的依赖。
-type Options struct {
-	// Repo 必填（缺失即 panic：依赖缺失应在装配期暴露）。
-	Repo Repo
-	// Clock 可为 nil，默认真实时钟。
-	Clock platform.Clock
-	// Store 可选：附件对象存储。nil 时详情不返回预签名 URL、软删不清理对象。
-	Store platform.ObjectStore
-	// Cache 可选：列表与详情的短 TTL 缓存。nil 时退化为直查。
-	Cache Cache
-	// PresignTTL 覆盖 DefaultPresignTTL。
-	PresignTTL time.Duration
-	// CacheTTL 覆盖 DefaultCacheTTL。
-	CacheTTL time.Duration
-}
-
-// Service 是帖子业务逻辑。不感知 HTTP，不直接碰 SQL。
+// Service 是帖子业务逻辑。不感知 HTTP，也不直接碰 SQL。
 type Service struct {
 	repo       Repo
 	clock      platform.Clock
 	store      platform.ObjectStore
 	cache      Cache
 	presignTTL time.Duration
-	cacheTTL   time.Duration
+	logger     *slog.Logger
+
+	// listEpoch 是每个板块的列表缓存「代」。写操作只自增对应板块的代，
+	// 列表键含代值 → 旧代的所有游标页一次性全部失效，无需枚举游标。
+	// 进程内计数，确定性（不依赖时钟），便于测试。
+	listEpoch sync.Map // Board -> *atomic.Int64
+
+	// cleanupFailures 累计异步清理失败的对象数（失败只记日志+计数，不阻塞主业务）。
+	cleanupFailures atomic.Int64
 }
 
 // New 构造 Service。
@@ -52,14 +69,48 @@ func New(opts Options) *Service {
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = DefaultPresignTTL
 	}
-	if opts.CacheTTL <= 0 {
-		opts.CacheTTL = DefaultCacheTTL
-	}
 	return &Service{
-		repo: opts.Repo, clock: opts.Clock, store: opts.Store,
-		cache: opts.Cache, presignTTL: opts.PresignTTL, cacheTTL: opts.CacheTTL,
+		repo: opts.Repo, clock: opts.Clock, store: opts.ObjectStore,
+		cache: opts.Cache, presignTTL: opts.PresignTTL, logger: opts.Logger,
 	}
 }
+
+// CleanupFailureCount 返回异步附件清理累计失败的对象数（可观测性/测试用）。
+func (s *Service) CleanupFailureCount() int64 { return s.cleanupFailures.Load() }
+
+// ---------- 缓存键与失效 ----------
+
+// 缓存键含 board + 游标 + 代 + limit（Spec：「键含 board+游标」）。
+func listCacheKey(board Board, epoch int64, after PageCursor, limit int) string {
+	return fmt.Sprintf("post:list:%s:%d:%d:%d:%d",
+		board, epoch, after.PublishedAt.UnixNano(), after.ID, limit)
+}
+
+func detailCacheKey(id int64) string { return fmt.Sprintf("post:detail:%d", id) }
+
+func (s *Service) boardEpoch(board Board) int64 {
+	v, _ := s.listEpoch.LoadOrStore(board, &atomic.Int64{})
+	return v.(*atomic.Int64).Load()
+}
+
+// invalidateBoard 让某板块的全部列表缓存失效。
+//
+// Spec 说「写操作删对应 board 键」；由于列表键还含游标，一个板块会有无
+// 数个 (board,cursor) 键，无法逐键 Delete。这里改为自增该板块的「代」，
+// 列表键含代值，自增后所有旧键自然不可达 —— 等效于一次性删掉该板块的
+// 全部列表键，且是 O(1)。短 TTL 兜底回收旧值。
+func (s *Service) invalidateBoard(board Board) {
+	v, _ := s.listEpoch.LoadOrStore(board, &atomic.Int64{})
+	v.(*atomic.Int64).Add(1)
+}
+
+func (s *Service) invalidateDetail(ctx context.Context, id int64) {
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, detailCacheKey(id))
+	}
+}
+
+// ---------- 入参 ----------
 
 // CreateInput 是发帖入参。
 type CreateInput struct {
@@ -68,6 +119,34 @@ type CreateInput struct {
 	Body        string
 	Attachments []string
 }
+
+// UpdateInput 是编辑入参（指针语义：nil 表示不改）。
+type UpdateInput struct {
+	Title       *string
+	Body        *string
+	Attachments *[]string
+}
+
+// ListResult 是一次列表返回。
+type ListResult struct {
+	Items []*Post
+	Next  *PageCursor
+}
+
+// Detail 是一条帖子的详情（服务层产物，附件 URL 已按短 TTL 现签）。
+type Detail struct {
+	Post           *Post
+	Replies        []*Reply
+	AttachmentURLs []string
+}
+
+// ReactionState 是某用户对某靶子的反应状态（不缓存，逐请求现算）。
+type ReactionState struct {
+	LikedByMe     bool `json:"likedByMe"`
+	FavoritedByMe bool `json:"favoritedByMe"`
+}
+
+// ---------- 写操作 ----------
 
 // Create 发一条帖子。
 func (s *Service) Create(ctx context.Context, authorID int64, in CreateInput) (*Post, error) {
@@ -87,101 +166,20 @@ func (s *Service) Create(ctx context.Context, authorID int64, in CreateInput) (*
 	if err := ValidateAttachments(in.Attachments); err != nil {
 		return nil, err
 	}
-
 	now := s.clock.Now()
 	p := &Post{
 		Board: board, Title: in.Title, Body: in.Body,
-		Attachments: in.Attachments, AuthorID: authorID,
+		Attachments: append([]string(nil), in.Attachments...), AuthorID: authorID,
 		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.repo.Create(ctx, p); err != nil {
 		return nil, err
 	}
-	s.invalidateBoard(ctx, board)
+	s.invalidateBoard(board)
 	return p, nil
 }
 
-// List 返回某板块的帖子列表（boardStr 为空表示不过滤）。
-func (s *Service) List(ctx context.Context, boardStr string, after PageCursor, limit int) ([]*Post, *PageCursor, error) {
-	var board Board
-	if boardStr != "" {
-		b, err := ValidateBoard(boardStr)
-		if err != nil {
-			return nil, nil, err
-		}
-		board = b
-	}
-	limit = normalizeLimit(limit)
-
-	rows, err := s.repo.List(ctx, board, after, limit)
-	if err != nil {
-		return nil, nil, err
-	}
-	var next *PageCursor
-	if len(rows) == limit && len(rows) > 0 {
-		last := rows[len(rows)-1]
-		next = &PageCursor{PublishedAt: last.PublishedAt, ID: last.ID}
-	}
-	return rows, next, nil
-}
-
-// Detail 是一条帖子的详情视图（附件已换成预签名 URL）。
-type Detail struct {
-	Post    *Post
-	Replies []*Reply
-	// AttachmentURLs 与 Post.Attachments 一一对应（Store 为 nil 时为空）。
-	AttachmentURLs []string
-}
-
-// Get 返回帖子详情 + 留言。
-//
-// 软删的帖子对读者不可见（返回 not_found，与不存在同码，不泄露存在性）。
-func (s *Service) Get(ctx context.Context, id int64) (*Detail, error) {
-	if id <= 0 {
-		return nil, apperr.Errorf(apperr.CodeValidationFailed, "帖子 id 非法")
-	}
-	p, err := s.repo.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if p.Deleted() {
-		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
-	}
-	replies, err := s.repo.ListReplies(ctx, id, MaxPageSize)
-	if err != nil {
-		return nil, err
-	}
-	urls := s.presignAll(ctx, p.Attachments)
-	return &Detail{Post: p, Replies: replies, AttachmentURLs: urls}, nil
-}
-
-// presignAll 为附件批量签名。
-//
-// 单个附件签名失败不该让整条帖子 500：跳过该 URL 即可，前端看到少一张图
-// 远好于整页打不开。
-func (s *Service) presignAll(ctx context.Context, keys []string) []string {
-	if s.store == nil || len(keys) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		u, err := s.store.PresignGet(ctx, k, s.presignTTL)
-		if err != nil {
-			continue
-		}
-		out = append(out, u)
-	}
-	return out
-}
-
-// UpdateInput 是编辑入参（指针语义：nil 表示不改）。
-type UpdateInput struct {
-	Title       *string
-	Body        *string
-	Attachments *[]string
-}
-
-// Update 编辑一条帖子。仅作者、且必须在编辑窗口内。
+// Update 编辑一条帖子：仅作者、且必须在 publishedAt 起 24h 窗口内。
 func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput) (*Post, error) {
 	if actorID <= 0 {
 		return nil, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
@@ -193,16 +191,14 @@ func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput)
 	if p.Deleted() {
 		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
 	}
-	// 非作者返回 not_found 而不是 forbidden：避免用状态码差异探测帖子是否存在。
+	// 非作者返回 not_found 而非 forbidden，避免用状态码探测「这条帖子存在」。
 	if p.AuthorID != actorID {
 		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
 	}
 	now := s.clock.Now()
 	if !WithinEditWindow(p.PublishedAt, now) {
-		return nil, apperr.Errorf(apperr.CodeLocked,
-			"超过 %d 小时编辑窗口", int(EditWindow.Hours()))
+		return nil, apperr.Errorf(apperr.CodeLocked, "超过 %d 小时编辑窗口", int(EditWindow.Hours()))
 	}
-
 	if in.Title != nil {
 		if err := ValidateText("标题", *in.Title, MaxTitleLen); err != nil {
 			return nil, err
@@ -219,7 +215,7 @@ func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput)
 		if err := ValidateAttachments(*in.Attachments); err != nil {
 			return nil, err
 		}
-		p.Attachments = *in.Attachments
+		p.Attachments = append([]string(nil), (*in.Attachments)...)
 	}
 	t := now
 	p.EditedAt = &t
@@ -227,11 +223,12 @@ func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput)
 	if err := s.repo.Update(ctx, p); err != nil {
 		return nil, err
 	}
-	s.invalidateBoard(ctx, p.Board)
+	s.invalidateBoard(p.Board)
+	s.invalidateDetail(ctx, id)
 	return p, nil
 }
 
-// Delete 软删一条帖子（仅作者），并异步清理附件对象。
+// Delete 软删一条帖子（仅作者）并异步清理附件对象。
 func (s *Service) Delete(ctx context.Context, actorID, id int64) error {
 	if actorID <= 0 {
 		return apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
@@ -246,10 +243,16 @@ func (s *Service) Delete(ctx context.Context, actorID, id int64) error {
 	if p.AuthorID != actorID {
 		return apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
 	}
-	return s.softDelete(ctx, p)
+	if err := s.repo.MarkDeleted(ctx, id, s.clock.Now()); err != nil {
+		return err
+	}
+	s.invalidateBoard(p.Board)
+	s.invalidateDetail(ctx, id)
+	s.cleanupAttachments(p.Attachments)
+	return nil
 }
 
-// AdminDelete 是管理端软删（不校验作者）。
+// AdminDelete 是管理端软删（不校验作者；记审计由装配层负责）。
 func (s *Service) AdminDelete(ctx context.Context, id int64) error {
 	p, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -258,37 +261,39 @@ func (s *Service) AdminDelete(ctx context.Context, id int64) error {
 	if p.Deleted() {
 		return nil
 	}
-	return s.softDelete(ctx, p)
-}
-
-// softDelete 是两条删除路径的公共尾部。
-func (s *Service) softDelete(ctx context.Context, p *Post) error {
-	if err := s.repo.MarkDeleted(ctx, p.ID, s.clock.Now()); err != nil {
+	if err := s.repo.MarkDeleted(ctx, id, s.clock.Now()); err != nil {
 		return err
 	}
-	s.invalidateBoard(ctx, p.Board)
-	s.cleanupAttachments(ctx, p.Attachments)
+	s.invalidateBoard(p.Board)
+	s.invalidateDetail(ctx, id)
+	s.cleanupAttachments(p.Attachments)
 	return nil
 }
 
 // cleanupAttachments 异步清理附件对象。
 //
-// 旁路语义（Spec：「失败只记日志 + 计数，不阻塞软删」）：用 goroutine，
-// 丢弃错误。对象存储失败不该影响「软删已经成功」这件事。
-func (s *Service) cleanupAttachments(ctx context.Context, keys []string) {
+// 旁路语义（Spec：「失败只记日志 + 计数，不阻塞软删」）：用独立 goroutine
+// 与独立 context（请求 ctx 在响应后会被 cancel），逐个 Delete；失败只累加
+// 计数并记 Warn，绝不回滚或影响已成功的软删。
+func (s *Service) cleanupAttachments(keys []string) {
 	if s.store == nil || len(keys) == 0 {
 		return
 	}
-	// 用独立 context：请求 context 在响应返回后会被 cancel。
-	bg := context.WithoutCancel(ctx)
+	store, logger := s.store, s.logger
 	go func() {
+		ctx := context.Background()
 		for _, k := range keys {
-			_ = s.store.Delete(bg, k)
+			if err := store.Delete(ctx, k); err != nil {
+				s.cleanupFailures.Add(1)
+				if logger != nil {
+					logger.Warn("附件对象清理失败（旁路，不影响主业务）", "key", k, "err", err)
+				}
+			}
 		}
 	}()
 }
 
-// AddReply 发一条留言。
+// AddReply 发一条留言（无嵌套）。
 func (s *Service) AddReply(ctx context.Context, actorID, postID int64, body string) (*Reply, error) {
 	if actorID <= 0 {
 		return nil, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
@@ -303,42 +308,45 @@ func (s *Service) AddReply(ctx context.Context, actorID, postID int64, body stri
 	if p.Deleted() {
 		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
 	}
-	now := s.clock.Now()
-	r := &Reply{PostID: postID, Body: body, PublishedAt: now}
+	r := &Reply{PostID: postID, Body: body, PublishedAt: s.clock.Now()}
 	if err := s.repo.CreateReply(ctx, r); err != nil {
 		return nil, err
 	}
-	s.invalidateBoard(ctx, p.Board)
+	// 留言改变了详情里的回复列表，但 per-user 反应状态不缓存，无需动 board 列表。
+	s.invalidateDetail(ctx, postID)
 	return r, nil
 }
 
 // React 建立或取消一条点赞/收藏。
-func (s *Service) React(ctx context.Context, actorID int64, targetTypeStr string, targetID int64, kindStr string, add bool) error {
+//
+// targetType/kind 用 string 接 HTTP 传入的枚举值，靶子 id 单独用 int64。
+// 重复建立/重复取消都是幂等（repo 返回 created/removed=false，不报错）。
+func (s *Service) React(ctx context.Context, actorID int64, targetType string, targetID int64, kind string, add bool) error {
 	if actorID <= 0 {
 		return apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
 	}
-	tt, ok := ParseTargetType(targetTypeStr)
+	tt, ok := ParseTargetType(targetType)
 	if !ok {
 		return apperr.Errorf(apperr.CodeValidationFailed, "靶子类型非法")
 	}
-	kind, ok := ParseReactionKind(kindStr)
+	rt, ok := ParseReactionKind(kind)
 	if !ok {
 		return apperr.Errorf(apperr.CodeValidationFailed, "反应类型非法")
 	}
 	if targetID <= 0 {
 		return apperr.Errorf(apperr.CodeValidationFailed, "靶子 id 非法")
 	}
-	// 靶子必须存在，否则会留下指向空对象的反应。
+	// 靶子必须存在且未软删，否则会留下指向空对象的反应。
 	if err := s.ensureTarget(ctx, tt, targetID); err != nil {
 		return err
 	}
 	if add {
 		_, err := s.repo.AddReaction(ctx, &Reaction{
-			TargetType: tt, TargetID: targetID, Kind: kind, UserID: actorID,
+			TargetType: tt, TargetID: targetID, Kind: rt, UserID: actorID,
 		})
 		return err
 	}
-	_, err := s.repo.RemoveReaction(ctx, kind, tt, targetID, actorID)
+	_, err := s.repo.RemoveReaction(ctx, tt, targetID, rt, actorID)
 	return err
 }
 
@@ -368,51 +376,159 @@ func (s *Service) ensureTarget(ctx context.Context, tt TargetType, id int64) err
 	}
 }
 
-// ReactionState 是某靶子的反应状态（供详情页展示「我是否已赞」）。
-type ReactionState struct {
-	Likes     int  `json:"likes"`
-	Favorites int  `json:"favorites"`
-	LikedByMe bool `json:"likedByMe"`
-	FavedByMe bool `json:"favedByMe"`
+// ReactionStateOf 取某用户对某靶子的反应状态（逐请求现算，不缓存）。
+// viewerID 为 0 表示匿名，两个布尔均为 false。
+func (s *Service) ReactionStateOf(ctx context.Context, tt TargetType, id, viewerID int64) ReactionState {
+	if viewerID <= 0 {
+		return ReactionState{}
+	}
+	st := ReactionState{}
+	if ok, err := s.repo.HasReaction(ctx, tt, id, ReactionLike, viewerID); err == nil {
+		st.LikedByMe = ok
+	}
+	if ok, err := s.repo.HasReaction(ctx, tt, id, ReactionFavorite, viewerID); err == nil {
+		st.FavoritedByMe = ok
+	}
+	return st
 }
 
-// ReactionStateOf 取某靶子的反应状态；viewerID 为 0 表示未登录。
-func (s *Service) ReactionStateOf(ctx context.Context, ttStr string, id, viewerID int64) (ReactionState, error) {
-	tt, ok := ParseTargetType(ttStr)
-	if !ok {
-		return ReactionState{}, apperr.Errorf(apperr.CodeValidationFailed, "靶子类型非法")
+// ReactionCounts 返回某靶子的点赞/收藏数（逐请求现算，不缓存）。
+func (s *Service) ReactionCounts(ctx context.Context, tt TargetType, id int64) (likes, favorites int) {
+	likes, favorites, _ = s.repo.ReactionCounts(ctx, tt, id)
+	return
+}
+
+// ---------- 读操作（带短 TTL 缓存） ----------
+
+// cachedList 是列表缓存里存的东西：只存领域行，不存 isMine 等 per-user 字段。
+type cachedList struct {
+	Items []*Post `json:"items"`
+}
+
+// cachedDetail 是详情缓存里存的东西：只存 Post + Replies，不存预签名 URL
+// （URL 有短 TTL，必须逐请求现签，避免缓存把过期 URL 继续发出去）。
+type cachedDetail struct {
+	Post    *Post    `json:"post"`
+	Replies []*Reply `json:"replies"`
+}
+
+// List 返回某板块（board 为空表示不过滤）的帖子列表，publishedAt 倒序 + 游标。
+func (s *Service) List(ctx context.Context, board Board, after PageCursor, limit int) (ListResult, error) {
+	limit = normalizeLimit(limit)
+
+	if s.cache != nil {
+		key := listCacheKey(board, s.boardEpoch(board), after, limit)
+		if raw, ok := s.cache.Get(ctx, key); ok {
+			var cl cachedList
+			if err := json.Unmarshal(raw, &cl); err == nil {
+				return assembleList(cl.Items, limit), nil
+			}
+			// 缓存值损坏：当作未命中，继续回源（不把 5xx 抛给客户端）。
+		} else {
+			rows, err := s.repo.List(ctx, board, after, limit)
+			if err != nil {
+				return ListResult{}, err
+			}
+			if b, err := json.Marshal(cachedList{Items: rows}); err == nil {
+				_ = s.cache.Set(ctx, key, b, DefaultCacheTTL)
+			}
+			return assembleList(rows, limit), nil
+		}
 	}
-	likes, favs, err := s.repo.ReactionCounts(ctx, tt, id)
+
+	rows, err := s.repo.List(ctx, board, after, limit)
 	if err != nil {
-		return ReactionState{}, err
+		return ListResult{}, err
 	}
-	st := ReactionState{Likes: likes, Favorites: favs}
-	if viewerID > 0 {
-		if ok, err := s.repo.HasReaction(ctx, ReactionLike, tt, id, viewerID); err == nil {
-			st.LikedByMe = ok
-		}
-		if ok, err := s.repo.HasReaction(ctx, ReactionFavorite, tt, id, viewerID); err == nil {
-			st.FavedByMe = ok
-		}
-	}
-	return st, nil
+	return assembleList(rows, limit), nil
 }
 
-// invalidateBoard 删除某板块的列表缓存（写操作后调用）。
-//
-// Spec：缓存只给 GET /posts 与 /posts/:id；写操作删对应 board 键；
-// per-user 列表与点赞数不缓存。
-func (s *Service) invalidateBoard(ctx context.Context, board Board) {
-	if s.cache == nil {
-		return
+// assembleList 从「已按序、已截断到 limit」的行组装列表结果与下一个游标。
+func assembleList(rows []*Post, limit int) ListResult {
+	var next *PageCursor
+	if len(rows) == limit && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		c := PageCursor{PublishedAt: last.PublishedAt, ID: last.ID}
+		next = &c
 	}
-	_ = s.cache.Delete(ctx, CacheKeyBoard(board))
+	return ListResult{Items: rows, Next: next}
 }
 
-// CacheKeyBoard 是板块列表缓存键。
-func CacheKeyBoard(board Board) string { return "posts:board:" + string(board) }
+// Get 返回帖子详情 + 回复 + 附件预签名 URL。软删的视为不存在。
+func (s *Service) Get(ctx context.Context, id int64) (*Detail, error) {
+	post, replies, err := s.loadDetail(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if post.Deleted() {
+		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
+	}
+	urls := s.presign(ctx, post.Attachments)
+	return &Detail{Post: post, Replies: replies, AttachmentURLs: urls}, nil
+}
 
-// normalizeLimit 把 limit 收敛到 [1, MaxPageSize]。
+// loadDetail 走缓存拿 Post + Replies（不含软删过滤，由调用方判）。
+func (s *Service) loadDetail(ctx context.Context, id int64) (*Post, []*Reply, error) {
+	if s.cache != nil {
+		key := detailCacheKey(id)
+		if raw, ok := s.cache.Get(ctx, key); ok {
+			var cd cachedDetail
+			if err := json.Unmarshal(raw, &cd); err == nil && cd.Post != nil {
+				return cd.Post, cd.Replies, nil
+			}
+		} else {
+			post, replies, err := s.fetchDetail(ctx, id)
+			if err != nil {
+				return nil, nil, err
+			}
+			if b, err := json.Marshal(cachedDetail{Post: post, Replies: replies}); err == nil {
+				_ = s.cache.Set(ctx, key, b, DefaultCacheTTL)
+			}
+			return post, replies, nil
+		}
+	}
+	return s.fetchDetail(ctx, id)
+}
+
+func (s *Service) fetchDetail(ctx context.Context, id int64) (*Post, []*Reply, error) {
+	post, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	replies, err := s.repo.ListReplies(ctx, id, MaxPageSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	return post, replies, nil
+}
+
+// presign 逐个为附件 key 生成短 TTL 预签名 URL。
+// 单个失败只跳过该 URL（旁路），不让整条帖子 500；Store 为 nil 时返回空。
+func (s *Service) presign(ctx context.Context, keys []string) []string {
+	urls := make([]string, 0, len(keys))
+	if s.store == nil {
+		return urls
+	}
+	for _, key := range keys {
+		u, err := s.store.PresignGet(ctx, key, s.presignTTL)
+		if err != nil {
+			continue
+		}
+		urls = append(urls, u)
+	}
+	return urls
+}
+
+// AdminList 返回管理端列表（不过滤板块，含软删信息由 view 决定）。
+func (s *Service) AdminList(ctx context.Context, after PageCursor, limit int) (ListResult, error) {
+	limit = normalizeLimit(limit)
+	rows, err := s.repo.ListAll(ctx, after, limit)
+	if err != nil {
+		return ListResult{}, err
+	}
+	return assembleList(rows, limit), nil
+}
+
 func normalizeLimit(limit int) int {
 	if limit <= 0 {
 		return DefaultPageSize
