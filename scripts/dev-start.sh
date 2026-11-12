@@ -58,9 +58,11 @@ report_env() {
 
 # ---------- 探测 ----------
 probe() {
+  # 选探测工具：**优先 curl.exe**。在 Git Bash 下 `curl` 往往是个 shell 别名/函数，
+  # -w '%{http_code}' 可能拿不到值（实测探测全变 000，服务其实是好的）。
   local tool=""
-  if command -v curl >/dev/null 2>&1; then tool="curl"
-  elif command -v curl.exe >/dev/null 2>&1; then tool="curl.exe"
+  if command -v curl.exe >/dev/null 2>&1; then tool="curl.exe"
+  elif command -v curl >/dev/null 2>&1; then tool="curl"
   fi
 
   echo
@@ -77,6 +79,8 @@ probe() {
   done
   echo
   echo "状态码含义：200=可用；401=需登录（中间件已生效）；403=权限门槛拒；404=该域尚未实现/未挂载。"
+  echo "⚠️ 注意：401 不能证明端点「已实现」——全局鉴权中间件挂在所有路由之前，"
+  echo "   未注册的路径也会先被它拦成 401。要确认某端点真的注册了，看启动日志的 [GIN-debug] 路由表："
 }
 
 # ---------- 动作 ----------
@@ -116,14 +120,14 @@ echo "[start] 编译并启动（日志：$LOG_FILE）"
 
 # 等端口就绪（最多 30 秒）——go run 首次编译可能较慢。
 for i in $(seq 1 60); do
-  if [[ -n "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 1 "$BASE/healthz" 2>/dev/null)" ]]; then
+  if [[ -n "$(curl.exe -sS -o /dev/null -w '%{http_code}' --max-time 1 "$BASE/healthz" 2>/dev/null)" ]]; then
     break
   fi
   sleep 0.5
 done
 
 echo "[start] 装配摘要（来自日志）："
-grep -o '"msg":"装配完成"[^}]*}' "$LOG_FILE" 2>/dev/null | head -1 || echo "  (未取到装配完成行，请查看日志)"
+grep -o '"msg":"装配完成"[^}]*}' "$LOG_FILE" 2>/dev/null | head -1 || echo "  (未取到装配完成行：可能仍在编译，请稍后 tail 日志)"
 echo
 echo "[start] 未启用能力告警："
 grep -o '"level":"WARN","msg":"[^"]*"' "$LOG_FILE" 2>/dev/null | sed 's/.*"msg":"/  - /; s/"$//' | sort -u || true

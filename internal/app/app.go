@@ -14,12 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"nongyu-backend-plus/internal/app/notify"
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/content/announcement"
 	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	identitysession "nongyu-backend-plus/internal/identity/session"
 	identityuser "nongyu-backend-plus/internal/identity/user"
+	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
@@ -89,6 +91,9 @@ type App struct {
 	identityStore *platform.PGIdentityStore
 	sessionCache  *platform.RedisSessionCache
 	logger        *slog.Logger
+	// notifier 是通知派生编排层（未挂消息域时为 nil）。
+	// 关停时要 flush，否则队列里剩下的通知会丢——这是 Spec「关停前 flush」的要求。
+	notifier *notify.Notifier
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -452,16 +457,18 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 因此能踢人（单设备顶替、登出、账号禁用即时生效）。
 	// 身份域不可用时退化为旧的自包含令牌中间件，并在日志里显式告警——
 	// 那种模式下吊销不生效，只适合本地开发。
+	// appLimiter 提到外层：消息域的内部信限频要复用同一个实例（口径一致）。
+	var appLimiter *server.RateLimiter
 	if cfg.AuthKey != "" {
 		verifier := tokenIssuer
-		limiter := server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
+		appLimiter = server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
 		if identityStore != nil {
 			resolver := server.NewSessionStoreResolver(identityStore, identityStore, clock)
 			engine.Use(server.RevocableAuthMiddleware(verifier, resolver, server.ScopeApp),
-				server.RateLimitMiddleware(limiter))
+				server.RateLimitMiddleware(appLimiter))
 		} else {
 			logger.Warn("使用不可吊销的自包含令牌鉴权：登出与踢人不会生效，仅限本地开发")
-			engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(limiter))
+			engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(appLimiter))
 		}
 	}
 
@@ -567,6 +574,43 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
 	}
 
+	// 站内消息域 + 通知派生编排（map #43 / Spec 六类常见功能）。
+	//
+	// 三处依赖都必须注入，缺一不可：
+	//   - UserExists：收件人存在性（内部信 fail-closed 的前提）；不注入则所有内部信
+	//     都会被拒成「收件人不存在」——这是刻意的 fail-closed，不是 bug。
+	//   - Limiter：内部信按发送者限频；复用既有 RateLimiter，口径与其它端点一致。
+	//   - notify.Sink：把 message.Emit 投影给编排层，两域互不 import。
+	//
+	// 消息端点一律要求会话，因此只在 AuthKey 非空时挂；否则挂上去也是无人可调。
+	var notifier *notify.Notifier
+	if cfg.AuthKey != "" {
+		var userExists message.UserExistsFunc
+		if identityStore != nil {
+			userExists = messageUserExists(identityStore)
+		} else {
+			logger.Warn("消息域收件人存在性未启用：未配置 DATABASE_URL，内部信将一律被拒")
+		}
+		msgSvc := message.New(message.Options{
+			Repo:       pgstore.NewMessageMemoryRepo(clock.Now),
+			Clock:      clock,
+			UserExists: userExists,
+			Limiter:    messageLimiter(appLimiter),
+		})
+		message.Register(engine, msgSvc, currentUserIDOf)
+
+		// 通知派生编排：异步旁路，队列满/写入失败只记 dropped，绝不拖垮主业务。
+		notifier = notify.New(notify.Options{
+			Sink:     notifySink{svc: msgSvc},
+			Capacity: 1024,
+			Audit:    notifyAudit(auditStore, clock),
+			Logger:   logger,
+		})
+		logger.Info("消息域已装配：端点 /messages* + 通知派生编排")
+	} else {
+		logger.Warn("消息域端点未挂载：需要 AUTH_KEY 才能要求会话")
+	}
+
 	// #24 / Spec M6：观测出口 /status。与 /healthz 分开——后者只报进程存活、不探下游。
 	// 探针用真实依赖的 Ping，Redis 掉线后本端点会如实报 down。
 	var pgPing, redisPing func(context.Context) error
@@ -617,6 +661,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		pgAudit:       pgAudit,
 		identityStore: identityStore,
 		sessionCache:  sessionCache,
+		notifier:      notifier,
 		logger:        logger,
 	}
 	// 启动日志（issue #23）：字段必须说真话，不再写死 "store","mock"。
@@ -730,6 +775,11 @@ func (a *App) Shutdown(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	err := a.server.Shutdown(ctx)
+	// 通知派生编排层：把队列里剩余事件写完再退出（旁路，失败只记日志）。
+	// 放在 server.Shutdown 之后：此时已不再接新请求，队列只减不增。
+	if a.notifier != nil {
+		a.notifier.Flush()
+	}
 	// 释放外置存储连接池（Redis 未配置时 closeStore 为空）。
 	if a.closeStore != nil {
 		_ = a.closeStore()
