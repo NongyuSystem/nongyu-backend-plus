@@ -1,15 +1,14 @@
 package message
 
 import (
-	"encoding/base64"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/apperr"
+	"nongyu-backend-plus/internal/pagination"
 )
 
 // UserIDFunc 从请求上下文取当前会话用户。
@@ -312,35 +311,16 @@ func parseFilter(c *gin.Context, userID int64) (ListFilter, error) {
 // PostgreSQL 的 timestamptz 是微秒精度，若只编到毫秒，同毫秒内插入的多条
 // 消息会被截断到同一整毫秒，翻页时「严格小于该时刻」会整批滤掉 → 漏条。
 func encodeCursor(c PageCursor) string {
-	raw := "m|" + strconv.FormatInt(c.CreatedAt.UnixNano(), 10) + "|" + strconv.FormatInt(c.ID, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	// 转调全仓共享实现：精度与格式判据只有一份。
+	return pagination.Encode(pagination.Cursor{Time: c.CreatedAt, ID: c.ID})
 }
 
 func decodeCursor(raw string) (PageCursor, error) {
-	if raw == "" {
-		return PageCursor{}, nil
-	}
-	dec, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
+	c, ok := pagination.Decode(raw)
+	if !ok {
 		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
 	}
-	parts := strings.Split(string(dec), "|")
-	if len(parts) != 3 || parts[0] != "m" {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	ns, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	id, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	return PageCursor{
-		// 与 encodeCursor 的纳秒编码对称；用 UTC 保证同一时刻跨部署一致。
-		CreatedAt: time.Unix(0, ns).UTC(),
-		ID:        id,
-	}, nil
+	return PageCursor{CreatedAt: c.Time, ID: c.ID}, nil
 }
 
 // errorResponse 是错误信封，字段名 camelCase。

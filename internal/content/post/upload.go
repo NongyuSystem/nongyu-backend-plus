@@ -87,15 +87,20 @@ func tooLargeOrWrap(err error) error {
 	return err
 }
 
-// Upload 处理一次附件上传（后端中转，流式，不落本地盘）。
+// Upload 处理一次附件上传（后端中转，**流式**，不落本地盘）。
+//
+// 为什么不用 Request.ParseMultipartForm：它会把整个文件先读进内存、超过
+// maxMemory 时还会落到 os.CreateTemp 临时文件——既不满足「流式转发」也不满足
+// 「不落本地盘」。这里改用 MultipartReader 逐部件流式读：只从第一个 file 部件
+// 取前 512 字节嗅探格式，随后把「已读部分 + 剩余」拼成一个 reader 直接喂给
+// ObjectStore.Put，全程只有 512 字节缓冲。
 //
 // 体积约束两道闸：
-//  ① MaxBytesReader 包住整个请求体（含 multipart 边界），超限读取时抛
-//     *http.MaxBytesError → attachment_too_large；
-//  ② 对 fileHeader.Size 与 MaxAttachmentBytes 比对，挡住「声明超限」。
 //
-// 之后先嗅探前 512 字节判格式（内容嗅探，非扩展名），再把「已读部分 +
-// 剩余」拼回一个 reader 流式转发到 ObjectStore，全程不落本地盘、不整体入内存。
+//	① MaxBytesReader 包住整个请求体（含 multipart 边界），超限读取时抛
+//	   *http.MaxBytesError → attachment_too_large；
+//	② 流式读取时用 io.LimitReader 限制单文件字节不超过 MaxAttachmentBytes+1，
+//	   一旦读超就判 attachment_too_large，挡住「多部件里塞超大文件」。
 func (s *Service) Upload(ctx context.Context, r *http.Request) (UploadResult, error) {
 	if s.store == nil {
 		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "对象存储未配置，暂不可上传附件")
@@ -103,53 +108,62 @@ func (s *Service) Upload(ctx context.Context, r *http.Request) (UploadResult, er
 
 	// 先包 MaxBytesReader：整个请求体（含 multipart 边界）都受此限。
 	r.Body = http.MaxBytesReader(nil, r.Body, MaxAttachmentBytes+maxMultipartOverhead)
-	const maxMemory = maxMultipartOverhead
-	if err := r.ParseMultipartForm(maxMemory); err != nil {
-		// 超限可能发生在 ParseMultipartForm 读边界/部件时；先按原始错误判定，
-		// 不能先包成别的错误再判断，否则 *MaxBytesError 类型会丢。
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			return UploadResult{}, apperr.Errorf(apperr.CodeAttachmentTooLarge, "附件超过 %d 字节", MaxAttachmentBytes)
-		}
-		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "multipart 请求非法")
-	}
-	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return UploadResult{}, apperr.Errorf(apperr.CodeUnsupportedMedia, "请求不是 multipart/form-data")
 	}
 
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
+	// 只认第一个名为 file 的部件；其余忽略（单文件端点）。
+	var file io.Reader
+	for {
+		part, perr := mr.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			return UploadResult{}, tooLargeOrWrap(apperr.Errorf(apperr.CodeValidationFailed, "multipart 读取失败"))
+		}
+		if part.FormName() == "file" {
+			file = part
+			break
+		}
+		_ = part.Close()
+	}
+	if file == nil {
 		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "缺少 file 字段")
 	}
-	defer file.Close()
 
-	// 单文件大小上限（Header.Size 是 multipart 声明的字节数）。
-	if err := ValidateAttachmentSize(hdr.Size); err != nil {
-		return UploadResult{}, err
-	}
-	if hdr.Size <= 0 {
-		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "附件为空")
-	}
+	// 单文件硬限用第二道 MaxBytesReader（限 5MB，比外层更紧）：
+	// 超过时读会返回 *http.MaxBytesError，由 tooLargeOrWrap 映射成
+	// attachment_too_large。用 MaxBytesReader 而不是 LimitReader，是为了让
+	// 「超限」成为可判定的错误而不是静默截断（LimitReader 会悄悄丢字节）。
+	partBody := http.MaxBytesReader(nil, io.NopCloser(file), MaxAttachmentBytes)
 
-	// 嗅探头部，再拼回完整流（不整体入内存）。
 	head := make([]byte, sniffHeaderLen)
-	n, rerr := io.ReadFull(file, head)
+	n, rerr := io.ReadFull(partBody, head)
 	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
 		return UploadResult{}, tooLargeOrWrap(fmt.Errorf("post: 读取附件失败: %w", rerr))
 	}
 	head = head[:n]
+	if n == 0 {
+		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "附件为空")
+	}
 
 	ext, mediaType, err := SniffMediaType(head)
 	if err != nil {
 		return UploadResult{}, err
 	}
 
-	body := io.MultiReader(bytes.NewReader(head), file)
 	key, err := newObjectKey(s.clock.Now(), ext)
 	if err != nil {
 		return UploadResult{}, fmt.Errorf("post: 生成对象 key 失败: %w", err)
 	}
-	if _, err := s.store.Put(ctx, key, body, hdr.Size, mediaType); err != nil {
+	// 把 head 拼回 + 剩余受限流，一次性流式交给 ObjectStore。
+	// size 传 -1：让 Put 以实际读到的字节数为准（契约允许）；体积由
+	// partBody 这道 MaxBytesReader 保证，超限会在 Put 读取时返回错误。
+	body := io.MultiReader(bytes.NewReader(head), partBody)
+	if _, err := s.store.Put(ctx, key, body, -1, mediaType); err != nil {
 		return UploadResult{}, tooLargeOrWrap(err)
 	}
 	return UploadResult{Key: key}, nil

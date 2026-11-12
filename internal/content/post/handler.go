@@ -1,7 +1,6 @@
 package post
 
 import (
-	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/apperr"
+	"nongyu-backend-plus/internal/pagination"
 )
 
 // UserIDFunc 从请求上下文取当前会话用户（由装配层注入）。
@@ -407,36 +407,19 @@ func parseLimit(raw string) (int, error) {
 	return n, nil
 }
 
-// encodeCursor 把 (publishedAt, id) 编成不透明串。
+// encodeCursor/decodeCursor 转调全仓共享实现（internal/pagination）。
 //
-// **纳秒精度**：PG timestamptz 是微秒精度，用毫秒编码会让同毫秒多行在翻页时
-// 被整批跳过（公告域真实踩过这个漏条的坑，这里沿用修好的做法）。
+// 游标的精度与格式判据只有一份：三个域此前各写一份，修精度 bug 要改三处。
 func encodeCursor(c PageCursor) string {
-	raw := strconv.FormatInt(c.PublishedAt.UnixNano(), 10) + "|" + strconv.FormatInt(c.ID, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return pagination.Encode(pagination.Cursor{Time: c.PublishedAt, ID: c.ID})
 }
 
 func decodeCursor(raw string) (PageCursor, error) {
-	if raw == "" {
-		return PageCursor{}, nil
-	}
-	dec, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
+	c, ok := pagination.Decode(raw)
+	if !ok {
 		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
 	}
-	parts := strings.Split(string(dec), "|")
-	if len(parts) != 2 {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	ns, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	id, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return PageCursor{}, apperr.Errorf(apperr.CodeInvalidCursor, "游标无法解析")
-	}
-	return PageCursor{PublishedAt: time.Unix(0, ns).UTC(), ID: id}, nil
+	return PageCursor{PublishedAt: c.Time, ID: c.ID}, nil
 }
 
 // isMaxBytesErr 判断是否是 MaxBytesReader 触发的「请求体过大」。

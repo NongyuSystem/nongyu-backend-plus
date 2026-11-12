@@ -1,16 +1,15 @@
 package announcement
 
 import (
-	"encoding/base64"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/content"
+	"nongyu-backend-plus/internal/pagination"
 )
 
 // ViewerFunc 从请求上下文构造「正在看公告的人」。
@@ -421,8 +420,10 @@ func toAudience(v audienceView) (Audience, error) {
 // 翻页时「严格小于该时刻」会把同毫秒的整批行滤掉，直接漏条。
 // 纳秒编码能无损表达 PG 的微秒精度，代价只是游标串长几个字符。
 func encodeCursor(c PageCursor) string {
-	raw := "p" + boolDigit(c.Pinned) + "|" + strconv.FormatInt(c.PublishedAt.UnixNano(), 10) + "|" + strconv.FormatInt(c.ID, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	// 转调全仓共享实现。公告的排序键是 (pinned, publishedAt, id) 三元组，
+	// 所以要把 Pinned 带进游标的 Flag 维度——两元组的游标会丢掉它，
+	// 导致「翻到下一页时置顶帖又重新出现」。
+	return pagination.Encode(pagination.Cursor{Time: c.PublishedAt, ID: c.ID, Flag: c.Pinned})
 }
 
 func boolDigit(b bool) string {
@@ -433,29 +434,9 @@ func boolDigit(b bool) string {
 }
 
 func decodeCursor(raw string) (PageCursor, error) {
-	if raw == "" {
-		return PageCursor{}, nil
-	}
-	dec, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
+	c, ok := pagination.Decode(raw)
+	if !ok {
 		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
 	}
-	parts := strings.Split(string(dec), "|")
-	if len(parts) != 3 || len(parts[0]) != 2 {
-		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
-	}
-	ns, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
-	}
-	id, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil {
-		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
-	}
-	return PageCursor{
-		Pinned: parts[0][1] == '1',
-		// 与 encodeCursor 的纳秒编码对称；用 UTC 保证同一时刻跨部署一致。
-		PublishedAt: time.Unix(0, ns).UTC(),
-		ID:          id,
-	}, nil
+	return PageCursor{Pinned: c.Flag, PublishedAt: c.Time, ID: c.ID}, nil
 }
