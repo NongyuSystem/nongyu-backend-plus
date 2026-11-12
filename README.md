@@ -1,6 +1,6 @@
 # nongyu-backend-plus
 
-新农屿后端的 Go 服务。**独立于旧农屿（`nongyu-system` monorepo）的全新仓库**，不复用旧后端代码、表结构与部署链路。
+新农屿后端的 Go 服务。**独立于旧农屿（`nongyu-system` monorepo）的全新仓库**，不复用旧后端代码、表结构与部署链路。本仓承载**多个业务 effort**（WebVPN 能力重写、身份域/平台底座、六类常见功能），每个 effort 各自有 PRD / Spec，见 [`docs/specs/`](docs/specs/)。
 
 ## 状态
 
@@ -77,7 +77,7 @@ make clean   # 清理产物
 ## 开发流程（SDD）
 
 本仓库遵循规格驱动开发：**PRD → Spec → 技术方案（按需）→ 实施计划 → 编码 → 人工 Review**。
-骨架期只有 README 作为依据；业务接口开发前须先补 PRD 与 `docs/specs/` 下的规格，禁止无规格直接写业务代码。
+骨架期只有 README 作为依据；业务接口开发前须先补 PRD 与 `docs/specs/` 下的规格，禁止无规格直接写业务代码。`docs/specs/` 下按 effort 分文件；本仓当前并行承载多个 effort，各自有 PRD。
 
 ## 与旧农屿的关系
 
