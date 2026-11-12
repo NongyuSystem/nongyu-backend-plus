@@ -42,6 +42,9 @@ type Cache interface {
 
 // Service 是帖子业务逻辑。不感知 HTTP，也不直接碰 SQL。
 type Service struct {
+	// notify 是通知派生的窄钩子（装配层注入，可为 nil）。
+	notify NotifyHook
+
 	repo       Repo
 	clock      platform.Clock
 	store      platform.ObjectStore
@@ -308,12 +311,16 @@ func (s *Service) AddReply(ctx context.Context, actorID, postID int64, body stri
 	if p.Deleted() {
 		return nil, apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
 	}
-	r := &Reply{PostID: postID, Body: body, PublishedAt: s.clock.Now()}
+	r := &Reply{PostID: postID, Body: body, AuthorID: actorID, PublishedAt: s.clock.Now()}
 	if err := s.repo.CreateReply(ctx, r); err != nil {
 		return nil, err
 	}
 	// 留言改变了详情里的回复列表，但 per-user 反应状态不缓存，无需动 board 列表。
 	s.invalidateDetail(ctx, postID)
+
+	// 通知派生（旁路）：帖子被回复 → 收件人是帖主。
+	// 必须在业务写入成功**之后**触发；钩子内部非阻塞，失败不影响本次返回。
+	s.fire(ctx, Actor{Action: "reply", ActorID: actorID, PostID: postID, ReplyID: r.ID})
 	return r, nil
 }
 
@@ -341,10 +348,27 @@ func (s *Service) React(ctx context.Context, actorID int64, targetType string, t
 		return err
 	}
 	if add {
-		_, err := s.repo.AddReaction(ctx, &Reaction{
+		created, err := s.repo.AddReaction(ctx, &Reaction{
 			TargetType: tt, TargetID: targetID, Kind: rt, UserID: actorID,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		// 只在「首次真正建立」时触发通知：重复点赞（幂等 no-op）不该再打扰帖主。
+		// 收藏不产生通知（决策-通知派生规则.md Q1 的 5 个触发点不含收藏）。
+		if created && rt == ReactionLike {
+			ev := Actor{ActorID: actorID}
+			switch tt {
+			case TargetPost:
+				ev.Action = "like:post"
+				ev.PostID = targetID
+			case TargetComment:
+				ev.Action = "like:comment"
+				ev.ReplyID = targetID
+			}
+			s.fire(ctx, ev)
+		}
+		return nil
 	}
 	_, err := s.repo.RemoveReaction(ctx, tt, targetID, rt, actorID)
 	return err
@@ -537,4 +561,26 @@ func normalizeLimit(limit int) int {
 		return MaxPageSize
 	}
 	return limit
+}
+
+// FindPost 取一条帖子（含已软删），供装配层的通知派生查收件人用。
+//
+// 为什么需要一个「不判软删」的读口：通知派生要拿到帖主是谁，
+// 而软删的帖子在派生时机上可能刚好被删（并发），此时仍应能算出收件人
+// 并让编排层决定是否投递。判读可见性是 handler 的事，不是这里。
+//
+// 它是**只读、不做权限判定**的窄口：调用方只有装配层。
+func (s *Service) FindPost(ctx context.Context, id int64) (*Post, error) {
+	if id <= 0 {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed, "帖子 id 非法")
+	}
+	return s.repo.FindByID(ctx, id)
+}
+
+// FindReply 取一条留言（含已软删），供通知派生查收件人。
+func (s *Service) FindReply(ctx context.Context, id int64) (*Reply, error) {
+	if id <= 0 {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed, "留言 id 非法")
+	}
+	return s.repo.FindReplyByID(ctx, id)
 }

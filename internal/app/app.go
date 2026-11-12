@@ -643,7 +643,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Audit:    notifyAudit(auditStore, clock),
 			Logger:   logger,
 		})
-		logger.Info("消息域已装配：端点 /messages* + 通知派生编排")
+		// 把两个源域的窄钩子接到编排层（跨域编排只在装配层发生）。
+		postSvc.SetNotifyHook(postNotifyAdapter{posts: postSvc, notify: notifier}.Handle)
+		announcementSvc.SetPublishHook(announcementNotifyAdapter{notify: notifier}.Handle)
+		logger.Info("消息域已装配：端点 /messages* + 通知派生编排（已接帖子 4 触发点 / 公告发布）")
 	} else {
 		logger.Warn("消息域端点未挂载：需要 AUTH_KEY 才能要求会话")
 	}

@@ -125,12 +125,19 @@ func (p *Post) Deleted() bool { return p != nil && p.DeletedAt != nil }
 
 // Reply 是一条留言。
 //
-// 按 Spec 实体字段口径：没有 parentReplyId（不嵌套），也没有作者标识
-// —— 留言区同样不暴露留言者身份（User Story 19）。
+// 没有 parentReplyId（不嵌套）。作者标识**存在但不下发**：
+// 对读者匿名（Q2/Q12），服务端仍必须知道是谁，否则
+//   - 「评论被点赞 / 评论被回复」两个通知触发点算不出收件人；
+//   - 将来的「我的留言」也无法实现。
+//
+// 区分「存不存」与「发不发」是这层的核心：AuthorID 在 handler 里
+// 一律不进响应体，只在服务端与 isMine 判定中使用。
 type Reply struct {
-	ID          int64
-	PostID      int64
-	Body        string
+	ID     int64
+	PostID int64
+	Body   string
+	// AuthorID 仅服务端使用，绝不下发给其它调用方。
+	AuthorID    int64
 	PublishedAt time.Time
 	DeletedAt   *time.Time
 }

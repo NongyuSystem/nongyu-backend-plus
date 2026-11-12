@@ -44,6 +44,9 @@ type Options struct {
 // 它只做三件事：校验入参、判定可见性、驱动状态机。
 // 不感知 HTTP，也不直接碰 SQL（repo 接口在后面）。
 type Service struct {
+	// publishHook 是通知派生的窄钩子（装配层注入，可为 nil）。
+	publishHook PublishHook
+
 	repo  Repo
 	clock platform.Clock
 	audit platform.AuditStore
@@ -328,6 +331,11 @@ func (s *Service) Publish(ctx context.Context, id int64) (*Announcement, error) 
 		return nil, err
 	}
 	s.recordAudit(ctx, "announcement.publish", a.ID, "ok")
+
+	// 通知派生（旁路）：发布且对受众可见时通知受众集合。
+	// 必须在写入成功之后触发；幂等键含 PublishRevision，
+	// 因此「撤回再重发」能再通知一次（决策-通知派生规则.md Q4）。
+	s.firePublished(ctx, a)
 	return a, nil
 }
 
