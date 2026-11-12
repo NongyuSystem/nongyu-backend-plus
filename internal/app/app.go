@@ -17,6 +17,7 @@ import (
 	"nongyu-backend-plus/internal/app/notify"
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/content/announcement"
+	"nongyu-backend-plus/internal/content/post"
 	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	identitysession "nongyu-backend-plus/internal/identity/session"
@@ -28,6 +29,7 @@ import (
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
 	"nongyu-backend-plus/internal/server"
+	"nongyu-backend-plus/internal/track"
 
 	"github.com/gin-gonic/gin"
 )
@@ -94,6 +96,8 @@ type App struct {
 	// notifier 是通知派生编排层（未挂消息域时为 nil）。
 	// 关停时要 flush，否则队列里剩下的通知会丢——这是 Spec「关停前 flush」的要求。
 	notifier *notify.Notifier
+	// trackSvc 是埋点域；关停同样要 flush（有界缓冲里的数据不能丢）。
+	trackSvc *track.Service
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -561,6 +565,36 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	})
 	announcement.RegisterPublic(engine, announcementSvc, announcementViewerOf)
 
+	// 帖子域（map #43 / Spec 六类常见功能）。
+	//
+	// 读者侧两条是**公开读**（未登录也能看列表与详情），写侧十一条需要会话。
+	// 两者都挂在 engine 上——写侧的保护来自全局鉴权中间件，但每个写 handler
+	// 仍会自己 fail-closed 取用户（双保险，不假设中间件一定生效）。
+	//
+	// 对象存储用内存实现：MinIO 实现尚未落地（platform/objectstore 只有接口
+	// 与 MemoryObjectStore）。上传的 5MB 硬限、格式嗅探、key 模板都在业务侧，
+	// 换真实实现时只改这一行的构造。
+	objectStore := platform.NewMemoryObjectStore()
+	postSvc := post.New(post.Options{
+		Repo:  pgstore.NewPostMemoryRepo(clock.Now),
+		Clock: clock,
+		Store: objectStore,
+	})
+	post.RegisterPublic(engine, postSvc, currentUserIDOf)
+	post.RegisterSession(engine, postSvc, currentUserIDOf)
+	logger.Info("帖子域已装配：读者侧 2 条 + 会话侧 11 条（含附件上传）")
+
+	// 用户行为埋点（map #43 / Spec 六类常见功能）。
+	//
+	// 三条硬约束都在业务侧兜住：信封统一、脱敏三步顺序、缓冲满不返 503。
+	// 这里只负责构造与注册。
+	trackSvc := track.New(track.Options{
+		Repo:  pgstore.NewTrackMemoryRepo(),
+		Clock: clock,
+	})
+	track.Register(engine, trackSvc, currentUserIDOf)
+	logger.Info("埋点域已装配：上报端点 1 条")
+
 	// 管理端路由组：仅当身份域可用时才挂（否则 admin 会话无从校验）。
 	if identityStore != nil && cfg.AuthKey != "" {
 		adminGroup := engine.Group("/",
@@ -570,6 +604,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			server.AdminOnly(platform.RoleAdmin),
 		)
 		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
+		post.RegisterAdmin(adminGroup, postSvc)
+		track.RegisterAdmin(adminGroup, trackSvc)
 	} else {
 		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
 	}
@@ -662,6 +698,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		identityStore: identityStore,
 		sessionCache:  sessionCache,
 		notifier:      notifier,
+		trackSvc:      trackSvc,
 		logger:        logger,
 	}
 	// 启动日志（issue #23）：字段必须说真话，不再写死 "store","mock"。
@@ -779,6 +816,10 @@ func (a *App) Shutdown(timeout time.Duration) error {
 	// 放在 server.Shutdown 之后：此时已不再接新请求，队列只减不增。
 	if a.notifier != nil {
 		a.notifier.Flush()
+	}
+	// 埋点有界缓冲：同样在关停时写完（Spec「关停前 flush」）。
+	if a.trackSvc != nil {
+		a.trackSvc.Flush()
 	}
 	// 释放外置存储连接池（Redis 未配置时 closeStore 为空）。
 	if a.closeStore != nil {
