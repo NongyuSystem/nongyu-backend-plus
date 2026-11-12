@@ -21,6 +21,12 @@ type StatusProbe struct {
 	Redis    func() bool
 	Breaker  func() string
 	Storage  func() string
+	// Track 返回埋点缓冲的 (已写入, 已丢弃)。
+	//
+	// 为什么放进 /status：Spec 明确要求把 dropped 暴露成可观测指标——
+	// 「缓冲满就丢」是个静默行为，没有计数运维就永远不知道在丢数据。
+	// 允许为 nil（未装配埋点域时）。
+	Track func() (written, dropped int64)
 }
 
 // StatusReport 是 /status 的响应体。
@@ -30,6 +36,8 @@ type StatusReport struct {
 	Redis    string `json:"redis"`
 	Breaker  string `json:"breaker"`
 	Storage  string `json:"storage"`
+	// Track 是埋点缓冲的计数（未装配时为 null）。
+	Track *TrackStats `json:"track,omitempty"`
 }
 
 // RegisterStatus 把 /status 挂到 gin.IRouter。
@@ -42,6 +50,10 @@ func RegisterStatus(r gin.IRouter, p StatusProbe) {
 			Redis:    upOrDown(p.Redis),
 			Breaker:  stringOrUnknown(p.Breaker),
 			Storage:  stringOrUnknown(p.Storage),
+		}
+		if p.Track != nil {
+			w, d := p.Track()
+			report.Track = &TrackStats{Written: w, Dropped: d}
 		}
 		// 依赖全挂时不返回 200 会让编排误杀进程（与 /healthz 同理），
 		// 因此状态码恒 200，真实情况放在 body 里由监控侧判断。
@@ -72,6 +84,7 @@ func newStatusProbe(
 	pgPing, redisPing func(context.Context) error,
 	breaker func() string,
 	storage string,
+	track func() (int64, int64),
 ) StatusProbe {
 	probe := func(ping func(context.Context) error) func() bool {
 		return func() bool {
@@ -88,5 +101,15 @@ func newStatusProbe(
 		Redis:    probe(redisPing),
 		Breaker:  breaker,
 		Storage:  func() string { return storage },
+		Track:    track,
 	}
+}
+
+// TrackStats 是埋点缓冲的观测值。
+//
+// Dropped 是**业务上真正重要的那个数**：埋点是「满了就丢」的旁路，
+// 没有这个计数，运维永远不知道在丢数据（Spec 明确要求暴露 dropped）。
+type TrackStats struct {
+	Written int64 `json:"written"`
+	Dropped int64 `json:"dropped"`
 }

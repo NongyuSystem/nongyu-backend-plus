@@ -575,10 +575,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 与 MemoryObjectStore）。上传的 5MB 硬限、格式嗅探、key 模板都在业务侧，
 	// 换真实实现时只改这一行的构造。
 	objectStore := platform.NewMemoryObjectStore()
+	// 缓存只在配了 Redis 时注入；未配时帖子域按「无缓存直查」处理。
+	// 必须传适配器而不是 *RedisCache：业务域只认 Get/Set/Delete。
+	var postCacheOpt post.Cache
+	if cache != nil {
+		postCacheOpt = postCache{cache}
+	}
 	postSvc := post.New(post.Options{
 		Repo:        pgstore.NewPostMemoryRepo(clock.Now),
 		Clock:       clock,
 		ObjectStore: objectStore,
+		Cache:       postCacheOpt,
 		Logger:      logger,
 	})
 	post.RegisterPublic(engine, postSvc, currentUserIDOf)
@@ -672,12 +679,18 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if cfg.DatabaseURL != "" {
 		storageKind = "postgres"
 	}
+	// 埋点缓冲计数接进 /status：dropped 是「缓冲满就丢」的静默行为的唯一观测面。
 	RegisterStatus(engine, newStatusProbe(pgPing, redisPing, func() string {
 		if cache != nil {
 			return fmt.Sprint(cache.BreakerState())
 		}
 		return breakerName
-	}, storageKind))
+	}, storageKind, func() (int64, int64) {
+		if trackSvc == nil {
+			return 0, 0
+		}
+		return trackSvc.Written(), trackSvc.Dropped()
+	}))
 
 	a := &App{
 		cfg:    cfg,

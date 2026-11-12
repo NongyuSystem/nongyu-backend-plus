@@ -269,6 +269,7 @@ func TestNewStatusProbe_ReflectsPingFailure(t *testing.T) {
 		},
 		func() string { return "closed" },
 		"postgres",
+		nil, // 本测试不关心埋点计数
 	)
 
 	if !probe.Postgres() || !probe.Redis() {
