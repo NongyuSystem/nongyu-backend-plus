@@ -54,12 +54,12 @@ func TestAllowedWithoutAuth_PublicReadOnlyGet(t *testing.T) {
 	writes := []struct {
 		method, path string
 	}{
-		{http.MethodPost, "/posts"},               // 发帖
-		{http.MethodPost, "/posts/attachments"},   // 上传附件（曾误放行）
-		{http.MethodPost, "/posts/42/replies"},    // 留言
-		{http.MethodDelete, "/posts/42"},          // 删帖
-		{http.MethodPatch, "/posts/42"},           // 编辑
-		{http.MethodPost, "/announcements"},       // 公告写操作（前缀同源，防同类回归）
+		{http.MethodPost, "/posts"},             // 发帖
+		{http.MethodPost, "/posts/attachments"}, // 上传附件（曾误放行）
+		{http.MethodPost, "/posts/42/replies"},  // 留言
+		{http.MethodDelete, "/posts/42"},        // 删帖
+		{http.MethodPatch, "/posts/42"},         // 编辑
+		{http.MethodPost, "/announcements"},     // 公告写操作（前缀同源，防同类回归）
 		{http.MethodDelete, "/announcements/42"},
 	}
 	for _, w := range writes {

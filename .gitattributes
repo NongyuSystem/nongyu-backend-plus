@@ -1,0 +1,58 @@
+# ============================================================================
+# 行尾统一：全仓强制 LF
+# ============================================================================
+# 为什么需要这个文件：
+#
+# Windows 上 git 默认的 core.autocrlf=true 会在 checkout 时把 LF 转成 CRLF，
+# 于是**工作区里的 Go 文件是 CRLF**。后果是：
+#   - `gofmt -l .` 会报一堆文件「不合规」，实际只是行尾差异（diff 全红）；
+#   - `make fmt-check` 一跑就失败，这个检查形同废掉；
+#   - 不同人提交时行尾来回翻转，产生大量噪音 diff。
+#
+# 不能靠「把 autocrlf 设成 false」解决——那是每台机器的本地配置，
+# 新克隆的人不知道就会再踩一次。.gitattributes 是随仓库走的，
+# 对所有人一致，这是唯一可靠的解法。
+#
+# 注意：这会影响 Go、Shell、SQL、Markdown 等所有文本文件。
+# 二进制文件必须显式标 binary，否则 git 可能试图转换它们。
+
+# 所有文本文件按 LF 存进仓库、也按 LF 检出。
+* text=auto eol=lf
+
+# Go 源码：明确为 LF（gofmt 要求）
+*.go    text eol=lf
+
+# Shell 脚本：必须 LF，否则在 Linux/CI 里跑会报 "bad interpreter: ^M"
+*.sh    text eol=lf
+
+# SQL 迁移：LF（避免某些客户端把 CRLF 当语句分隔符的一部分）
+*.sql   text eol=lf
+
+# 规约与文档
+*.md    text eol=lf
+Makefile text eol=lf
+.gitignore    text eol=lf
+.gitattributes text eol=lf
+.env.example  text eol=lf
+
+# Windows 专用脚本：保留 CRLF（cmd.exe 与部分 PowerShell 工具对它更友好）
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制：禁止任何转换与 diff
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.apk   binary
+*.exe   binary
+*.bin   binary
+
+# go.sum 虽然是文本，但要避免合并冲突带来的噪音
+go.sum  text eol=lf

@@ -172,9 +172,9 @@ var publicPaths = []string{
 //
 // 前导斜杠与匹配规则由 IsPublicPath 统一处理；新增条目时**不要**加尾斜杠。
 var publicReadablePaths = []string{
-	"/announcements",     // 公告列表
+	"/announcements",        // 公告列表
 	"/announcements/latest", // 首页最新一条公告
-	"/posts",             // 帖子列表
+	"/posts",                // 帖子列表
 }
 
 // IsPublicPath 判断一个请求路径是否属于**取得身份类**的免认证路径。
@@ -223,6 +223,7 @@ func hasPathPrefix(list []string, path string) bool {
 	}
 	return false
 }
+
 // RevocableAuthMiddleware 校验可吊销会话，并把身份写入 context。
 //
 // requiredScope 决定「这套中间件接受哪一类会话」：
