@@ -88,20 +88,38 @@ func (s *Service) List(ctx context.Context, v Viewer, after PageCursor, limit in
 
 // Latest 返回读者侧优先级最高的那一条（首页通知栏用）。没有则返回 nil。
 //
-// 「置顶优先、再按发布时间倒序」已由 repo 的排序保证；这里只需在有序行里
-// 取第一条可见的，因为过滤只会移除行、不会改变相对顺序。
+// 为什么不能「取一页然后扫一遍就返回」：受众与有效期过滤只发生在服务层，
+// 仓储返回的是**未过滤**的行。若窗口取固定 50 条，而前 50 条恰好都被
+// 过滤掉（例如学校近期只发定向公告，突然发一条全员公告），第 51 条本应
+// 可见的公告就会被静默漏掉 —— 首页通知栏会显示「没有公告」。
+//
+// 因此这里按游标真正翻页，直到找到第一条可见的或扫到底为止。翻页有上界，
+// 避免异常数据（大量不可见行）把一次请求拖成无限循环。
 func (s *Service) Latest(ctx context.Context, v Viewer) (*Announcement, error) {
 	now := s.clock.Now()
-	// 取一小窗而不是只取 1 条：前面若干条可能因受众/有效期被过滤掉。
-	const window = 50
-	rows, err := s.repo.ListPublished(ctx, PageCursor{}, window)
-	if err != nil {
-		return nil, err
-	}
-	for _, a := range rows {
-		if Listable(a, v, now) {
-			return a, nil
+
+	const pageSize = 50
+	// 上界：最多扫 20 页（1000 行）。超过这个量说明公告表本身异常，
+	// 宁可返回「没有」也不要让首页请求挂住。
+	const maxPages = 20
+
+	var cursor PageCursor
+	for page := 0; page < maxPages; page++ {
+		rows, err := s.repo.ListPublished(ctx, cursor, pageSize)
+		if err != nil {
+			return nil, err
 		}
+		for _, a := range rows {
+			if Listable(a, v, now) {
+				return a, nil
+			}
+		}
+		// 没扫满一页说明到底了。
+		if len(rows) < pageSize {
+			return nil, nil
+		}
+		last := rows[len(rows)-1]
+		cursor = PageCursor{Pinned: last.Pinned, PublishedAt: publishedOrZero(last), ID: last.ID}
 	}
 	return nil, nil
 }
@@ -211,31 +229,45 @@ func (s *Service) Update(ctx context.Context, id int64, in UpdateInput) (*Announ
 
 // Publish 发布或重发。
 //
-// 状态机：draft → published（首次发布）；revoked → published（重发）。
-// **每次成功发布都自增 PublishRevision**——它与公告 id 一起构成通知幂等键，
-// 使「编辑重发」能再通知一次，而「同一次发布被重试」不会重复通知。
-// published → published 也允许（等价于「重发一次」），因为管理端可能要
-// 借它重新推送已修改的内容。
+// 状态机严格按 Spec 的三条转移：
+//   - draft → published：首次发布，publishRevision 置 1；
+//   - revoked → published：重发，publishRevision 自增；
+//   - published → published：**不是合法转移**，直接拒绝。
+//
+// 为什么不允许 published → published：publishRevision 是通知幂等键的一部分
+// （与公告 id 一起），每自增一次就会给受众再发一轮通知。若允许对已发布的
+// 公告再「发布」，管理端误点两次就会让学生收到两条同样的通知。
+// 想重新通知的正当路径是「撤回 → 重发」，那在语义上也确实是一次新的发布。
+//
+// 早期实现把 published 也纳入了允许分支并自增 revision —— 那是超出 Spec
+// 的宽松，已按 Spec 收紧。
 func (s *Service) Publish(ctx context.Context, id int64) (*Announcement, error) {
 	a, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if a.Status == StatusRevoked || a.Status == StatusDraft || a.Status == StatusPublished {
+
+	switch a.Status {
+	case StatusDraft:
 		now := s.clock.Now()
-		if a.Status == StatusDraft {
-			a.PublishRevision = 1
-		} else {
-			a.PublishRevision++
-		}
 		a.Status = StatusPublished
 		a.PublishedAt = &now
-		if err := s.repo.Update(ctx, a); err != nil {
-			return nil, err
-		}
-		return a, nil
+		a.PublishRevision = 1
+	case StatusRevoked:
+		now := s.clock.Now()
+		a.Status = StatusPublished
+		a.PublishedAt = &now
+		a.PublishRevision++
+	case StatusPublished:
+		return nil, content.Errorf(content.CodeValidationFailed, "公告已发布；如需重新通知请先撤回再重发")
+	default:
+		return nil, content.Errorf(content.CodeValidationFailed, "公告状态非法")
 	}
-	return nil, content.Errorf(content.CodeValidationFailed, "公告状态非法")
+
+	if err := s.repo.Update(ctx, a); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // Revoke 撤回公告。撤回后读者侧任何入口都不可见；PublishRevision 不变

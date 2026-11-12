@@ -267,7 +267,7 @@ func TestAdminPublish_RevisionAdvances(t *testing.T) {
 	})
 	path := "/admin/announcements/" + strconv.FormatInt(id, 10)
 
-	// 首次发布：revision = 1。
+	// 草稿 → 发布：revision = 1。
 	code, body := doJSON(t, r, http.MethodPatch, path, map[string]any{"action": "publish"}, nil)
 	if code != http.StatusOK {
 		t.Fatalf("发布失败：%d %v", code, body)
@@ -277,11 +277,11 @@ func TestAdminPublish_RevisionAdvances(t *testing.T) {
 		t.Fatalf("首次发布 revision 应为 1，得到 %v", got)
 	}
 
-	// 重发（例如编辑后再次发布）：revision 递增，通知才能再发一次。
-	_, body = doJSON(t, r, http.MethodPatch, path, map[string]any{"action": "publish"}, nil)
-	data = body["data"].(map[string]any)
-	if got := data["publishRevision"].(float64); got != 2 {
-		t.Fatalf("重发 revision 应递增到 2，得到 %v", got)
+	// 已发布 → 发布：Spec 的状态机没有这条转移，必须拒绝。
+	// 若允许并自增，管理端误点两次就会让学生收到两条同样的通知。
+	code, body = doJSON(t, r, http.MethodPatch, path, map[string]any{"action": "publish"}, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("已发布再发布应 400（状态机不允许），得到 %d：%v", code, body)
 	}
 
 	// 撤回不改变 revision。
@@ -290,8 +290,15 @@ func TestAdminPublish_RevisionAdvances(t *testing.T) {
 	if data["status"] != "revoked" {
 		t.Fatalf("撤回后状态应为 revoked，得到 %v", data["status"])
 	}
-	if got := data["publishRevision"].(float64); got != 2 {
+	if got := data["publishRevision"].(float64); got != 1 {
 		t.Fatalf("撤回不应改变 revision，得到 %v", got)
+	}
+
+	// 撤回 → 重发：Spec 允许，revision 递增，通知才会再发一次。
+	_, body = doJSON(t, r, http.MethodPatch, path, map[string]any{"action": "publish"}, nil)
+	data = body["data"].(map[string]any)
+	if got := data["publishRevision"].(float64); got != 2 {
+		t.Fatalf("撤回后重发 revision 应递增到 2，得到 %v", got)
 	}
 }
 
@@ -351,6 +358,39 @@ func TestAdminDelete_ThenGoneFromBothLists(t *testing.T) {
 	_, adminBody := doJSON(t, r, http.MethodGet, "/admin/announcements", nil, nil)
 	if items, _ := adminBody["items"].([]any); len(items) != 0 {
 		t.Fatalf("已删公告不应在管理端列表，实际 %d 条", len(items))
+	}
+}
+
+func TestPublicLatest_FindsBeyondFirstWindow(t *testing.T) {
+	r, _ := newTestServer(t)
+
+	// 先造 60 条「按角色定向」的公告（匿名读者看不到），
+	// 再发 1 条全员公告。全员公告排在最后（同刻发布时按 id 升序，
+	// 它 id 最大 → 在倒序里最靠前的那批之外）。
+	//
+	// 这条用例锁住一个真实缺陷：若 Latest 只扫固定 50 条就返回，
+	// 这条全员公告会被静默漏掉，首页显示「没有公告」。
+	for i := 0; i < 60; i++ {
+		createAnnouncement(t, r, map[string]any{
+			"title": "定向" + strconv.Itoa(i), "body": "x",
+			"audience": map[string]any{"scope": "role", "roles": []int{1, 2}}, "publish": true,
+		})
+	}
+	createAnnouncement(t, r, map[string]any{
+		"title": "全员可见", "body": "x",
+		"audience": map[string]any{"scope": "all"}, "publish": true,
+	})
+
+	code, body := doJSON(t, r, http.MethodGet, "/announcements/latest", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("latest 应 200，得到 %d", code)
+	}
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("窗口外的全员公告不应被漏掉，实际 data=%v", body["data"])
+	}
+	if data["title"] != "全员可见" {
+		t.Fatalf("应找到那唯一的全员公告，得到 %v", data["title"])
 	}
 }
 
