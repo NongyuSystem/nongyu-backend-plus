@@ -24,7 +24,6 @@ import (
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
@@ -32,6 +31,7 @@ import (
 	"nongyu-backend-plus/internal/track"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Capabilities 是装配层注入给业务域的全部外部能力快照。
@@ -98,6 +98,10 @@ type App struct {
 	notifier *notify.Notifier
 	// trackSvc 是埋点域；关停同样要 flush（有界缓冲里的数据不能丢）。
 	trackSvc *track.Service
+	// pgPool 是业务仓储的连接池（未配 DATABASE_URL 时为 nil）。
+	pgPool *pgxpool.Pool
+	// storeMode 如实记录四个域用的哪套实现，供 /status 报告。
+	storeMode storeMode
 }
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -222,6 +226,29 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 请求追踪号：每个请求一个审计流水号，写入 context 与 X-Request-Id 响应头。
 	// 必须最先挂，后续所有 handler 与审计都能拿到它。
 	engine.Use(server.RequestIDMiddleware())
+
+	// 业务域的仓储：按 DATABASE_URL 一次性决定四个域走内存还是 PG。
+	//
+	// 必须在 Migrate 之后（表要先建好）、在业务域构造之前。
+	// 配了但连不上时返回错误而**不降级成内存**——静默降级会让
+	// 「生产看起来正常、实际一条数据都没落库」。
+	pgPool, err := openPGPool(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if pgPool != nil {
+		defer func() {
+			// 装配中途失败时释放连接池（成功路径由 App.closeStore 接管）。
+			if pgPool != nil {
+				pgPool.Close()
+			}
+		}()
+	}
+	repos, err := newRepoBundle(pgPool, clock.Now)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("业务仓储已装配", "mode", string(repos.Mode))
 
 	// 审计持久层（Postgres）：配了 DATABASE_URL 才启用，否则审计只写 slog。
 	var auditStore platform.AuditStore
@@ -560,7 +587,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	//     这里再叠一层 admin scope 与角色门槛。两者缺一不可——
 	//     scope 回答「这套令牌是不是给管理台签的」，role 回答「这个人够不够格」。
 	announcementSvc := announcement.New(announcement.Options{
-		Repo:  pgstore.NewAnnouncementMemoryRepo(clock.Now),
+		Repo:  repos.Announcements,
 		Clock: clock,
 	})
 	announcement.RegisterPublic(engine, announcementSvc, announcementViewerOf)
@@ -582,7 +609,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		postCacheOpt = postCache{cache}
 	}
 	postSvc := post.New(post.Options{
-		Repo:        pgstore.NewPostMemoryRepo(clock.Now),
+		Repo:        repos.Posts,
 		Clock:       clock,
 		ObjectStore: objectStore,
 		Cache:       postCacheOpt,
@@ -597,7 +624,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 三条硬约束都在业务侧兜住：信封统一、脱敏三步顺序、缓冲满不返 503。
 	// 这里只负责构造与注册。
 	trackSvc := track.New(track.Options{
-		Repo:  pgstore.NewTrackMemoryRepo(),
+		Repo:  repos.Track,
 		Clock: clock,
 	})
 	track.Register(engine, trackSvc, currentUserIDOf)
@@ -636,7 +663,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			logger.Warn("消息域收件人存在性未启用：未配置 DATABASE_URL，内部信将一律被拒")
 		}
 		msgSvc := message.New(message.Options{
-			Repo:       pgstore.NewMessageMemoryRepo(clock.Now),
+			Repo:       repos.Messages,
 			Clock:      clock,
 			UserExists: userExists,
 			Limiter:    messageLimiter(appLimiter),
@@ -675,10 +702,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if cache != nil {
 		breakerName = fmt.Sprint(cache.BreakerState())
 	}
-	storageKind := "memory"
-	if cfg.DatabaseURL != "" {
-		storageKind = "postgres"
-	}
+	// storage 必须如实反映业务仓储实际用的实现，不能只看 DATABASE_URL：
+	// 配了库但走内存（或反之）时，运维看 /status 会被误导。
+	storageKind := string(repos.Mode)
 	// 埋点缓冲计数接进 /status：dropped 是「缓冲满就丢」的静默行为的唯一观测面。
 	RegisterStatus(engine, newStatusProbe(pgPing, redisPing, func() string {
 		if cache != nil {
@@ -716,6 +742,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		sessionCache:  sessionCache,
 		notifier:      notifier,
 		trackSvc:      trackSvc,
+		pgPool:        pgPool,
+		storeMode:     repos.Mode,
 		logger:        logger,
 	}
 	// 启动日志（issue #23）：字段必须说真话，不再写死 "store","mock"。
@@ -837,6 +865,10 @@ func (a *App) Shutdown(timeout time.Duration) error {
 	// 埋点有界缓冲：同样在关停时写完（Spec「关停前 flush」）。
 	if a.trackSvc != nil {
 		a.trackSvc.Flush()
+	}
+	// 业务仓储连接池：必须在各域 flush 之后再关，否则写入会撞上已关的池。
+	if a.pgPool != nil {
+		a.pgPool.Close()
 	}
 	// 释放外置存储连接池（Redis 未配置时 closeStore 为空）。
 	if a.closeStore != nil {
