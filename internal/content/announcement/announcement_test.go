@@ -41,7 +41,7 @@ func TestListable_StatusGating(t *testing.T) {
 	if Listable(revoked, all, now) {
 		t.Fatal("已撤回不应出现在读者列表")
 	}
-	if Readable(revoked, all) {
+	if ReadableAt(revoked, all, now) {
 		t.Fatal("已撤回不应可读：撤回的语义是「当作没发过」")
 	}
 	if !Listable(published(&Announcement{Title: "t"}), all, now) {
@@ -52,7 +52,7 @@ func TestListable_StatusGating(t *testing.T) {
 func TestListable_Deleted(t *testing.T) {
 	a := published(&Announcement{Title: "t"})
 	a.DeletedAt = ts("2026-11-02T00:00:00Z")
-	if Listable(a, Viewer{}, now) || Readable(a, Viewer{}) {
+	if Listable(a, Viewer{}, now) || ReadableAt(a, Viewer{}, now) {
 		t.Fatal("软删的公告既不可列也不可读")
 	}
 }
@@ -64,7 +64,7 @@ func TestListable_ExpiryHidesListButKeepsDetail(t *testing.T) {
 	if Listable(a, Viewer{}, now) {
 		t.Fatal("过期公告不应出现在默认列表")
 	}
-	if !Readable(a, Viewer{}) {
+	if !ReadableAt(a, Viewer{}, now) {
 		t.Fatal("过期公告详情仍应可查，否则读者无法核对之前看过的通知")
 	}
 }
@@ -173,6 +173,40 @@ func TestValidate_CreateInput(t *testing.T) {
 				t.Fatal("期望被拒，但通过了")
 			}
 		})
+	}
+}
+
+func TestReadable_PendingIsNotReadable(t *testing.T) {
+	// 未生效（effectiveFrom 在未来）的公告不可按 id 读全文：
+	// Spec 只允许「过期仍可查」，从未允许「未生效可查」。
+	// 早期实现的 Readable 只判 status 与受众，漏了这个方向，属 fail-open。
+	a := published(&Announcement{Title: "t"})
+	a.EffectiveFrom = ts("2026-12-01T00:00:00Z") // now 是 2026-11-12
+
+	if ReadableAt(a, Viewer{}, now) {
+		t.Fatal("未生效的公告不应可读：提前泄露尚未发布的安排")
+	}
+	// 到了生效时刻就该可读。
+	if !ReadableAt(a, Viewer{}, *ts("2026-12-01T00:00:00Z")) {
+		t.Fatal("到达 effectiveFrom 后应可读")
+	}
+}
+
+func TestCursor_SubMillisecondPrecisionPreserved(t *testing.T) {
+	// 游标必须保留亚毫秒精度。
+	//
+	// PostgreSQL 的 timestamptz 是微秒精度；若游标只编到毫秒，同毫秒内的
+	// 多条公告会被截断到同一个整毫秒，翻页时「严格小于该时刻」会把同毫秒
+	// 的行整批滤掉 —— 直接漏条。这条用例锁住纳秒编码。
+	micro := time.Unix(1700000000, 123456000).UTC() // .123456 秒
+	orig := PageCursor{PublishedAt: micro, ID: 7}
+
+	got, err := decodeCursor(encodeCursor(orig))
+	if err != nil {
+		t.Fatalf("解码失败：%v", err)
+	}
+	if !got.PublishedAt.Equal(micro) {
+		t.Fatalf("游标丢失亚毫秒精度：got=%v want=%v", got.PublishedAt, micro)
 	}
 }
 

@@ -17,21 +17,33 @@ func TestAdminOnly_FailClosed(t *testing.T) {
 	cases := []struct {
 		name    string
 		role    *int // nil 表示上下文里根本没有角色
+		userID  string
 		minRole platform.Role
 		want    int
 	}{
-		{"无角色一律拒绝", nil, platform.RoleAdmin, http.StatusForbidden},
-		{"无角色即使门槛为 0 也拒绝", nil, platform.RoleUser, http.StatusForbidden},
-		{"role=0 进不了 role>=1 的端点", intPtr(0), platform.RoleAdmin, http.StatusForbidden},
-		{"role=1 恰好达到门槛", intPtr(1), platform.RoleAdmin, http.StatusOK},
-		{"role=1 进不了 role>=2 的端点", intPtr(1), platform.RoleSuperUser, http.StatusForbidden},
-		{"role=2 达到 role>=2 门槛", intPtr(2), platform.RoleSuperUser, http.StatusOK},
+		{"无角色一律拒绝", nil, "7", platform.RoleAdmin, http.StatusForbidden},
+		{"无角色即使门槛为 0 也拒绝", nil, "7", platform.RoleUser, http.StatusForbidden},
+		{"role=0 进不了 role>=1 的端点", intPtr(0), "7", platform.RoleAdmin, http.StatusForbidden},
+		{"role=1 恰好达到门槛", intPtr(1), "7", platform.RoleAdmin, http.StatusOK},
+		{"role=1 进不了 role>=2 的端点", intPtr(1), "7", platform.RoleSuperUser, http.StatusForbidden},
+		{"role=2 达到 role>=2 门槛", intPtr(2), "7", platform.RoleSuperUser, http.StatusOK},
+
+		// 身份缺失必须拒：CtxUserID 空或 "0" 说明鉴权中间件没跑或跑错，
+		// 不能当成「某个普通用户」放过去（与 RequireRole 的 UserID==0 判据一致）。
+		{"缺用户 ID 即使角色够也拒", intPtr(2), "", platform.RoleAdmin, http.StatusForbidden},
+		{"用户 ID 为 0 即使角色够也拒", intPtr(2), "0", platform.RoleAdmin, http.StatusForbidden},
+
+		// 非法角色（越界）必须拒，不能因为「大于门槛」就放过。
+		{"非法角色拒绝", intPtr(99), "7", platform.RoleAdmin, http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			r := gin.New()
 			r.GET("/admin/x", func(c *gin.Context) {
+				if tc.userID != "" {
+					c.Set(server.CtxUserID, tc.userID)
+				}
 				if tc.role != nil {
 					c.Set(server.CtxRole, *tc.role)
 				}

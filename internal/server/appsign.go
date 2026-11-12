@@ -158,10 +158,23 @@ func canonicalAppSign(keyID, timestamp, nonce, method, path, rawQuery string, bo
 	}, "\n") + "\n"
 }
 
-// IsAppSignExempt 只放过探针。登录、发验证码、业务接口都要签名——
-// 那些才是仿造请求的目标。不要和 IsPublicPath 混用：公开≠免签名。
+// IsAppSignExempt 判断某条请求是否免于 NY1 请求签名。
+//
+// 三类豁免，理由各不相同：
+//   - 探针：`/healthz`、`/status` 由负载均衡/监控调用，没有客户端密钥；
+//   - 管理端：`/admin/*` 由**浏览器**调用，而 NY1 的密钥编译在 Android APK 里，
+//     浏览器拿不到。要求管理端签名等于把 APK 密钥分发到浏览器，
+//     直接击穿 ADR-0003 的威胁模型。管理端的安全边界由
+//     **admin 会话 + role 三档 + fail-closed + 审计**承担（map #43 子票 #46 Q4）；
+//   - 这里**不**豁免登录/发验证码：那些是仿造请求的主要目标，必须签。
+//
+// 刻意不用 IsPublicPath/AllowedWithoutAuth：免签名与免认证是两件独立的事，
+// 公开可读端点仍然要签名。
 func IsAppSignExempt(path string) bool {
-	return path == "/healthz" || path == "/status"
+	if path == "/healthz" || path == "/status" {
+		return true
+	}
+	return path == "/admin" || strings.HasPrefix(path, "/admin/")
 }
 
 // AppSignMiddleware 在用户鉴权之前拒绝未签名请求。

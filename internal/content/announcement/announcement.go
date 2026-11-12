@@ -195,18 +195,29 @@ func Listable(a *Announcement, v Viewer, now time.Time) bool {
 	return audienceMatch(a.Audience, v)
 }
 
-// Readable 判断这条公告是否可按 id 打开**详情**。
+// ReadableAt 判断这条公告在 now 时刻是否可按 id 打开**详情**。
 //
-// 与 Listable 的差别只有一条：**不过滤有效期**。已过期的公告移出列表，
+// 与 Listable 的差别只有一条：**不看过期时间**。已过期的公告移出列表，
 // 但详情仍可查——这样读者能核对「我之前看到的那条通知说的是什么」，
 // 而不会因为过期就变成 404（map #43 子题 #44 Q2 的语义）。
 //
+// 但**未生效（effectiveFrom 在 now 之后）的公告不可读**：一条「明天才生效」
+// 的通知若在今天就按 id 可读，等于提前泄露尚未发布的安排。Spec 只允许
+// 「过期仍可查」，从未允许「未生效可查」。早期实现漏了这个方向，属 fail-open。
+//
 // 已撤回的公告**不可读**：撤回的语义就是「当作没发过」。
-func Readable(a *Announcement, v Viewer) bool {
+//
+// 为什么带 now 参数而不是自己调 time.Now：服务层持有 platform.Clock，
+// 测试要能固定时刻。保持纯函数也让这一层可以无 IO 单测。
+func ReadableAt(a *Announcement, v Viewer, now time.Time) bool {
 	if a == nil || a.Deleted() {
 		return false
 	}
 	if a.Status != StatusPublished {
+		return false
+	}
+	// 未生效 → 不可读（fail-closed）。
+	if a.EffectiveFrom != nil && now.Before(*a.EffectiveFrom) {
 		return false
 	}
 	return audienceMatch(a.Audience, v)

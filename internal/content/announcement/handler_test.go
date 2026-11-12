@@ -1,4 +1,4 @@
-package announcement
+package announcement_test
 
 import (
 	"bytes"
@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"nongyu-backend-plus/internal/content/announcement"
+	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // 这一层是 HTTP 集成测：httptest 打真实路由，仓储用内存实现。
@@ -24,8 +27,8 @@ func init() {
 }
 
 // testViewer 从请求头读读者画像，让表驱动的 HTTP 用例不必构造会话。
-func testViewer(c *gin.Context) Viewer {
-	v := Viewer{}
+func testViewer(c *gin.Context) announcement.Viewer {
+	v := announcement.Viewer{}
 	if raw := c.GetHeader("X-Test-Role"); raw != "" {
 		if r, err := strconv.Atoi(raw); err == nil {
 			v.Authenticated = true
@@ -38,15 +41,24 @@ func testViewer(c *gin.Context) Viewer {
 }
 
 // newTestServer 构造「读者侧 + 管理端（无中间件）」的测试路由。
-func newTestServer(t *testing.T) (*gin.Engine, *Service) {
+func newTestServer(t *testing.T) (*gin.Engine, *announcement.Service) {
 	t.Helper()
-	repo := NewMemoryRepo(func() time.Time { return *ts("2026-11-12T00:00:00Z") })
-	svc := New(Options{Repo: repo, Clock: fixedClock{now: *ts("2026-11-12T00:00:00Z")}})
+	repo := pgstore.NewAnnouncementMemoryRepo(func() time.Time { return parseTime("2026-11-12T00:00:00Z") })
+	svc := announcement.New(announcement.Options{Repo: repo, Clock: fixedClock{now: parseTime("2026-11-12T00:00:00Z")}})
 
 	r := gin.New()
-	RegisterPublic(r, svc, testViewer)
-	RegisterAdmin(r, svc)
+	announcement.RegisterPublic(r, svc, testViewer)
+	announcement.RegisterAdmin(r, svc)
 	return r, svc
+}
+
+// parseTime 是本测试文件的时间字面量helper（外部测试包不共享内部包的 ts）。
+func parseTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }
 
 type fixedClock struct{ now time.Time }

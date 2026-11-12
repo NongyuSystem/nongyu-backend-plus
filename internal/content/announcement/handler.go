@@ -70,15 +70,15 @@ type publicView struct {
 
 // adminView 是管理端看到的公告形状，多出状态、修订号与受众。
 type adminView struct {
-	ID              int64      `json:"id"`
-	Title           string     `json:"title"`
-	Body            string     `json:"body"`
-	Status          string     `json:"status"`
-	PublishedAt     *time.Time `json:"publishedAt"`
-	EffectiveFrom   *time.Time `json:"effectiveFrom"`
-	ExpiresAt       *time.Time `json:"expiresAt"`
-	Pinned          bool       `json:"pinned"`
-	PublishRevision int        `json:"publishRevision"`
+	ID              int64        `json:"id"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	Status          string       `json:"status"`
+	PublishedAt     *time.Time   `json:"publishedAt"`
+	EffectiveFrom   *time.Time   `json:"effectiveFrom"`
+	ExpiresAt       *time.Time   `json:"expiresAt"`
+	Pinned          bool         `json:"pinned"`
+	PublishRevision int          `json:"publishRevision"`
 	Audience        audienceView `json:"audience"`
 }
 
@@ -380,8 +380,13 @@ func toAudience(v audienceView) (Audience, error) {
 //
 // 用 base64 而不是把三元组直接写进 query：游标是实现细节，客户端不该
 // 拼它、也不该从它推断排序规则。
+//
+// **时间用纳秒精度编码**（不是 UnixMilli）。早期实现用毫秒，而 PostgreSQL
+// 的 timestamptz 是微秒精度：同一毫秒内的多条公告会被截断到同一个整毫秒，
+// 翻页时「严格小于该时刻」会把同毫秒的整批行滤掉，直接漏条。
+// 纳秒编码能无损表达 PG 的微秒精度，代价只是游标串长几个字符。
 func encodeCursor(c PageCursor) string {
-	raw := "p" + boolDigit(c.Pinned) + "|" + strconv.FormatInt(c.PublishedAt.UnixMilli(), 10) + "|" + strconv.FormatInt(c.ID, 10)
+	raw := "p" + boolDigit(c.Pinned) + "|" + strconv.FormatInt(c.PublishedAt.UnixNano(), 10) + "|" + strconv.FormatInt(c.ID, 10)
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -404,7 +409,7 @@ func decodeCursor(raw string) (PageCursor, error) {
 	if len(parts) != 3 || len(parts[0]) != 2 {
 		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
 	}
-	ms, err := strconv.ParseInt(parts[1], 10, 64)
+	ns, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
 		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
 	}
@@ -413,8 +418,9 @@ func decodeCursor(raw string) (PageCursor, error) {
 		return PageCursor{}, content.Errorf(content.CodeInvalidCursor, "游标无法解析")
 	}
 	return PageCursor{
-		Pinned:      parts[0][1] == '1',
-		PublishedAt: time.UnixMilli(ms).UTC(),
+		Pinned: parts[0][1] == '1',
+		// 与 encodeCursor 的纳秒编码对称；用 UTC 保证同一时刻跨部署一致。
+		PublishedAt: time.Unix(0, ns).UTC(),
 		ID:          id,
 	}, nil
 }

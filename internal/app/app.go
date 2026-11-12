@@ -21,6 +21,7 @@ import (
 	identitysession "nongyu-backend-plus/internal/identity/session"
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
@@ -548,7 +549,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	//     这里再叠一层 admin scope 与角色门槛。两者缺一不可——
 	//     scope 回答「这套令牌是不是给管理台签的」，role 回答「这个人够不够格」。
 	announcementSvc := announcement.New(announcement.Options{
-		Repo:  announcement.NewMemoryRepo(clock.Now),
+		Repo:  pgstore.NewAnnouncementMemoryRepo(clock.Now),
 		Clock: clock,
 	})
 	announcement.RegisterPublic(engine, announcementSvc, announcementViewerOf)

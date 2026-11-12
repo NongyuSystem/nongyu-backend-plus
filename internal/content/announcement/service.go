@@ -81,7 +81,7 @@ func (s *Service) List(ctx context.Context, v Viewer, after PageCursor, limit in
 	// 只有「扫满一页」才可能存在更多；扫不满说明到底了。
 	if len(rows) == limit && len(rows) > 0 {
 		last := rows[len(rows)-1]
-		next = &PageCursor{Pinned: last.Pinned, PublishedAt: publishedOrZero(last), ID: last.ID}
+		next = &PageCursor{Pinned: last.Pinned, PublishedAt: PublishedOrZero(last), ID: last.ID}
 	}
 	return ListResult{Items: out, Next: next}, nil
 }
@@ -119,13 +119,16 @@ func (s *Service) Latest(ctx context.Context, v Viewer) (*Announcement, error) {
 			return nil, nil
 		}
 		last := rows[len(rows)-1]
-		cursor = PageCursor{Pinned: last.Pinned, PublishedAt: publishedOrZero(last), ID: last.ID}
+		cursor = PageCursor{Pinned: last.Pinned, PublishedAt: PublishedOrZero(last), ID: last.ID}
 	}
 	return nil, nil
 }
 
 // Get 按 id 打开公告详情。不可读时返回 content.CodeNotFound
 // （与「不存在」不区分，避免用状态码差异探测资源存在性）。
+//
+// 用服务层持有的 clock 调 ReadableAt，而不是让 Readable 自己取 time.Now：
+// 否则「未生效不可读」这条在测试里就无法固定时刻验证。
 func (s *Service) Get(ctx context.Context, v Viewer, id int64) (*Announcement, error) {
 	if id <= 0 {
 		return nil, content.Errorf(content.CodeValidationFailed, "公告 id 非法")
@@ -134,7 +137,7 @@ func (s *Service) Get(ctx context.Context, v Viewer, id int64) (*Announcement, e
 	if err != nil {
 		return nil, err
 	}
-	if !Readable(a, v) {
+	if !ReadableAt(a, v, s.clock.Now()) {
 		return nil, content.Errorf(content.CodeNotFound, "公告不存在")
 	}
 	return a, nil
@@ -180,14 +183,14 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Announcement, er
 
 // UpdateInput 是编辑公告的入参。指针字段为 nil 表示「不改这一项」。
 type UpdateInput struct {
-	Title         *string
-	Body          *string
-	EffectiveFrom *time.Time
+	Title              *string
+	Body               *string
+	EffectiveFrom      *time.Time
 	ClearEffectiveFrom bool
-	ExpiresAt     *time.Time
-	ClearExpiresAt bool
-	Pinned        *bool
-	Audience      *Audience
+	ExpiresAt          *time.Time
+	ClearExpiresAt     bool
+	Pinned             *bool
+	Audience           *Audience
 }
 
 // Update 编辑一条公告。已软删的视为不存在。
@@ -315,7 +318,7 @@ func (s *Service) AdminList(ctx context.Context, after PageCursor, limit int) (A
 	var next *PageCursor
 	if len(rows) == limit && len(rows) > 0 {
 		last := rows[len(rows)-1]
-		next = &PageCursor{Pinned: last.Pinned, PublishedAt: publishedOrZero(last), ID: last.ID}
+		next = &PageCursor{Pinned: last.Pinned, PublishedAt: PublishedOrZero(last), ID: last.ID}
 	}
 	return AdminListResult{Items: rows, Next: next}, nil
 }

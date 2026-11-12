@@ -4,7 +4,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/identity"
 	"nongyu-backend-plus/internal/server"
 )
 
@@ -38,12 +37,4 @@ func announcementViewerOf(c *gin.Context) announcement.Viewer {
 		Authenticated: true,
 		Role:          role,
 	}
-}
-
-// 编译期确认身份域的角色类型与 server 上下文里的 int 角色是同一套取值。
-// 两者若将来分叉（例如身份域改成枚举），这里会先编译失败，
-// 而不是让角色比较在运行期静默错位。
-var _ = func() bool {
-	_ = identity.Role(0)
-	return true
 }
