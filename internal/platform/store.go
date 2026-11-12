@@ -20,15 +20,6 @@ import (
 
 // ---- from store.go ----
 // ---- from store.go ----
-// Store 是业务域可见的最小存储契约。
-//
-// 骨架期故意只定义一个方法：它表达的是「按 key 取一份配置/资源描述」这一抽象能力，
-// 而不是任何具体数据库的形状。新增能力时在此扩展方法，不要另起一套平行接口。
-type Store interface {
-	// Get 按 key 读取一份值；key 不存在时返回 ErrNotFound。
-	Get(ctx context.Context, key string) ([]byte, error)
-}
-
 // ErrNotFound 表示 key 不存在。
 // 用哨兵错误而非返回 nil，让调用方能区分「没值」与「读失败」。
 var ErrNotFound = &notFoundError{}

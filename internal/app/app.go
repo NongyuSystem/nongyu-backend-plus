@@ -38,12 +38,13 @@ import (
 // Capabilities 是装配层注入给业务域的全部外部能力快照。
 // 业务域只依赖 platform 里的接口类型，不依赖具体实现；这里集中暴露便于测试与后续编排。
 //
-// 关于 Store（issue #23）：早先这里有一个 platform.Store 字段，装的是
-// NewMockStore() 的进程内存实现。核查确认它**没有任何消费者**——业务域从不读
-// Capabilities.Store，真正承载票据的是 Tickets、承载用户/会话/审计的是下面按
-// DATABASE_URL 装配的 Postgres 仓储。把它留在快照里只会让「store=mock」看起来
-// 像是真实装配状态（票里点名的误导）。因此移除该字段；MockStore/Mock 实现仍保留
-// 在 platform 包里供骨架期其它用途，不再由装配层注入。
+// 关于 Store（issue #23）的收尾：早先这里有 platform.Store 字段 + NewMockStore()
+// 的进程内存实现。核查确认**零消费者**——业务域从不读它，真正承载票据的是 Tickets、
+// 承载用户/会话/审计的是按 DATABASE_URL 装配的 Postgres 仓储。
+// 该字段在 #23 时已移除；本文件这次连带把「留作骨架期备用」的
+// platform.Store 接口与 MockStore 实现一起删除——按仓库依赖策略
+// 「停用即删，不留着以后可能用」，长期零引用的代码留着只会误导读代码的人
+// （让人以为还有一条基于 key-value 的存储路径）。
 type Capabilities struct {
 	Tickets platform.TicketStore
 	Cipher  platform.Cipher
