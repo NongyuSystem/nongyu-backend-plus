@@ -271,6 +271,7 @@ func TestNewStatusProbe_ReflectsPingFailure(t *testing.T) {
 		"postgres",
 		nil, // 本测试不关心埋点计数
 		nil, // 也不关心附件清理计数
+		"",  // 也不关心对象存储实现
 	)
 
 	if !probe.Postgres() || !probe.Redis() {

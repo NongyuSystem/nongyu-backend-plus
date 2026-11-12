@@ -83,6 +83,13 @@ type Config struct {
 	// 为空时不启用持久层，审计只写 slog。
 	DatabaseURL string
 
+	// MinIO 对象存储配置（附件上传）。全部为空时回落到内存实现（仅本地开发）。
+	MinIOEndpoint  string
+	MinIOAccessKey string
+	MinIOSecretKey string
+	MinIOBucket    string
+	MinIOUseSSL    bool
+
 	// SMTP 发信配置（全部来自环境变量；未配置 SMTP_HOST 时回落到日志实现）。
 	SMTPHost     string
 	SMTPPort     int
@@ -129,12 +136,18 @@ func Load() (Config, error) {
 		CacheBreakerThreshold:   envIntOr("CACHE_BREAKER_THRESHOLD", 5),
 		CacheBreakerCooldownSec: envIntOr("CACHE_BREAKER_COOLDOWN_SEC", 5),
 		DatabaseURL:             envOr("DATABASE_URL", ""),
-		SMTPHost:                envOr("SMTP_HOST", ""),
-		SMTPPort:                envIntOr("SMTP_PORT", 587),
-		SMTPUsername:            envOr("SMTP_USERNAME", ""),
-		SMTPPassword:            envOr("SMTP_PASSWORD", ""),
-		SMTPFrom:                envOr("SMTP_FROM", ""),
-		SMTPInsecure:            envBoolOr("SMTP_INSECURE", false),
+		MinIOEndpoint:           envOr("MINIO_ENDPOINT", ""),
+		MinIOAccessKey:          envOr("MINIO_ACCESS_KEY", ""),
+		MinIOSecretKey:          envOr("MINIO_SECRET_KEY", ""),
+		MinIOBucket:             envOr("MINIO_BUCKET", "nongyu"),
+		MinIOUseSSL:             envBoolOr("MINIO_USE_SSL", false),
+
+		SMTPHost:     envOr("SMTP_HOST", ""),
+		SMTPPort:     envIntOr("SMTP_PORT", 587),
+		SMTPUsername: envOr("SMTP_USERNAME", ""),
+		SMTPPassword: envOr("SMTP_PASSWORD", ""),
+		SMTPFrom:     envOr("SMTP_FROM", ""),
+		SMTPInsecure: envBoolOr("SMTP_INSECURE", false),
 	}
 
 	if cfg.ShutdownTimeoutSec <= 0 {

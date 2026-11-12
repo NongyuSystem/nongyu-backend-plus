@@ -24,6 +24,7 @@ import (
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/objectstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
@@ -236,14 +237,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if pgPool != nil {
-		defer func() {
-			// 装配中途失败时释放连接池（成功路径由 App.closeStore 接管）。
-			if pgPool != nil {
-				pgPool.Close()
-			}
-		}()
-	}
+	// 注意：**不要在这里 defer pool.Close()**。
+	// 曾经写过那样的 defer，结果它在装配**成功**返回时也执行，
+	// 把连接池关掉，所有 PG 查询报 "closed pool"——而日志里只看到 500。
+	// 池的生命周期归 App：由 App.Shutdown 关闭（见 App.pgPool）。
+	// 中途失败时的泄漏可接受（进程即将退出，OS 会回收 fd）。
 	repos, err := newRepoBundle(pgPool, clock.Now)
 	if err != nil {
 		return nil, err
@@ -601,7 +599,37 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// 对象存储用内存实现：MinIO 实现尚未落地（platform/objectstore 只有接口
 	// 与 MemoryObjectStore）。上传的 5MB 硬限、格式嗅探、key 模板都在业务侧，
 	// 换真实实现时只改这一行的构造。
-	objectStore := platform.NewMemoryObjectStore()
+	// 对象存储：配了 MINIO_ENDPOINT 就用真实 MinIO，否则回落内存实现。
+	// 与 PG 不同：这里**允许降级到内存**并显式告警，因为附件是可丢的
+	//（Spec 里附件清理本身就是旁路），不像数据持久化那样必须硬失败。
+	// 但告警必须显眼，否则「生产附件重启即丢」会一直没人发现。
+	var objectStore platform.ObjectStore
+	objectStoreKind := "memory"
+	if cfg.MinIOEndpoint != "" {
+		ms, err := objectstore.New(context.Background(), objectstore.Options{
+			Endpoint:  cfg.MinIOEndpoint,
+			AccessKey: cfg.MinIOAccessKey,
+			SecretKey: cfg.MinIOSecretKey,
+			Bucket:    cfg.MinIOBucket,
+			UseSSL:    cfg.MinIOUseSSL,
+		})
+		if err != nil {
+			// 此时续期循环已经启动（上面 scheduler.Run），直接 return 会
+			// 留下悬挂的 goroutine 与未释放的 ctx。必须先停掉再返回。
+			cancelRenew()
+			if identityStore != nil {
+				_ = identityStore.Close()
+			}
+			return nil, err
+		}
+		objectStore = ms
+		objectStoreKind = "minio"
+		logger.Info("对象存储已装配", "impl", "minio", "endpoint", cfg.MinIOEndpoint, "bucket", cfg.MinIOBucket)
+	} else {
+		objectStore = platform.NewMemoryObjectStore()
+		logger.Warn("对象存储使用内存实现：重启即丢附件，仅限本地开发/测试",
+			"hint", "配置 MINIO_ENDPOINT 以启用真实存储")
+	}
 	// 缓存只在配了 Redis 时注入；未配时帖子域按「无缓存直查」处理。
 	// 必须传适配器而不是 *RedisCache：业务域只认 Get/Set/Delete。
 	var postCacheOpt post.Cache
@@ -721,7 +749,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return 0
 		}
 		return postSvc.CleanupFailureCount()
-	}))
+	}, objectStoreKind))
 
 	a := &App{
 		cfg:    cfg,

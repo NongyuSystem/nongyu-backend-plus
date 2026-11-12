@@ -1,6 +1,7 @@
 package apperr
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,16 @@ type ErrorResponse struct {
 func WriteGin(c *gin.Context, err error) {
 	code, ok := CodeOf(err)
 	if !ok {
+		// **真实原因必须进日志**：响应体给客户端通用的「服务内部错误」
+		// （不泄露实现细节），但服务端自己一定要能定位。
+		// 早先这里直接丢弃 err，导致 5xx 在日志里查不到任何线索——
+		// 线上排查时只能靠猜。
+		slog.Error("未归类的内部错误",
+			"err", err,
+			"method", c.Request.Method,
+			"path", c.FullPath(),
+			"requestId", c.GetHeader("X-Request-Id"),
+		)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Code:    "internal",
 			Message: "服务内部错误",

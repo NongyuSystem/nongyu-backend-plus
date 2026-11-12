@@ -21,6 +21,8 @@ type StatusProbe struct {
 	Redis    func() bool
 	Breaker  func() string
 	Storage  func() string
+	// ObjectStore 返回对象存储的实际实现名（memory / minio）。
+	ObjectStore func() string
 	// AttachmentCleanup 返回异步附件清理的累计失败数。
 	//
 	// 与 Track 同理：附件清理是「失败只记日志」的旁路，没有计数
@@ -47,6 +49,11 @@ type StatusReport struct {
 	// AttachmentCleanupFailures 是异步附件清理的累计失败数
 	//（未装配帖子域时为 null）。
 	AttachmentCleanupFailures *int64 `json:"attachmentCleanupFailures,omitempty"`
+	// ObjectStore 是对象存储的实际实现（memory / minio）。
+	//
+	// 与 storage 同理：附件是不是真落盘，运维要看这个字段，
+	// 而不是看有没有配 MINIO_ENDPOINT。
+	ObjectStore string `json:"objectStore,omitempty"`
 }
 
 // RegisterStatus 把 /status 挂到 gin.IRouter。
@@ -67,6 +74,9 @@ func RegisterStatus(r gin.IRouter, p StatusProbe) {
 		if p.AttachmentCleanup != nil {
 			n := p.AttachmentCleanup()
 			report.AttachmentCleanupFailures = &n
+		}
+		if p.ObjectStore != nil {
+			report.ObjectStore = p.ObjectStore()
 		}
 		// 依赖全挂时不返回 200 会让编排误杀进程（与 /healthz 同理），
 		// 因此状态码恒 200，真实情况放在 body 里由监控侧判断。
@@ -99,6 +109,7 @@ func newStatusProbe(
 	storage string,
 	track func() (int64, int64),
 	attachmentCleanup func() int64,
+	objectStore string,
 ) StatusProbe {
 	probe := func(ping func(context.Context) error) func() bool {
 		return func() bool {
@@ -117,6 +128,7 @@ func newStatusProbe(
 		Storage:           func() string { return storage },
 		Track:             track,
 		AttachmentCleanup: attachmentCleanup,
+		ObjectStore:       func() string { return objectStore },
 	}
 }
 
