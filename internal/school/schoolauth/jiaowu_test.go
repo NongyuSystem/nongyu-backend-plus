@@ -952,7 +952,7 @@ func TestTGTManager_SaveSetsTTL(t *testing.T) {
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	m := newTestManager(t, store, platform.NewMockClock(now))
 	ctx := context.Background()
-	if err := m.Save(ctx, "u1", testBundle("t")); err != nil {
+	if err := m.Save(ctx, "u1", testBundle("201690:TGT:ttl")); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	_, exp, err := m.Load(ctx, "u1")
@@ -970,7 +970,7 @@ func TestTGTManager_Clear(t *testing.T) {
 	store := newMemTGTStore()
 	m := newTestManager(t, store, platform.NewMockClock(time.Now()))
 	ctx := context.Background()
-	_ = m.Save(ctx, "u1", testBundle("t"))
+	_ = m.Save(ctx, "u1", testBundle("201690:TGT:clear"))
 	if err := m.Clear(ctx, "u1"); err != nil {
 		t.Fatalf("Clear: %v", err)
 	}

@@ -122,6 +122,15 @@ func (m *TGTManager) Save(ctx context.Context, userID string, b TGTBundle) error
 	if userID == "" || strings.TrimSpace(b.TGT) == "" {
 		return fmt.Errorf("schoolauth: Save 需要 userID 与 tgt")
 	}
+	// tgt 形态校验（2026-11-13 实测教训）：客户端若把一次 HTTP 响应的
+	// body 当 tgt 交上来（典型是 302 重定向的 HTML：`<a href="...">Found</a>.`），
+	// 存进去之后每次换票都返回 500 未登录，而画像空掉的现象极难反查。
+	// 合法 tgt 形如 `201690:TGT:<base64url>`，只含可见 ASCII、不含尖括号与换行。
+	if !looksLikeTGT(b.TGT) {
+		return fmt.Errorf("schoolauth: 拒绝保存不像 tgt 的值（长度=%d，前缀=%q）；"+
+			"合法形态应形如 201690:TGT:...，若客户端拿到的是重定向 HTML 说明登录态没取到",
+			len(b.TGT), tgtPreview(b.TGT))
+	}
 	plain, err := json.Marshal(b)
 	if err != nil {
 		return err
@@ -131,6 +140,41 @@ func (m *TGTManager) Save(ctx context.Context, userID string, b TGTBundle) error
 		return err
 	}
 	return m.store.Put(ctx, userID, sealed, m.clock.Now().Add(m.ttl))
+}
+
+// looksLikeTGT 判断一个值是否可能是 CAS 的 go-admin-tgt。
+//
+// 判据（宽松但不误放行明显的 HTML/JSON 错误响应）：
+//   - 长度在 8..512 之间
+//   - 全部是可见 ASCII（0x21..0x7e）
+//   - 不含 `<`、`>`、`"`、`'`、空格、反斜杠（这些只会出现在 HTML/JSON 片段里）
+//   - 含至少一个 `:`（真实 tgt 恒为 `<uid>:TGT:<token>` 形态）
+func looksLikeTGT(s string) bool {
+	if len(s) < 8 || len(s) > 512 {
+		return false
+	}
+	if !strings.Contains(s, ":") {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+		switch r {
+		case '<', '>', '"', '\'', '\\', ' ':
+			return false
+		}
+	}
+	return true
+}
+
+// tgtPreview 给错误信息用的短前缀（不含敏感全文）。
+func tgtPreview(s string) string {
+	const max = 24
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 // Load 取出并解密整套登录态；不存在返回 platform.ErrNotFound。

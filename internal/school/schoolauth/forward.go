@@ -124,6 +124,9 @@ type XSGZOptions struct {
 	// OnDetail 是取到完整档案后的回调，由装配层接上「落库」。
 	// 回调失败不阻断登录（身份已由换票确认），但会记录日志。
 	OnDetail func(ctx context.Context, detail XSGZStudentDetail) error
+	// OnError 是取数链路各步失败时的告警回调（可选）。
+	// 取档案失败不阻断登录，但绝不能静默——否则「画像全空」毫无线索。
+	OnError func(err error)
 }
 
 // XSGZSource 实现 AuthSource：换票确认身份 + 取学工完整档案。
@@ -146,6 +149,7 @@ func NewXSGZSource(o XSGZOptions) (*XSGZSource, error) {
 			}
 			return o.OnDetail(ctx, d)
 		},
+		OnError: o.OnError,
 	}, DecryptYWTB)
 	if err != nil {
 		return nil, fmt.Errorf("schoolauth: %w", err)

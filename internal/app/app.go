@@ -356,6 +356,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Age:           pd.Age,
 			})
 		},
+		// 取数链路各步失败都打 WARN：取档案失败不阻断登录，但绝不能静默。
+		// 2026-11-13 实测踩到：Redis 里存的「tgt」其实是 302 重定向的 HTML
+		// （`<a href="https://webvpn.sicau.edu.cn/login">Found</a>.`），
+		// 换票必然 500 未登录，而旧代码把错误丢掉，画像空了也无从排查。
+		OnError: func(err error) {
+			logger.Warn("学工取数链路失败", "err", err)
+		},
 	}); err == nil {
 		// Academic 传 nil：jiaowu 的 GBK 页面取数已 disable（#28 后续）。
 		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {

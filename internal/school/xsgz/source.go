@@ -41,6 +41,10 @@ type Options struct {
 	// OnDetail 是取到完整档案后的回调，由装配层接上「落库」。
 	// 设计成回调而不是在这里直接依赖存储：本包不该知道「数据存哪」。
 	OnDetail func(ctx context.Context, detail StudentDetail) error
+	// OnError 是取数链路各步失败时的告警回调（可选）。
+	// 取档案失败不阻断登录，但**不能静默**：没有它，「画像全空」这类问题
+	// 在日志里毫无线索（2026-11-13 实测：tgt 被存成重定向 HTML，静默失败多轮未察觉）。
+	OnError func(err error)
 }
 
 // Source 是学工系统的取身份源。
@@ -54,6 +58,7 @@ type Source struct {
 	exchanger Exchanger
 	token     string
 	onDetail  func(ctx context.Context, detail StudentDetail) error
+	onError   func(err error)
 	// decrypt 是换票明文的解密函数（由调用方注入 DecryptYWTB）。
 	decrypt func(requestID, data string) ([]byte, error)
 }
@@ -74,6 +79,7 @@ func NewSource(o Options, decrypt func(requestID, data string) ([]byte, error)) 
 		exchanger: o.Exchanger,
 		token:     strings.TrimSpace(o.Token),
 		onDetail:  o.OnDetail,
+		onError:   o.OnError,
 		decrypt:   decrypt,
 	}, nil
 }
@@ -104,7 +110,15 @@ func (s *Source) FetchIdentity(ctx context.Context, tgt, xsgzToken string) (Iden
 	// ② 取完整档案（唯一数据源）
 	token := strings.TrimSpace(xsgzToken)
 	if token == "" {
-		if t, terr := FetchToken(ctx, s.doer, "", tgt, s.decrypt); terr == nil {
+		// 换 token 失败不要静默：把真实原因记下来，供上层告警。
+		// 之前这里用 `if t, err := ...; err == nil` 直接丢弃 err，导致
+		// 「图片/画像全空」时日志里一条线索都没有（2026-11-13 实测踩到）。
+		t, terr := FetchToken(ctx, s.doer, "", tgt, s.decrypt)
+		if terr != nil {
+			if s.onError != nil {
+				s.onError(fmt.Errorf("xsgz: 用 tgt 换 token 失败：%w", terr))
+			}
+		} else {
 			token = t
 		}
 	}
@@ -115,13 +129,19 @@ func (s *Source) FetchIdentity(ctx context.Context, tgt, xsgzToken string) (Iden
 	detail, err := FetchDetail(ctx, s.doer, "", token, studentNo)
 	if err != nil {
 		// 档案取不到时不阻断登录：身份已由换票确认。
+		// 但失败原因必须透传（onError），否则「画像为空」无从排查。
+		if s.onError != nil {
+			s.onError(fmt.Errorf("xsgz: 取学生档案失败（学号=%s）：%w", studentNo, err))
+		}
 		return Identity{StudentNo: studentNo, Name: name}, nil
 	}
 
 	// 落库：交给装配层注入的回调（失败不阻断登录）。
 	if s.onDetail != nil {
 		if derr := s.onDetail(ctx, detail); derr != nil {
-			_ = derr
+			if s.onError != nil {
+				s.onError(fmt.Errorf("xsgz: 学生档案落库失败（学号=%s）：%w", studentNo, derr))
+			}
 		}
 	}
 
