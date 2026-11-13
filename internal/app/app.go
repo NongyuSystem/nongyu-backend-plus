@@ -861,14 +861,22 @@ func runCacheFlusher(ctx context.Context, cache *platform.RedisCache, logger *sl
 	return done
 }
 
-// outboundAllowlist 合并「内建的三个真实目标 host」与配置里的额外白名单。
+// outboundAllowlist 合并「内建的真实目标 host」与配置里的额外白名单。
 // 内建项保证经 school.Resolve + Encode 产出的 webvpn 域地址一定可出站；
 // 配置项供部署时追加（如测试环境域名），改配置即时生效。
+//
+// 注意：内建清单必须覆盖**所有后端真正会请求的学校域**。漏一个的症状是
+// `platform: outbound target denied`——请求在白名单校验处就被拦下、零出站，
+// 看起来像「学校站不可达」或「tgt 失效」，实际只是 host 没登记。
+// xsgz.sicau.edu.cn（学工系统）曾是漏项：它是当前唯一数据源，
+// 换 token 与取档案都打它，漏了会导致登录成功但画像全空（2026-11-13 实测踩到）。
 func outboundAllowlist(extra string) []string {
 	base := []string{
 		"jiaowu.sicau.edu.cn",
 		"auth.sicau.edu.cn",
 		"webvpn.sicau.edu.cn",
+		// 学工系统：唯一数据源。tgt 换 access token、enterHall、student/detail 全打它。
+		"xsgz.sicau.edu.cn",
 	}
 	return append(base, parseAllowlist(extra)...)
 }
