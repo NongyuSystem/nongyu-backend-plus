@@ -25,6 +25,7 @@ func TestTGTManager_SaveRejectsNonTGT(t *testing.T) {
 		tgt  string
 		ok   bool
 	}{
+		// 合法形态的**伪造样例**（不是任何真实 tgt；真实凭据一律不进仓库）
 		{"合法 tgt", "201690:TGT:FAKE-not-a-real-ticket-0000000000000000=", true},
 		{"合法 tgt（短些）", "201690:TGT:abc123", true},
 		// 真实踩到的值：302 重定向的 HTML
@@ -69,7 +70,8 @@ func TestTGTManager_SaveErrorHintsHTML(t *testing.T) {
 // 合法 tgt 必须能正常保存并读回（校验不能把正常路径也挡掉）。
 func TestTGTManager_SaveAcceptsAndRoundTrips(t *testing.T) {
 	m := newTestManager(t, newMemTGTStore(), platform.NewMockClock(time.Now()))
-	tgt := "201690:TGT:FAKE-not-a-real-ticket-0000000000000000="
+	// 用伪造样例，不用任何真实凭据
+	tgt := "201690:TGT:FAKE-roundtrip-sample-1111111111111111="
 	if err := m.Save(context.Background(), "u1", schoolauth.TGTBundle{TGT: tgt}); err != nil {
 		t.Fatalf("合法 tgt 应被接受: %v", err)
 	}
