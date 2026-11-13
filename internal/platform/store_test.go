@@ -625,14 +625,20 @@ func TestMain(m *testing.M) {
 
 // migrationTables 是 migrations/*.sql 里声明的全部表名（独立事实源：SQL 字面量）。
 var migrationTables = []string{
+	// 按 information_schema 的表名字母序排列（测试用 strings.Join 直接比对）
+	"announcements",
 	"audit_log",
 	"login_methods",
+	"messages",
+	"post_reactions",
+	"post_replies",
+	"posts",
 	"sessions",
-	// 0004：学工系统（xsgz）完整档案，唯一数据源对应的四张表
 	"student_family_members",
 	"student_profile_groups",
 	"student_profiles",
 	"student_resumes",
+	"track_event",
 	"user_profiles",
 	"users",
 }

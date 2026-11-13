@@ -91,6 +91,14 @@ func loginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
 			return
 		}
+		// 字段合法性校验（必填按 method 分支、格式、长度）。放在绑定之后、
+		// 编排之前，避免把空串/非法值一路带到换票与查库。
+		// 响应体只带 code，不带 message：identity 域错误响应契约不含 message，
+		// 校验细节不外泄给客户端。
+		if err := ValidateLoginReq(req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
+			return
+		}
 		signed, err := svc.Login(c.Request.Context(), Params{
 			Method:   req.Method,
 			DeviceID: req.DeviceID,
@@ -121,6 +129,10 @@ func adminLoginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req loginReq
 		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
+			return
+		}
+		if err := ValidateAdminLoginReq(req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
 			return
 		}
@@ -173,6 +185,10 @@ func sendMailCodeHandler(svc *Service) gin.HandlerFunc {
 			Email string `json:"email"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
+			return
+		}
+		if err := ValidateMailCodeReq(req.Email); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
 			return
 		}

@@ -204,6 +204,8 @@ func TestE2E_TokenCarriesNoSensitiveData(t *testing.T) {
 	loginBody, _ := json.Marshal(map[string]string{
 		"method": "school", "schoolMethod": "password",
 		"deviceId": "e2e-device", "studentNo": studentNo, "password": "SuperSecret123",
+		// 字段校验要求 school 方式带可换票凭据；这里用假值，fake 源不会真去换票。
+		"goAdminTgt": "201690:TGT:fake-for-e2e",
 	})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/identity/login", bytes.NewReader(loginBody))

@@ -1101,6 +1101,110 @@ func identityDDLStatements() []string {
 			payload     jsonb       NOT NULL,
 			PRIMARY KEY (student_no, ordinal)
 		)`,
+		// 0005/0006：内容域与消息/埋点表。逐列照 migrations/0005_content.sql
+		// 与 0006_message_track.sql 的定义与顺序，供 DDL 一致性守卫比对。
+		`CREATE TABLE IF NOT EXISTS announcements (
+			id                 bigserial   PRIMARY KEY,
+			title              text        NOT NULL,
+			body               text        NOT NULL,
+			status             text        NOT NULL DEFAULT 'draft'
+			                   CHECK (status IN ('draft', 'published', 'revoked')),
+			published_at       timestamptz,
+			effective_from     timestamptz,
+			expires_at         timestamptz,
+			pinned             boolean     NOT NULL DEFAULT false,
+			publish_revision   integer     NOT NULL DEFAULT 0,
+			audience_scope     text        NOT NULL DEFAULT 'all'
+			                   CHECK (audience_scope IN ('all', 'role', 'college_grade')),
+			audience_roles     integer[]   NOT NULL DEFAULT '{}',
+			audience_college   text        NOT NULL DEFAULT '',
+			audience_grade     text        NOT NULL DEFAULT '',
+			created_at         timestamptz NOT NULL DEFAULT now(),
+			updated_at         timestamptz NOT NULL DEFAULT now(),
+			deleted_at         timestamptz,
+			CONSTRAINT announcements_audience_role_needs_roles
+			    CHECK (audience_scope <> 'role' OR cardinality(audience_roles) > 0),
+			CONSTRAINT announcements_audience_college_grade_needs_a_dimension
+			    CHECK (audience_scope <> 'college_grade'
+			           OR audience_college <> '' OR audience_grade <> ''),
+			CONSTRAINT announcements_audience_all_has_no_conditions
+			    CHECK (audience_scope <> 'all'
+			           OR (cardinality(audience_roles) = 0
+			               AND audience_college = '' AND audience_grade = '')),
+			CONSTRAINT announcements_expiry_after_effective
+			    CHECK (effective_from IS NULL OR expires_at IS NULL
+			           OR expires_at > effective_from),
+			CONSTRAINT announcements_published_needs_published_at
+			    CHECK (status <> 'published' OR published_at IS NOT NULL)
+		)`,
+		`CREATE TABLE IF NOT EXISTS posts (
+			id           bigserial   PRIMARY KEY,
+			board        text        NOT NULL CHECK (board IN ('feedback', 'courtyard')),
+			title        text        NOT NULL,
+			body         text        NOT NULL,
+			attachments  text[]      NOT NULL DEFAULT '{}',
+			author_id    bigint      NOT NULL,
+			published_at timestamptz NOT NULL DEFAULT now(),
+			edited_at    timestamptz,
+			created_at   timestamptz NOT NULL DEFAULT now(),
+			updated_at   timestamptz NOT NULL DEFAULT now(),
+			deleted_at   timestamptz
+		)`,
+		`CREATE TABLE IF NOT EXISTS post_replies (
+			id           bigserial   PRIMARY KEY,
+			post_id      bigint      NOT NULL REFERENCES posts (id),
+			body         text        NOT NULL,
+			author_id    bigint      NOT NULL,
+			published_at timestamptz NOT NULL DEFAULT now(),
+			created_at   timestamptz NOT NULL DEFAULT now(),
+			deleted_at   timestamptz
+		)`,
+		`CREATE TABLE IF NOT EXISTS post_reactions (
+			id          bigserial   PRIMARY KEY,
+			target_type text   NOT NULL CHECK (target_type IN ('post', 'comment')),
+			target_id   bigint NOT NULL,
+			reaction    text   NOT NULL CHECK (reaction IN ('like', 'favorite')),
+			user_id     bigint NOT NULL,
+			created_at  timestamptz NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS messages (
+			id               bigserial   PRIMARY KEY,
+			recipient_id     bigint      NOT NULL,
+			kind             text        NOT NULL
+			                 CHECK (kind IN ('notification', 'internal_mail')),
+			source_domain    text        NOT NULL DEFAULT '',
+			source_object_id text        NOT NULL DEFAULT '',
+			title            text        NOT NULL DEFAULT '',
+			body             text        NOT NULL DEFAULT '',
+			hits             integer     NOT NULL DEFAULT 1,
+			sender_id        bigint,
+			read_at          timestamptz,
+			deleted_at       timestamptz,
+			created_at       timestamptz NOT NULL DEFAULT now(),
+			CONSTRAINT messages_notification_needs_source CHECK (
+			    kind <> 'notification'
+			    OR (source_domain <> '' AND source_object_id <> '')
+			)
+		)`,
+		`CREATE TABLE IF NOT EXISTS track_event (
+			id           bigserial   PRIMARY KEY,
+			event_id     text        NOT NULL,
+			event_type   text        NOT NULL
+			             CHECK (event_type IN (
+			                 'screen_view', 'button_click', 'perf',
+			                 'app_open', 'heartbeat', 'crash', 'llm_proxy_fail'
+			             )),
+			event_name   text        NOT NULL DEFAULT '',
+			client_ts_ms bigint      NOT NULL DEFAULT 0,
+			session_id   text        NOT NULL DEFAULT '',
+			app_version  text        NOT NULL DEFAULT '',
+			platform     text        NOT NULL
+			             CHECK (platform IN ('ios', 'android', 'web')),
+			props        jsonb,
+			request_id   text        NOT NULL DEFAULT '',
+			user_id      bigint      NOT NULL,
+			received_at  timestamptz NOT NULL DEFAULT now()
+		)`,
 	}
 }
 

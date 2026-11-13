@@ -35,10 +35,11 @@ import (
 
 // migrationTables 是 migrations/*.sql 声明的全部表（独立事实源：SQL 字面量）。
 var migrationTables = []string{
-	"audit_log", "login_methods", "sessions",
-	// 0004：学工系统（xsgz）完整档案四张表
+	// 按表名字母序排列，与 information_schema 查询结果一致
+	"announcements", "audit_log", "login_methods", "messages",
+	"post_reactions", "post_replies", "posts", "sessions",
 	"student_family_members", "student_profile_groups",
-	"student_profiles", "student_resumes",
+	"student_profiles", "student_resumes", "track_event",
 	"user_profiles", "users",
 }
 

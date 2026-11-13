@@ -155,6 +155,11 @@ func loginHandler(svc *Service) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
 			return
 		}
+		// 字段合法性校验：code / uuid 必填且不超长，避免空串走到学校侧换票。
+		if err := ValidateLoginRequest(in); err != nil {
+			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
+			return
+		}
 		result, err := svc.Login(c.Request.Context(), userID, in.Code, in.UUID)
 		if err != nil {
 			writeError(c, err)

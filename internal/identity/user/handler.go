@@ -86,6 +86,12 @@ func patchProfileHandler(svc *Service, ctxUserID CtxUserIDOf) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
 			return
 		}
+		// 字段合法性校验：nil 表示不改；给了就查长度与形态，避免把超长值
+		// 或非 http(s) URL 写进画像。错误仍用 invalid_request，形状不变。
+		if err := ValidateExtras(req.QQ, req.AvatarURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_request"})
+			return
+		}
 		cur, err := svc.Profile(c.Request.Context(), userID)
 		if err != nil {
 			writeUserError(c, err)
