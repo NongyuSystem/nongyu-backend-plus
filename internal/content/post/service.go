@@ -52,6 +52,10 @@ type Service struct {
 	presignTTL time.Duration
 	logger     *slog.Logger
 
+	// ownership 记录「对象 key → 上传者」的归属，用于附件引用校验与清理判定。
+	// 由 New 统一构造，所有 post.New(Options{...}) 调用点无需改动即可获得该能力。
+	ownership *AttachmentOwnership
+
 	// listEpoch 是每个板块的列表缓存「代」。写操作只自增对应板块的代，
 	// 列表键含代值 → 旧代的所有游标页一次性全部失效，无需枚举游标。
 	// 进程内计数，确定性（不依赖时钟），便于测试。
@@ -75,6 +79,7 @@ func New(opts Options) *Service {
 	return &Service{
 		repo: opts.Repo, clock: opts.Clock, store: opts.ObjectStore,
 		cache: opts.Cache, presignTTL: opts.PresignTTL, logger: opts.Logger,
+		ownership: NewAttachmentOwnership(),
 	}
 }
 
@@ -169,6 +174,12 @@ func (s *Service) Create(ctx context.Context, authorID int64, in CreateInput) (*
 	if err := ValidateAttachments(in.Attachments); err != nil {
 		return nil, err
 	}
+	// 归属校验（安全）：每个附件 key 必须是「当前用户自己上传且已登记」的。
+	// 纯函数 ValidateAttachments 只校验前缀，挡不住「引用他人对象 key + 删自己帖
+	// 清掉他人附件」的越权破坏，故这里在落库前补一道 owner==actorID 判定。
+	if err := s.ownership.ValidateOwned(in.Attachments, authorID); err != nil {
+		return nil, err
+	}
 	now := s.clock.Now()
 	p := &Post{
 		Board: board, Title: in.Title, Body: in.Body,
@@ -218,6 +229,10 @@ func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput)
 		if err := ValidateAttachments(*in.Attachments); err != nil {
 			return nil, err
 		}
+		// 同 Create：编辑时替换附件也必须只引用本人上传的 key。
+		if err := s.ownership.ValidateOwned(*in.Attachments, actorID); err != nil {
+			return nil, err
+		}
 		p.Attachments = append([]string(nil), (*in.Attachments)...)
 	}
 	t := now
@@ -251,7 +266,8 @@ func (s *Service) Delete(ctx context.Context, actorID, id int64) error {
 	}
 	s.invalidateBoard(p.Board)
 	s.invalidateDetail(ctx, id)
-	s.cleanupAttachments(p.Attachments)
+	// 只清理「属主 == 帖子作者」的 key：作者删自己的帖子时 actorID==p.AuthorID。
+	s.cleanupAttachments(p.Attachments, p.AuthorID)
 	return nil
 }
 
@@ -269,7 +285,9 @@ func (s *Service) AdminDelete(ctx context.Context, id int64) error {
 	}
 	s.invalidateBoard(p.Board)
 	s.invalidateDetail(ctx, id)
-	s.cleanupAttachments(p.Attachments)
+	// 管理端删除没有「本人」语义；用帖子作者的身份做归属判定，只删该帖真正属主
+	// 上传的 key（fail-closed：查不到归属的 key 一律跳过）。
+	s.cleanupAttachments(p.Attachments, p.AuthorID)
 	return nil
 }
 
@@ -278,18 +296,37 @@ func (s *Service) AdminDelete(ctx context.Context, id int64) error {
 // 旁路语义（Spec：「失败只记日志 + 计数，不阻塞软删」）：用独立 goroutine
 // 与独立 context（请求 ctx 在响应后会被 cancel），逐个 Delete；失败只累加
 // 计数并记 Warn，绝不回滚或影响已成功的软删。
-func (s *Service) cleanupAttachments(keys []string) {
+//
+// ownerID 是「本次删除所依据的属主身份」（读者侧删帖=当前作者，管理端删帖=帖子作者）。
+// **归属判定（安全）**：只删 s.ownership.OwnedBy(k, ownerID) 为真的 key。
+// 未登记归属、属主不符的 key 一律跳过（fail-closed），从而堵住「把别人的对象 key
+// 塞进自己帖子、再删自己帖子清掉他人附件」的越权破坏。
+func (s *Service) cleanupAttachments(keys []string, ownerID int64) {
 	if s.store == nil || len(keys) == 0 {
 		return
 	}
 	store, logger := s.store, s.logger
+	// 在启动 goroutine **之前**就把要删的 key 过滤好：归属是确定的，不需要在
+	// 异步里重算；也避免在 goroutine 里持有 ownership 锁做逐条过滤。
+	owned := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if s.ownership.OwnedBy(k, ownerID) {
+			owned = append(owned, k)
+		} else if logger != nil {
+			// 只记标识性字段（key），不记归属内容；旁路日志不影响主业务。
+			logger.Warn("附件对象清理跳过：归属不明或属主不符（fail-closed）", "key", k)
+		}
+	}
+	if len(owned) == 0 {
+		return
+	}
 	go func() {
 		// **必须带超时**：用 Background 且不设期限的话，对象存储挂住时
 		// 这个 goroutine 会无限期阻塞；反复删帖就会不断泄漏 goroutine，
 		// 最终把进程拖死。旁路任务更应该自我约束，而不是指望下游会返回。
 		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		for _, k := range keys {
+		for _, k := range owned {
 			if err := store.Delete(ctx, k); err != nil {
 				s.cleanupFailures.Add(1)
 				if logger != nil {
@@ -332,7 +369,34 @@ func (s *Service) AddReply(ctx context.Context, actorID, postID int64, body stri
 //
 // targetType/kind 用 string 接 HTTP 传入的枚举值，靶子 id 单独用 int64。
 // 重复建立/重复取消都是幂等（repo 返回 created/removed=false，不报错）。
+//
+// 兼容说明：此签名被装配层的通知派生测试（internal/app/notify_wiring_test.go）
+// 直接调用，故保持不变、不追加 postID 参数。postID 传 0 表示「非嵌套资源调用，
+// 不做父子归属校验」。HTTP 的嵌套资源路由（/posts/:id/replies/:replyId/like）
+// 必须改走 ReactOnComment，由它把 :id 传进来做归属校验。
 func (s *Service) React(ctx context.Context, actorID int64, targetType string, targetID int64, kind string, add bool) error {
+	return s.react(ctx, actorID, targetType, targetID, kind, add, 0)
+}
+
+// ReactOnComment 供嵌套资源路由 POST/DELETE /posts/:id/replies/:replyId/like 调用。
+//
+// 安全修复：旧实现里 reactCommentHandler 完全忽略 URL 里的 :id，只用全局 replyId
+// 查靶子，于是「POST /posts/任意数字/replies/<他人replyId>/like」都能越过父资源
+// 边界对全站任意留言点赞（并派生通知）。这里把 postID 一起带进来，在建立反应前
+// 校验「该留言确实属于 URL 里的这条帖子」，不匹配返回 not_found（与不存在同码，
+// 不泄露资源存在性）。
+func (s *Service) ReactOnComment(ctx context.Context, actorID, postID, replyID int64, kind string, add bool) error {
+	if postID <= 0 {
+		return apperr.Errorf(apperr.CodeValidationFailed, "帖子 id 非法")
+	}
+	return s.react(ctx, actorID, string(TargetComment), replyID, kind, add, postID)
+}
+
+// react 是 React / ReactOnComment 的共用实现。
+//
+// postID > 0 且靶子是 comment 时，ensureTarget 会校验 r.PostID == postID。
+// postID==0（React 的直接调用/内部触发）沿用旧行为，不做父子归属校验。
+func (s *Service) react(ctx context.Context, actorID int64, targetType string, targetID int64, kind string, add bool, postID int64) error {
 	if actorID <= 0 {
 		return apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
 	}
@@ -348,7 +412,8 @@ func (s *Service) React(ctx context.Context, actorID int64, targetType string, t
 		return apperr.Errorf(apperr.CodeValidationFailed, "靶子 id 非法")
 	}
 	// 靶子必须存在且未软删，否则会留下指向空对象的反应。
-	if err := s.ensureTarget(ctx, tt, targetID); err != nil {
+	// 嵌套资源调用时还要校验留言归属（见 ensureTarget 的 postID 分支）。
+	if err := s.ensureTarget(ctx, tt, targetID, postID); err != nil {
 		return err
 	}
 	if add {
@@ -379,7 +444,10 @@ func (s *Service) React(ctx context.Context, actorID int64, targetType string, t
 }
 
 // ensureTarget 确认靶子存在且未软删。
-func (s *Service) ensureTarget(ctx context.Context, tt TargetType, id int64) error {
+//
+// postID > 0 时（嵌套资源调用）对 comment 追加归属校验：留言必须属于该帖子，
+// 否则返回 not_found。这是「留言点赞忽略 :id」越权漏洞的修复判定点。
+func (s *Service) ensureTarget(ctx context.Context, tt TargetType, id, postID int64) error {
 	switch tt {
 	case TargetPost:
 		p, err := s.repo.FindByID(ctx, id)
@@ -396,6 +464,11 @@ func (s *Service) ensureTarget(ctx context.Context, tt TargetType, id int64) err
 			return err
 		}
 		if r.Deleted() {
+			return apperr.Errorf(apperr.CodeNotFound, "留言不存在")
+		}
+		// 嵌套资源：留言必须属于 URL 里的父帖子。用 not_found 与「不存在」同码，
+		// 不泄露「这条留言存在但不属于这个帖子」这类存在性差异。
+		if postID > 0 && r.PostID != postID {
 			return apperr.Errorf(apperr.CodeNotFound, "留言不存在")
 		}
 		return nil

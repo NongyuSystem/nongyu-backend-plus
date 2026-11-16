@@ -12,19 +12,20 @@ import (
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/pgstore"
+	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 )
 
 // 本文件是「存储实现选择」的唯一决策点。
 //
-// 为什么要有它：四个域各有内存与 PG 两套仓储，若在 app.New 里逐处写
-// `if pgPool != nil { ... } else { ... }`，切换条件会散落四处，
+// 为什么要有它：五个域各有内存与 PG 两套仓储，若在 app.New 里逐处写
+// `if pgPool != nil { ... } else { ... }`，切换条件会散落五处，
 // 极易出现「一个域切了、另一个忘了」。集中成工厂后，
 // 「配了 DATABASE_URL 就全切 PG」是一条可验证的不变式。
 //
 // 一条硬约束：**PG 与内存是二选一，不允许混用**。
 // 混用会产生极难排查的现象——帖子落了库、留言留在内存，重启后
-// 「帖子还在但回复没了」。所以这里按 storeMode 一次决定全部四个域。
+// 「帖子还在但回复没了」。所以这里按 storeMode 一次决定全部五个域。
 
 // storeMode 是运行期的存储模式。
 type storeMode string
@@ -36,23 +37,24 @@ const (
 	storeModePostgres storeMode = "postgres"
 )
 
-// repoBundle 汇总四个域的仓储实例。
+// repoBundle 汇总五个域的仓储实例。
 //
-// 用结构体而不是四个独立返回值：装配层要一次性拿全，
+// 用结构体而不是五个独立返回值：装配层要一次性拿全，
 // 且将来新增域时只需在这里加一个字段，调用方签名不变。
 type repoBundle struct {
 	Announcements announcement.Repo
 	Posts         post.Repo
 	Messages      message.Repo
 	Track         track.Repo
+	Skins         skin.Repo
 	// Mode 供日志与 /status 报告「现在到底用的哪套」。
 	// 这个值必须如实反映实现，否则运维会误以为数据在库里。
 	Mode storeMode
 }
 
-// newRepoBundle 按配置构造四个域的仓储。
+// newRepoBundle 按配置构造五个域的仓储。
 //
-// pool 为 nil 表示未配 DATABASE_URL，四个域全部走内存实现。
+// pool 为 nil 表示未配 DATABASE_URL，五个域全部走内存实现。
 // 只要 pool 非 nil 就全部走 PG——不允许单个域降级，
 // 理由见文件头「不允许混用」。
 func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error) {
@@ -62,6 +64,7 @@ func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error)
 			Posts:         pgstore.NewPostMemoryRepo(now),
 			Messages:      pgstore.NewMessageMemoryRepo(now),
 			Track:         pgstore.NewTrackMemoryRepo(),
+			Skins:         pgstore.NewSkinMemoryRepo(now),
 			Mode:          storeModeMemory,
 		}, nil
 	}
@@ -102,5 +105,6 @@ var (
 	_ post.Repo         = (*pgstore.PostMemoryRepo)(nil)
 	_ message.Repo      = (*pgstore.MessageMemoryRepo)(nil)
 	_ track.Repo        = (*pgstore.TrackMemoryRepo)(nil)
+	_ skin.Repo         = (*pgstore.SkinMemoryRepo)(nil)
 	_                   = platform.MemoryObjectStore{}
 )

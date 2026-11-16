@@ -57,6 +57,12 @@ func (f *fakeSchool) Authenticate(_ context.Context, in login.SchoolCredential) 
 	if in.Method == "password" && in.Password != "school-pw" {
 		return login.SchoolIdentity{}, errors.New("学号或密码错误")
 	}
+	// 只有确实校验过学校账密的认证源才回填受信任密码；
+	// LoginBySchool 只镜像 VerifiedPassword，不读客户端自报的 cred.Password。
+	if in.Method == "password" {
+		ident.PasswordVerified = true
+		ident.VerifiedPassword = in.Password
+	}
 	return ident, nil
 }
 

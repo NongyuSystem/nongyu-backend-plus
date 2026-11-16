@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,12 @@ const placeholderTicketKey = "dev-only-placeholder-key-change-me"
 // minProductionTicketKeyLen 是 prod 环境 TICKET_KEY 的最小长度（字节）。
 // 密钥经 SHA-256 派生为 AES-256 密钥，但弱口令仍易被字典攻击，故设下限。
 const minProductionTicketKeyLen = 32
+
+// minProductionAuthKeyLen 是 prod 环境 AUTH_KEY（会话令牌 HMAC 密钥）的最小长度。
+// 它直接决定令牌能否被穷举伪造：1 字节密钥等于任意人都能给自己签发任意用户的
+// 会话令牌。TICKET_KEY 与 APP_SIGNING_KEYS 早有下限，唯独 AUTH_KEY 漏了，
+// 生产强校验因此留了个「全校验通过但签名密钥可被暴破」的缺口。
+const minProductionAuthKeyLen = 32
 
 // Config 是进程启动所需的全部外部配置。
 // 约定：所有字段都有安全默认值，保证无 .env 时也能直接 go run 起一个健康检查服务。
@@ -58,6 +65,18 @@ type Config struct {
 	HTTPIdleTimeoutSec  int
 	// RateLimitPerMinute 是每用户每分钟允许的请求数。
 	RateLimitPerMinute int
+	// TrustedProxies 是「可信反向代理」的 IP / CIDR 白名单，逗号分隔。
+	//
+	// 只有来自这些地址的请求，其 X-Forwarded-For / X-Real-IP 才会被
+	// gin 的 ClientIP() 采信；其余一律按 TCP 直连地址 RemoteAddr 计。
+	// 缺省为空 = 不信任任何转发头（安全默认）。
+	//
+	// 为什么必须显式配置：gin 默认信任 0.0.0.0/0 与 ::/0，于是任何客户端
+	// 都能用伪造的 X-Forwarded-For 改写 ClientIP()。未认证限流以 ClientIP()
+	// 为 key，登录审计也用它，默认行为等于「限流可被无限绕过 + 审计 IP 可伪造」。
+	// 只有确实部署在 Nginx / LB 之后、且该跳会改写 XFF 时才需要填这里，
+	// 且必须填代理的**具体**地址段，绝不能填 0.0.0.0/0。
+	TrustedProxies string
 	// RedisAddr 是票据存储的 Redis 地址（形如 127.0.0.1:6379）。
 	// 为空时回落到进程内存实现（仅本地开发；进程重启即丢票，不能上生产）。
 	RedisAddr string
@@ -125,6 +144,7 @@ func Load() (Config, error) {
 		HTTPWriteTimeoutSec:     envIntOr("HTTP_WRITE_TIMEOUT_SEC", 30),
 		HTTPIdleTimeoutSec:      envIntOr("HTTP_IDLE_TIMEOUT_SEC", 90),
 		RateLimitPerMinute:      envIntOr("RATE_LIMIT_PER_MINUTE", 60),
+		TrustedProxies:          envOr("TRUSTED_PROXIES", ""), // 缺省为空：不信任任何转发头
 		RedisAddr:               envOr("REDIS_ADDR", ""),
 		RedisPassword:           envOr("REDIS_PASSWORD", ""),
 		RedisDB:                 envIntOr("REDIS_DB", 0),
@@ -163,8 +183,20 @@ func Load() (Config, error) {
 	}
 	cfg.AppSigningKeys = signingKeys
 
+	// 可信代理白名单：空是安全默认；格式错误一律拒绝启动，
+	// 避免「配了但静默没生效」把限流暴露在伪造 XFF 之下。
+	if _, err := ParseTrustedProxies(cfg.TrustedProxies); err != nil {
+		return Config{}, err
+	}
+
 	// 生产强校验：ADR-0001 的安全不变量不得被默认值或环境变量悄悄弱化。
-	if isProduction(cfg.AppEnv) {
+	//
+	// 判据用 IsProductionLike（覆盖 prod / production / staging）而不是
+	// isProduction（只认 prod / production）：staging 是准生产，若跳过这里的
+	// 校验，就会用开发占位 TICKET_KEY 起服务，tgt / 身份证号密文可被源码里
+	// 公开的默认密钥直接解开（见 platform/caps_mock.go 的弱密钥修复）。
+	// IsProductionLike 已是 app.New 判「必须挂认证」的同一口径，两处保持一致。
+	if IsProductionLike(cfg.AppEnv) {
 		if cfg.TicketKey == placeholderTicketKey || strings.TrimSpace(cfg.TicketKey) == "" {
 			return Config{}, fmt.Errorf("prod 环境必须显式配置 TICKET_KEY，不得使用开发占位密钥")
 		}
@@ -176,6 +208,12 @@ func Load() (Config, error) {
 		}
 		if strings.TrimSpace(cfg.AuthKey) == "" {
 			return Config{}, fmt.Errorf("prod 环境必须显式配置 AUTH_KEY（认证令牌签名密钥）")
+		}
+		// 光「非空」不够：HMAC 密钥太短可被穷举，等于任意人都能伪造会话令牌。
+		// 与 TICKET_KEY / APP_SIGNING_KEYS 同一口径，生产强制最小长度。
+		if len(cfg.AuthKey) < minProductionAuthKeyLen {
+			return Config{}, fmt.Errorf("prod 环境 AUTH_KEY 至少 %d 字节，当前 %d（短密钥可被穷举伪造令牌）",
+				minProductionAuthKeyLen, len(cfg.AuthKey))
 		}
 		if cfg.RateLimitPerMinute <= 0 {
 			return Config{}, fmt.Errorf("prod 环境 RATE_LIMIT_PER_MINUTE 必须为正整数")
@@ -226,6 +264,45 @@ func ParseAppSigningKeys(raw string) (map[string][]byte, error) {
 	return out, nil
 }
 
+// ParseTrustedProxies 解析可信反向代理白名单（逗号分隔的 IP 或 CIDR）。
+//
+// 空串返回 nil：调用方据此把 gin 配成「不信任任何转发头」（安全默认）。
+// 每条必须是合法 IP 或 CIDR；显式拒绝 0.0.0.0/0 与 ::/0 —— 那等价于
+// 信任全网，正是伪造 X-Forwarded-For 绕限流的根因，不允许通过配置复活。
+func ParseTrustedProxies(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		// 凭空补全 /32 /128 不是必须的：gin 自己会补。这里只做合法性校验。
+		if strings.Contains(p, "/") {
+			ip, _, err := net.ParseCIDR(p)
+			if err != nil {
+				return nil, fmt.Errorf("TRUSTED_PROXIES 条目 %q 不是合法 CIDR：%w", p, err)
+			}
+			if ip.IsUnspecified() {
+				return nil, fmt.Errorf("TRUSTED_PROXIES 不得包含全网段 %q（会重新开放 XFF 伪造）", p)
+			}
+		} else {
+			ip := net.ParseIP(p)
+			if ip == nil {
+				return nil, fmt.Errorf("TRUSTED_PROXIES 条目 %q 不是合法 IP", p)
+			}
+			if ip.IsUnspecified() {
+				return nil, fmt.Errorf("TRUSTED_PROXIES 不得包含非指定地址 %q", p)
+			}
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 func validAppSigningKeyID(id string) bool {
 	if id == "" || len(id) > 32 {
 		return false
@@ -243,15 +320,6 @@ func validAppSigningKeyID(id string) bool {
 		}
 	}
 	return true
-}
-
-// isProduction 判断运行环境是否为生产（大小写不敏感，prod/production 均算）。
-func isProduction(env string) bool {
-	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "prod", "production":
-		return true
-	}
-	return false
 }
 
 // IsProductionLike 判断是否为「必须开启认证」的真实部署环境。

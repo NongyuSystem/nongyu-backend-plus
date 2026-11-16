@@ -152,9 +152,13 @@ func (v *TokenVerifier) parseSession(token string) (string, error) {
 // 登录端点必须在这里：它们的作用就是「取得一个身份」，若也要求先有身份，
 // 就成了永远进不去的鸡生蛋问题（实测过：全局中间件会把登录请求拦成 401）。
 // 登出不在名单里——登出需要先有会话才有意义。
+//
+// `/status` **刻意不在此清单**：它返回 objectStore/storage/breaker/依赖健康/
+// 埋点计数等内部配置，免认证可读等于把基础设施测绘面公开给任意外部调用方。
+// 需要免签免认证的存活探针只有 `/healthz`（只报进程可达、不探下游、不含内部字段）；
+// 运维要看真实依赖状态请用带签名 + 有效会话的 `/status`。
 var publicPaths = []string{
 	"/healthz",
-	"/status",            // 观测出口：运维/监控用，不要求已认证身份
 	"/identity/login",    // 四种登录方式（含 /identity/login/admin）
 	"/identity/mailcode", // 发送验证码
 	"/identity/register", // 独立注册入口
@@ -167,14 +171,18 @@ var publicPaths = []string{
 // 演化——内容侧会随业务增加（以后可能还有公开的帖子板块），身份侧只在
 // 登录方式变化时动；混在一张表里会让「这张表到底代表什么」越来越模糊。
 //
-// 清单严格受限：只有 map #43 子票 #46 Q1 定下的 5 个只读端点。写操作、
-// 消息、埋点上报、以及全部 /admin/* 一律不在此列。
+// 清单严格受限：只有 map #43 子票 #46 Q1 定下的 5 个只读端点，加上
+// issue #53 皮肤下发的 3 个只读端点（/skins/current、详情、包体）。
+// 皮肤是全局单指针下发、不含用户私有数据，且 ADR-0006 要求客户端
+// 「首帧之后」才拉取——此时设备可能尚未登录，故必须免用户会话。
+// 写操作（上传 / 激活）一律在 /admin/* 下，不在此列。
 //
 // 前导斜杠与匹配规则由 IsPublicPath 统一处理；新增条目时**不要**加尾斜杠。
 var publicReadablePaths = []string{
 	"/announcements",        // 公告列表
 	"/announcements/latest", // 首页最新一条公告
 	"/posts",                // 帖子列表
+	"/skins",                // 皮肤目录 / 详情 / 包体下载（issue #53）
 }
 
 // IsPublicPath 判断一个请求路径是否属于**取得身份类**的免认证路径。

@@ -5,6 +5,17 @@ package app
 // /healthz 的语义是「只报进程可达、不探下游」（Spec #10 故事 28），**不要改它**。
 // 本文件另开 /status，用于运维/监控查看真实依赖状态：进程、Postgres、Redis、
 // 缓存熔断器、当前存储实现是真实还是 mock。值必须来自真实探针，不能硬编码 ok。
+//
+// 安全契约（0-day 修复）：/status 返回 objectStore / storage / breaker /
+// postgres|redis 健康 / 埋点计数等**内部实现细节**，不是「进程可达」探针。
+// 因此它必须同时满足两道门槛才能读：**NY1 请求签名 + 有效会话**。
+// 实现落在装配层的全局中间件链上（AppSignMiddleware + 鉴权中间件）：
+//   - IsAppSignExempt 只对 /healthz 放行，/status 不再豁免签名；
+//   - publicPaths 不再含 /status，AllowedWithoutAuth 不会放行它。
+// 免签免认证的存活探针**只有 /healthz**。本 handler 自身不重复鉴权，
+// 与全仓「业务域不自行鉴权、由装配层统一负责」的分层一致；
+// 但把 RegisterStatus 挂到任何新路由组时，务必一并挂上上述中间件链，
+// 否则等于把内部基础设施状态公开出去（这正是本次修复的漏洞形态）。
 
 import (
 	"context"

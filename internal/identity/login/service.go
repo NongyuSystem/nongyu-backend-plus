@@ -155,6 +155,27 @@ type SchoolIdentity struct {
 	// MirrorError 非空表示登录成功但密码镜像没写进去（不阻断登录）。
 	// 由调用方决定是否记日志/告警——静默失败会让问题无从排查。
 	MirrorError error
+
+	// ── 密码镜像的信任根（安全关键）──────────────────────────────
+	//
+	// 客户端请求体里的 SchoolCredential.Method / .Password **一律不可信**：
+	// 未认证者可任意填写 schoolMethod=password 并自报一个 password，而当前
+	// 真实 school 认证链路（schoolauthBridge → XSGZSource）只用 go-admin-tgt /
+	// cookie / xsgzToken 换票，从不接触、也从未校验过学生账密。若照客户端自报
+	// 就 mirrorPassword，等于让任何能触发一次该校学号 school 登录的主体给该
+	// 账号植入一条长期的备用登录凭据（认证绕过 / 持久化后门）。
+	//
+	// 因此密码镜像的唯一合法来源是**服务端认证结果**：只有当认证源确实拿学校
+	// 账密完成了一次校验（而不是换票），由它把「已校验」标志与「校验通过的
+	// 密码」回填到这里。LoginBySchool 只镜像 VerifiedPassword，绝不读
+	// SchoolCredential.Password。
+	//
+	// PasswordVerified 为真且 VerifiedPassword 非空，是镜像写入的**唯一**条件。
+	// 换票/微信/电话等未校验账密的认证源保持零值（false、空串）→ 不镜像。
+	PasswordVerified bool
+	// VerifiedPassword 是认证源在校验学校账密成功后回填的受信任密码。
+	// 它来自服务端认证过程，不是客户端请求体的自报值；用完即弃，绝不回显。
+	VerifiedPassword string
 }
 
 // Secrets 是加解密能力（密码镜像与身份证各用一把独立密钥，由装配层注入两个实例）。
@@ -321,13 +342,23 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 		return Result{}, err
 	}
 
-	// 密码镜像：只在「确实用了学校账密」时写入。其它学校方式（微信/短信）不写。
+	// 密码镜像（安全关键，见 SchoolIdentity.VerifiedPassword 的注释）：
+	//
+	// 信任根是**服务端认证结果**，不是客户端请求体。只有认证源明确回填了
+	// 「本次确实用学校账密校验通过」(ident.PasswordVerified) 并给出校验通过的
+	// 密码 (ident.VerifiedPassword)，才把该受信任密码加密写入农屿账密。
+	//
+	// 绝不读 cred.Method / cred.Password：这两个字段完全由客户端控制，
+	// 未认证者可以在换票登录里夹带 schoolMethod=password + 自报 password，
+	// 若据此镜像，就等于给该学号植入一条无需学校凭据的长期登录入口。
+	// 当前生产认证源（schoolauthBridge → XSGZSource）只换票、从不校验账密，
+	// 因此保持零值 → 不镜像，正是本修复要达到的安全状态。
 	var mirrorErr error
-	if cred.Method == "password" && cred.Password != "" && s.passwordBox != nil {
+	if ident.PasswordVerified && ident.VerifiedPassword != "" && s.passwordBox != nil {
 		// 镜像失败不阻断登录：学生仍可用学校认证登录。
 		// 但错误要带出去（Result.MirrorError）——静默失败会让
 		// 「管理员进不了管理台」这类问题无从排查。
-		mirrorErr = s.mirrorPassword(ctx, u.ID, cred.Password)
+		mirrorErr = s.mirrorPassword(ctx, u.ID, ident.VerifiedPassword)
 	}
 
 	// 绑定/刷新 school 登录方式（标识用学号）。

@@ -13,9 +13,9 @@ import (
 
 func TestIsPublicPath_IdentityPaths(t *testing.T) {
 	// 既有「取得身份」类路径必须继续豁免，否则登录会变成鸡生蛋。
+	// /status 不在此列：它返回内部依赖状态，修复后必须要求有效会话。
 	for _, p := range []string{
 		"/healthz",
-		"/status",
 		"/identity/login",
 		"/identity/login/admin",
 		"/identity/mailcode",
@@ -24,6 +24,10 @@ func TestIsPublicPath_IdentityPaths(t *testing.T) {
 		if !server.IsPublicPath(p) {
 			t.Fatalf("%s 应仍是取得身份类公开路径", p)
 		}
+	}
+	// /status 不再免认证（0-day 修复）：唯一免认证探针只有 /healthz。
+	if server.IsPublicPath("/status") {
+		t.Fatal("/status 返回内部基础设施状态，不得再是免认证公开路径")
 	}
 }
 
@@ -40,6 +44,9 @@ func TestAllowedWithoutAuth_PublicReadOnlyGet(t *testing.T) {
 		"/announcements/42",
 		"/posts",
 		"/posts/42",
+		"/skins/current",            // 皮肤目录（issue #53）
+		"/skins/default/1.0.0",      // 皮肤详情
+		"/skins/default/1.0.0/pack", // 皮肤包体下载
 	}
 	for _, p := range readable {
 		if !server.AllowedWithoutAuth(http.MethodGet, p) {
@@ -61,6 +68,9 @@ func TestAllowedWithoutAuth_PublicReadOnlyGet(t *testing.T) {
 		{http.MethodPatch, "/posts/42"},         // 编辑
 		{http.MethodPost, "/announcements"},     // 公告写操作（前缀同源，防同类回归）
 		{http.MethodDelete, "/announcements/42"},
+		{http.MethodPost, "/skins/current"},            // 皮肤侧没有写路由，但前缀豁免不能把 POST 放过去
+		{http.MethodPost, "/admin/skins"},              // B 端上传
+		{http.MethodPost, "/admin/skins/p/1/activate"}, // 激活
 	}
 	for _, w := range writes {
 		if server.AllowedWithoutAuth(w.method, w.path) {

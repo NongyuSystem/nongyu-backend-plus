@@ -234,11 +234,14 @@ func createHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 // 拆成两半会让「谁负责包 body」变得模糊。
 func uploadHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if _, ok := userIDOf(c); !ok {
+		uid, ok := userIDOf(c)
+		if !ok {
 			apperr.WriteGin(c, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份"))
 			return
 		}
-		res, err := svc.Upload(c.Request.Context(), c.Request)
+		// 归属来自已认证会话，交给 Service.Upload 登记 owner（修复「引用他人对象
+		// key 再删自己帖子清掉他人附件」的越权破坏）。
+		res, err := svc.Upload(c.Request.Context(), c.Request, uid)
 		if err != nil {
 			apperr.WriteGin(c, err)
 			return
@@ -299,6 +302,10 @@ func reactHandler(svc *Service, userIDOf UserIDFunc, kind string, add bool) gin.
 }
 
 // reactCommentHandler 处理对留言的点赞（Spec 只要求留言点赞，没有收藏）。
+//
+// 安全：这是嵌套资源 /posts/:id/replies/:replyId/like，父资源 :id 必须参与校验。
+// 旧实现只用 replyId 全局查靶子，任意 :id 都能对全站留言点赞（越权 IDOR）。
+// 现在把 postID 一并交给 Service.ReactOnComment 校验 r.PostID == :id。
 func reactCommentHandler(svc *Service, userIDOf UserIDFunc, add bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid, ok := userIDOf(c)
@@ -306,12 +313,17 @@ func reactCommentHandler(svc *Service, userIDOf UserIDFunc, add bool) gin.Handle
 			apperr.WriteGin(c, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份"))
 			return
 		}
+		postID, err := parseID(c.Param("id"))
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
 		replyID, err := parseID(c.Param("replyId"))
 		if err != nil {
 			apperr.WriteGin(c, err)
 			return
 		}
-		if err := svc.React(c.Request.Context(), uid, string(TargetComment), replyID, string(ReactionLike), add); err != nil {
+		if err := svc.ReactOnComment(c.Request.Context(), uid, postID, replyID, string(ReactionLike), add); err != nil {
 			apperr.WriteGin(c, err)
 			return
 		}

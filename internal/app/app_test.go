@@ -568,11 +568,13 @@ func TestAppNew_StagingWithoutAuthKeyIsRejected(t *testing.T) {
 	t.Setenv("TICKET_KEY", "test-ticket-key-32-bytes-min!!")
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("config.Load: %v", err)
+		// 安全不变量已由 config.Load() 更早一层兜住（staging 现走生产强校验，
+		// 缺 AUTH_KEY 直接拒绝启动）。这正是期望行为，无需再进 app.New。
+		return
 	}
 	_, err = app.New(cfg, quietLogger())
 	if err == nil {
-		t.Fatal("staging 下 AUTH_KEY 为空且未开 ALLOW_INSECURE_DEV 时，app.New 必须拒绝（fail-closed）")
+		t.Fatal("staging 下 AUTH_KEY 为空且未开 ALLOW_INSECURE_DEV 时，必须拒绝（fail-closed）")
 	}
 }
 
@@ -605,23 +607,27 @@ func TestAppNew_DefaultDevCanStartHealthService(t *testing.T) {
 
 // ---- from public_paths_test.go ----
 // code-review M5/N6：公开路径必须是单一来源，三处中间件口径一致。
-// 特别覆盖：装配后 /status 免认证可达、POST /identity/login 无尾斜杠不被 401 拦。
+// 特别覆盖：装配后 /status 不再免认证可达（0-day 修复）、
+// POST /identity/login 无尾斜杠不被 401 拦。
 
 func TestPublicPaths_SingleSourceCoversStatusAndLogin(t *testing.T) {
-	// 单一来源必须认得这几个路径
-	for _, p := range []string{"/healthz", "/status", "/identity/login", "/identity/login/admin", "/identity/mailcode/send", "/identity/register"} {
+	// 单一来源必须认得这几个「取得身份」类路径；/status 刻意不在其中。
+	for _, p := range []string{"/healthz", "/identity/login", "/identity/login/admin", "/identity/mailcode/send", "/identity/register"} {
 		if !server.IsPublicPath(p) {
 			t.Fatalf("公开路径 %q 应被 IsPublicPath 认得", p)
 		}
+	}
+	if server.IsPublicPath("/status") {
+		t.Fatal("/status 返回内部基础设施状态，不得再是免认证公开路径")
 	}
 	if server.IsPublicPath("/identity/me") {
 		t.Fatal("受保护端点 /identity/me 不得被认作公开路径")
 	}
 }
 
-func TestAppNew_StatusReachableWithoutAuth(t *testing.T) {
-	// 退化装配：AUTH_KEY 非空但无 DATABASE_URL → AuthMiddleware 路径，
-	// 之前只放行 /healthz，/status 会被 401。
+func TestAppNew_StatusRequiresAuth(t *testing.T) {
+	// 退化装配：AUTH_KEY 非空但无 DATABASE_URL → AuthMiddleware 路径。
+	// /status 含内部字段，修复后必须要求有效会话；匿名请求应被 401 拦下。
 	cfg := config.Config{
 		Addr: ":0", AppEnv: "test", ShutdownTimeoutSec: 1,
 		TicketKey: "test-ticket-key-32-bytes-min!!", HTTPTimeoutSec: 3,
@@ -636,8 +642,14 @@ func TestAppNew_StatusReachableWithoutAuth(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/status", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("/status 应免认证可达（200），实际 %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("/status 应要求已认证身份（401），实际 %d", w.Code)
+	}
+	// 唯一免认证存活探针仍可达。
+	probe := httptest.NewRecorder()
+	a.Handler().ServeHTTP(probe, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if probe.Code != http.StatusOK {
+		t.Fatalf("/healthz 唯一免签探针应仍 200，实际 %d", probe.Code)
 	}
 }
 

@@ -45,7 +45,14 @@ func (f *fakeSchool) Authenticate(_ context.Context, in login.SchoolCredential) 
 	if in.Method == "password" && in.Password != "school-pw" {
 		return login.SchoolIdentity{}, errors.New("密码错误")
 	}
-	return f.ident, nil
+	// 只有确实校验过学校账密的认证源才回填受信任密码；
+	// LoginBySchool 只镜像 VerifiedPassword，不读客户端自报的 cred.Password。
+	ret := f.ident
+	if in.Method == "password" {
+		ret.PasswordVerified = true
+		ret.VerifiedPassword = in.Password
+	}
+	return ret, nil
 }
 
 type fixture struct {

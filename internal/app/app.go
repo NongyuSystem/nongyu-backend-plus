@@ -29,6 +29,7 @@ import (
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
 	"nongyu-backend-plus/internal/server"
+	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 
 	"github.com/gin-gonic/gin"
@@ -223,7 +224,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		})
 	}
 	clock := platform.NewRealClock()
-	engine := server.New()
+	// 可信代理白名单：默认不信任任何 X-Forwarded-For（见 server.New 的长注释）。
+	// 只有部署在会改写 XFF 的反向代理之后，才由 TRUSTED_PROXIES 显式给出该代理的地址段。
+	trustedProxies, err := config.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("装配失败：%w", err)
+	}
+	engine := server.New(trustedProxies...)
 
 	// 请求追踪号：每个请求一个审计流水号，写入 context 与 X-Request-Id 响应头。
 	// 必须最先挂，后续所有 handler 与审计都能拿到它。
@@ -488,7 +495,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 
 	// 请求签名先于用户鉴权：登录、发验证码这些公开路径也要证明来自客户端。
-	// 探针 /healthz、/status 在中间件内豁免，给负载均衡留门。
+	// 唯一免签探针是 /healthz（只报进程存活）；/status 含内部依赖状态，
+	// 必须带签名 + 有效会话才能访问（见 server/appsign.go 的 IsAppSignExempt）。
 	// 密钥为空时不挂（本地开发 / 既有单测）；prod 已由 checkAppSigningConfig 拦住。
 	installAppSigning(engine, cfg, cache, clock, logger)
 
@@ -563,7 +571,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			identityflow.Register(engine, flowSvc, tokenIssuer)
 		}
 		if identityUserSvc != nil {
-			identityuser.Register(engine, identityUserSvc, server.CurrentUserID, identityStore)
+			// 本人端点挂普通 engine；按学号读画像属于管理台，挂到下面的
+			// adminGroup（ScopeAdmin + AdminOnly）。两者不可混挂：
+			// 早先整个 Register 都挂在 engine 上，导致任意 role=0 的 App
+			// 会话可读全校学生画像（spec-身份域与平台底座:72 只允许管理员）。
+			identityuser.RegisterPublic(engine, identityUserSvc, server.CurrentUserID)
 		}
 	}
 
@@ -664,6 +676,24 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	post.RegisterSession(engine, postSvc, currentUserIDOf)
 	logger.Info("帖子域已装配：读者侧 2 条 + 会话侧 11 条（含附件上传）")
 
+	// 皮肤包上传 / 下载服务（issue #53 / ADR-0003、0004、0006）。
+	//
+	// 落点：包体 zip 存对象存储（配了 MINIO_ENDPOINT 就是 MinIO，否则内存实现），
+	// 元数据与「全局单指针」存 Postgres（配了 DATABASE_URL）/ 内存实现。
+	// 二者与帖子域共用同一个 objectStore 与 repos 切换口径，不另起一套存储。
+	//
+	// App 侧三条只读路由挂在 engine 上：免用户会话（已加入 publicReadablePaths），
+	// 但仍要过 NY1 请求签名中间件——客户端首帧后拉取目录/包体时可能尚未登录，
+	// 但必须证明来自持有密钥的客户端。B 端上传走 /admin/*（见下方 adminGroup）。
+	skinSvc := skin.New(skin.Options{
+		Repo:        repos.Skins,
+		ObjectStore: objectStore,
+		Clock:       clock,
+		Logger:      logger,
+	})
+	skin.RegisterPublic(engine, skinSvc)
+	logger.Info("皮肤域已装配：App 侧 3 条只读（目录/详情/包体）")
+
 	// 用户行为埋点（map #43 / Spec 六类常见功能）。
 	//
 	// 三条硬约束都在业务侧兜住：信封统一、脱敏三步顺序、缓冲满不返 503。
@@ -686,6 +716,16 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
 		post.RegisterAdmin(adminGroup, postSvc)
 		track.RegisterAdmin(adminGroup, trackSvc)
+		// 皮肤包 B 端上传 / 列表 / 激活（issue #53）。与管理台同一套
+		// admin 会话 + role 门槛；CreatedBy 取已认证会话的用户 ID 字符串。
+		skin.RegisterAdmin(adminGroup, skinSvc, func(c *gin.Context) (string, bool) {
+			uid := c.GetString(server.CtxUserID)
+			return uid, uid != "" && uid != "0"
+		})
+		// 按学号读画像：与 /admin/* 同一套门槛（admin 会话 + role>=1）。
+		if identityUserSvc != nil {
+			identityuser.RegisterAdmin(adminGroup, identityUserSvc, identityStore)
+		}
 	} else {
 		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
 	}

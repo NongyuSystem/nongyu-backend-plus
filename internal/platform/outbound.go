@@ -117,6 +117,97 @@ func newDefaultTransport(dialTimeout time.Duration) *http.Transport {
 	}
 }
 
+// ErrUnsafeResolvedIP 出站目标白名单内的主机名解析到了「不该由服务端主动访问」的
+// IP（环回 / 私有 / 链路本地 / 未指定 / 组播）。这是 DNS rebinding 的闸门：
+// 白名单校验只比对主机名字符串，而真正的连接目的由 DNS 决定。若允许列表里的
+// 域名被解析到 127.0.0.1 / 169.254.169.254 等，本错误在建连之前拦下，
+// 零出站（不触碰内网服务与云元数据服务）。
+var ErrUnsafeResolvedIP = errors.New("platform: 出站目标解析到禁止的内部地址")
+
+// isForbiddenIP 判断一个 IP 是否属于「服务端不该主动访问」的地址类别。
+//
+// 覆盖：环回、私有（RFC1918）、链路本地（含云元数据 169.254.169.254）、
+// 未指定地址、组播、IPv6 ULA / 链路本地。用 IP 自带的分类方法 + 显式 CIDR，
+// 避免漏掉 IPv4-mapped IPv6（如 ::ffff:127.0.0.1）这类绕过形态：先 To4/To16
+// 归一再逐类判断。
+func isForbiddenIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	// IPv4-mapped IPv6（::ffff:a.b.c.d）先归一成 IPv4，防止绕过分类。
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// IPv6 唯一本地地址 fc00::/7（Go 的 IsPrivate 已覆盖，保留显式声明便于审阅）。
+	_, ula, _ := net.ParseCIDR("fc00::/7")
+	if ula != nil && ula.Contains(ip) {
+		return true
+	}
+	return false
+}
+
+// resolvedAddrs 把主机名解析成 IP 列表。
+//
+// 设计要点（与现有单测契约对齐）：
+//   - IP 字面量（如 httptest 的 127.0.0.1）直接返回该 IP，不做 DNS 查询，也不
+//     做禁止类别校验：字面量是调用方显式登记的精确目标，不存在 DNS rebinding
+//     面；若连 IP 字面量都禁，现有 outbound_test.go 里全部 httptest 靶子会失效，
+//     且「显式允许一个内网地址」本就是部署方的明确授权。
+//   - 域名一律经 net.DefaultResolver.LookupIPAddr 解析（允许测试注入假 DNS 或
+//     覆盖全局解析器来复现 rebinding），解析出的**每一个** IP 都要过闸：只要
+//     有一个落到禁止类别就整单拒绝，防止多 A 记录里夹带内网地址。
+//   - 解析失败（含故意用注入 Transport 的不存在域名）返回 nil 且 ok=false：
+//     闸门对「解析不出来」保持 fail-open，让后续真实 Dial / 注入的
+//     RoundTripper 自己决定成败。这样 TestRealHTTPDoerInjectedTransport 之类
+//     「用假 Transport + 不可解析域名」的契约不受影响；生产里解析失败本就发不出请求。
+//     安全上真正的威胁是「解析成功且落到内网」，那一定返回 ok=true 并被拦下。
+func resolvedAddrs(ctx context.Context, host string) ([]net.IP, bool) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, true // IP 字面量：精确目标，跳过（无 rebinding 面）
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return nil, false // 解析不出：交由后续 Dial / 注入 Transport 处理
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		ips = append(ips, a.IP)
+	}
+	return ips, true
+}
+
+// guardResolvedIPs 是出站前的「解析结果」闸门：白名单校验之后、建连之前调用。
+//
+// 返回 nil 表示允许放行；返回 ErrUnsafeResolvedIP 表示主机名解析到了禁止地址，
+// 调用方必须零出站拒绝。两类输入不受此闸门影响（与 resolvedAddrs 的约定一致）：
+//   - IP 字面量：运维把它精确登记进白名单就是显式授权，且它不经过 DNS，
+//     根本不存在 rebinding 面；此处直接放行，交由已通过的白名单校验兜底。
+//     （若连字面量都禁，httptest 的 127.0.0.1 靶子会全线失效。）
+//   - 解析不出的域名（ok=false）：fail-open，交给后续真实 Dial / 注入的
+//     RoundTripper 决定成败，生产里本就发不出请求。
+//
+// 安全上真正的威胁是「域名解析成功且落到内网 IP」，那条路径一定 ok=true
+// 且命中 isForbiddenIP → 被拦下，不会被上面两类放行规则削弱。
+func guardResolvedIPs(ctx context.Context, host string) error {
+	if net.ParseIP(host) != nil {
+		return nil // IP 字面量：显式登记的精确目标，无 DNS rebinding 面
+	}
+	ips, ok := resolvedAddrs(ctx, host)
+	if !ok {
+		return nil
+	}
+	for _, ip := range ips {
+		if isForbiddenIP(ip) {
+			return ErrUnsafeResolvedIP
+		}
+	}
+	return nil
+}
+
 // Do 实现 HTTPDoer：出站请求的唯一闸口。
 //
 // 约束（全部由本实现无条件强制）：
@@ -145,8 +236,18 @@ func (d *RealHTTPDoer) Do(ctx context.Context, req *http.Request) (*http.Respons
 
 	// 出站前白名单校验：复用 caps_mock.go 的判定（大小写不敏感、忽略端口）。
 	// 放在建连之前，保证非白名单目标「零出站」——连 tcp 连接都不会建立。
-	if !hostInAllowlist(req.URL.Hostname(), d.allowedHosts) {
+	host := req.URL.Hostname()
+	if !hostInAllowlist(host, d.allowedHosts) {
 		return nil, ErrTargetDenied
+	}
+
+	// DNS rebinding 闸门（白名单校验之后、建连之前）：
+	// 白名单只比对「主机名字符串」，而真正连到哪由 DNS 决定。允许列表里的域名
+	// 一旦被解析到环回/私有/链路本地（含云元数据 169.254.169.254）/组播地址，
+	// 就在这里零出站拒绝，绝不把请求发进内网。IP 字面量（显式登记的精确目标）
+	// 与解析不出的域名不受此闸门影响（见 guardResolvedIPs 注释）。
+	if err := guardResolvedIPs(ctx, host); err != nil {
+		return nil, err
 	}
 
 	// context.WithTimeout 让调用方的 ctx 与整体超时共同约束这次请求；

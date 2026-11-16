@@ -160,8 +160,12 @@ func canonicalAppSign(keyID, timestamp, nonce, method, path, rawQuery string, bo
 
 // IsAppSignExempt 判断某条请求是否免于 NY1 请求签名。
 //
-// 三类豁免，理由各不相同：
-//   - 探针：`/healthz`、`/status` 由负载均衡/监控调用，没有客户端密钥；
+// 两类豁免，理由各不相同：
+//   - 探针：只有 `/healthz` 免签。它是**唯一**返回「进程可达」、不含内部实现
+//     细节的存活探针，由负载均衡/监控调用，没有客户端密钥。
+//     `/status` 不再豁免：它返回 objectStore/storage/breaker/依赖健康/埋点计数
+//     等内部配置，未签名可读等于把基础设施测绘面公开给任意外部调用方；
+//     要读它必须同时持有客户端签名密钥与有效会话。
 //   - 管理端：`/admin/*` 由**浏览器**调用，而 NY1 的密钥编译在 Android APK 里，
 //     浏览器拿不到。要求管理端签名等于把 APK 密钥分发到浏览器，
 //     直接击穿 ADR-0003 的威胁模型。管理端的安全边界由
@@ -171,7 +175,7 @@ func canonicalAppSign(keyID, timestamp, nonce, method, path, rawQuery string, bo
 // 刻意不用 IsPublicPath/AllowedWithoutAuth：免签名与免认证是两件独立的事，
 // 公开可读端点仍然要签名。
 func IsAppSignExempt(path string) bool {
-	if path == "/healthz" || path == "/status" {
+	if path == "/healthz" {
 		return true
 	}
 	return path == "/admin" || strings.HasPrefix(path, "/admin/")

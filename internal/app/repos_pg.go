@@ -29,6 +29,7 @@ func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, erro
 		Posts:         pgstore.NewPostPGRepo(pool, now),
 		Messages:      pgstore.NewMessagePGRepo(pool, now),
 		Track:         pgstore.NewTrackPGRepo(pool),
+		Skins:         pgstore.NewSkinPGRepo(pool, now),
 		Mode:          storeModePostgres,
 	}, nil
 }

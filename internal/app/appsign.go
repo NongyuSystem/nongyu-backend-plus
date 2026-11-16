@@ -46,7 +46,8 @@ func checkAppSigningConfig(cfg config.Config, logger *slog.Logger) error {
 // installAppSigning 把签名中间件挂到路由上，返回是否真的启用。
 //
 // 调用方必须把它排在用户鉴权之前——登录、发验证码这些公开路径也要证明来自
-// 客户端。/healthz、/status 由中间件内部豁免，给负载均衡探针留门。
+// 客户端。只有 /healthz 由中间件内部豁免（唯一免签探针，只报进程可达）；
+// /status 返回内部依赖状态，必须同时签名 + 有效会话，不再豁免。
 //
 // 密钥为空时不挂（本地开发 / 既有单测能继续用 curl 打接口）；prod 已由
 // checkAppSigningConfig 拦住，走到这里说明是显式允许的本地开发。

@@ -131,14 +131,17 @@ func TestAppSignMiddlewareRejectsMissingTamperedReplayAndSkew(t *testing.T) {
 
 func TestAppSignMiddlewareExemptsProbesOnly(t *testing.T) {
 	r, _ := newAppSignEngine(t)
-	for _, path := range []string{"/healthz", "/status"} {
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("%s 应免签名，实际 %d", path, w.Code)
-		}
-	}
+	// 唯一免签探针：/healthz（只报进程可达，不含内部字段）。
 	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/healthz 应免签名，实际 %d", w.Code)
+	}
+	// /status 返回内部依赖状态，修复后不再豁免签名。
+	statusW := httptest.NewRecorder()
+	r.ServeHTTP(statusW, httptest.NewRequest(http.MethodGet, "/status", nil))
+	assertAppSign(t, statusW, http.StatusUnauthorized, "app_sign_invalid")
+	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/identity/login", nil))
 	assertAppSign(t, w, http.StatusUnauthorized, "app_sign_invalid")
 }

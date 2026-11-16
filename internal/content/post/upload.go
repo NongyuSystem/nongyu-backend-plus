@@ -89,6 +89,11 @@ func tooLargeOrWrap(err error) error {
 
 // Upload 处理一次附件上传（后端中转，**流式**，不落本地盘）。
 //
+// uploaderID 是当前会话用户（由 handler 从已认证身份注入，绝不信任请求体）。
+// 上传成功后把对象 key 登记为该用户的资产，供后续 Create/Update 引用校验与
+// cleanupAttachments 删除判定使用（见 ownership.go）。这是「删自己的帖子清掉
+// 他人附件」越权漏洞的修复落点。
+//
 // 为什么不用 Request.ParseMultipartForm：它会把整个文件先读进内存、超过
 // maxMemory 时还会落到 os.CreateTemp 临时文件——既不满足「流式转发」也不满足
 // 「不落本地盘」。这里改用 MultipartReader 逐部件流式读：只从第一个 file 部件
@@ -101,7 +106,10 @@ func tooLargeOrWrap(err error) error {
 //	   *http.MaxBytesError → attachment_too_large；
 //	② 流式读取时用 io.LimitReader 限制单文件字节不超过 MaxAttachmentBytes+1，
 //	   一旦读超就判 attachment_too_large，挡住「多部件里塞超大文件」。
-func (s *Service) Upload(ctx context.Context, r *http.Request) (UploadResult, error) {
+func (s *Service) Upload(ctx context.Context, r *http.Request, uploaderID int64) (UploadResult, error) {
+	if uploaderID <= 0 {
+		return UploadResult{}, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
+	}
 	if s.store == nil {
 		return UploadResult{}, apperr.Errorf(apperr.CodeValidationFailed, "对象存储未配置，暂不可上传附件")
 	}
@@ -166,5 +174,8 @@ func (s *Service) Upload(ctx context.Context, r *http.Request) (UploadResult, er
 	if _, err := s.store.Put(ctx, key, body, -1, mediaType); err != nil {
 		return UploadResult{}, tooLargeOrWrap(err)
 	}
+	// Put 成功才登记归属：登记了却没写进存储会让这个 key 永远「可引用但取不到」。
+	// 归属来自已认证会话（uploaderID），不是请求体自报。
+	s.ownership.Register(key, uploaderID)
 	return UploadResult{Key: key}, nil
 }
