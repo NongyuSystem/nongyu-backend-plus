@@ -1,0 +1,136 @@
+{
+  "code": "0",
+  "message": "成功",
+  "content": [
+    {
+      "firstTypeName": "智育",
+      "firstTypeId": "94c01c33a420492dac72274445534a1e",
+      "totalScore": 11.0,
+      "content": [
+        {
+          "creditRecordId": "58918212",
+          "eventName": "【食】“营养卫士·易问易答”——食品营养科普闯关活动",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "94c01c33a420492dac72274445534a1e",
+          "firstActTypeName": "智育",
+          "grantTime": "2025-11-18"
+        },
+        {
+          "creditRecordId": "58893402",
+          "eventName": "【文】“经验搭桥，破局留学”英语留学分享会活动",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "94c01c33a420492dac72274445534a1e",
+          "firstActTypeName": "智育",
+          "grantTime": "2025-11-18"
+        }
+      ],
+      "_totalItemsInGroup": 16
+    },
+    {
+      "firstTypeName": "劳育",
+      "firstTypeId": "d4f94a17c3cb4a25be0e44e1ebe5d470",
+      "totalScore": 1.0,
+      "content": [
+        {
+          "creditRecordId": "60728592",
+          "eventName": "【艺】冬至食光，艺寻家味——冬至共享厨房二课活动",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "d4f94a17c3cb4a25be0e44e1ebe5d470",
+          "firstActTypeName": "劳育",
+          "grantTime": "2026-02-03"
+        },
+        {
+          "creditRecordId": "61467612",
+          "eventName": "【信】劳形以砺心 持家而思暖",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "d4f94a17c3cb4a25be0e44e1ebe5d470",
+          "firstActTypeName": "劳育",
+          "grantTime": "2026-03-18"
+        }
+      ],
+      "_totalItemsInGroup": 2
+    },
+    {
+      "firstTypeName": "体育",
+      "firstTypeId": "f782db653a3d431e87ddf7d6b4c64656",
+      "totalScore": 5.0,
+      "content": [
+        {
+          "creditRecordId": "58447942",
+          "eventName": "【商旅】随月跑轨迹，携节展活力",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "f782db653a3d431e87ddf7d6b4c64656",
+          "firstActTypeName": "体育",
+          "grantTime": "2025-10-28"
+        },
+        {
+          "creditRecordId": "58946502",
+          "eventName": "【信】1024程序员节编码肌动力挑战赛",
+          "validCredit": 1.0,
+          "display": 0,
+          "fistActTypeId": "f782db653a3d431e87ddf7d6b4c64656",
+          "firstActTypeName": "体育",
+          "grantTime": "2025-11-18"
+        }
+      ],
+      "_totalItemsInGroup": 9
+    },
+    {
+      "firstTypeName": "德育",
+      "firstTypeId": "9ee41244873b4c33baf8f0fa99e836d5",
+      "totalScore": 10.5,
+      "content": [
+        {
+          "creditRecordId": "58068322",
+          "eventName": "【学生处】新生入学考试",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "9ee41244873b4c33baf8f0fa99e836d5",
+          "firstActTypeName": "德育",
+          "grantTime": "2025-10-16"
+        },
+        {
+          "creditRecordId": "58641352",
+          "eventName": "【学生处】抗战胜利八十周年观影活动",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "9ee41244873b4c33baf8f0fa99e836d5",
+          "firstActTypeName": "德育",
+          "grantTime": "2025-11-01"
+        }
+      ],
+      "_totalItemsInGroup": 19
+    },
+    {
+      "firstTypeName": "美育",
+      "firstTypeId": "843d002316e347c3abb168c84e0adc4c",
+      "totalScore": 15.0,
+      "content": [
+        {
+          "creditRecordId": "59763122",
+          "eventName": "【信】“启航创融，芯火相传”活动",
+          "validCredit": 0.5,
+          "display": 0,
+          "fistActTypeId": "843d002316e347c3abb168c84e0adc4c",
+          "firstActTypeName": "美育",
+          "grantTime": "2025-12-15"
+        },
+        {
+          "creditRecordId": "59791552",
+          "eventName": "【信】“1024程序员节”草地音乐节",
+          "validCredit": 1.0,
+          "display": 0,
+          "fistActTypeId": "843d002316e347c3abb168c84e0adc4c",
+          "firstActTypeName": "美育",
+          "grantTime": "2025-12-15"
+        }
+      ],
+      "_totalItemsInGroup": 27
+    }
+  ]
+}
