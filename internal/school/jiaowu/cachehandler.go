@@ -1,6 +1,7 @@
 package jiaowu
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -39,15 +40,21 @@ type cacheEnvelope struct {
 	Stale         bool            `json:"stale"`
 }
 
-// cacheMissResponse 是未命中的响应：HTTP 200 + 业务码 cache_miss（#40 已定）。
+// cacheMissResponse 是未命中的响应：HTTP 200 + 业务码 cache_miss。
 //
-// 用它而不是 404，是为了让「没有缓存」看起来是正常流程的一步而不是错误——
-// 客户端拿到它就该去直连教务取数，然后回传。
+// 客户端拿到它就按 method 请求 address，带上 cookies，自己解析 HTML，再把 JSON 回传。
+// address 是直连教务 URL，不是 WebVPN 编码地址。校外打不进。
+// cookies 是教务会话（ASPSESSIONID*），不是 go-admin-tgt。建会话失败时仍是 200，
+// cookies 为空，session=unavailable，不变成 500。
 type cacheMissResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	// Address 是顺带给出的编码地址，省掉客户端再调一次 /school/address。
-	Address string `json:"address,omitempty"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Target  string         `json:"target,omitempty"`
+	Address string         `json:"address,omitempty"`
+	Method  string         `json:"method,omitempty"`
+	Cookies []IssuedCookie `json:"cookies"`
+	Parser  string         `json:"parser,omitempty"`
+	Session string         `json:"session,omitempty"`
 }
 
 // dataTypeFromPath 从 URL 取并校验 dataType。
@@ -95,12 +102,7 @@ func cacheGetHandler(svc *Service) gin.HandlerFunc {
 		snap, err := svc.CacheGet(c.Request.Context(), userID, dt, fallback)
 		if err != nil {
 			if errors.Is(err, ErrCacheMiss) {
-				// 未命中：顺带把编码地址一同下发，客户端可以直接去取数（#40）。
-				c.JSON(http.StatusOK, cacheMissResponse{
-					Code:    "cache_miss",
-					Message: "没有可用缓存",
-					Address: addressForJiaowu(c, svc, userID),
-				})
+				c.JSON(http.StatusOK, svc.cacheMiss(c.Request.Context(), userID, dt))
 				return
 			}
 			writeCacheError(c, err)
@@ -196,15 +198,35 @@ func writeCacheError(c *gin.Context, err error) {
 	}
 }
 
-// addressForJiaowu 尽力给出教务的编码地址，供 cache_miss 一并下发。
+// cacheMiss 组装未命中 recipe。
 //
-// 取不到就返回空串：地址只是便利项，拿不到不该让 cache_miss 变成错误。
-func addressForJiaowu(c *gin.Context, svc *Service, userID string) string {
-	res, err := svc.Address(c.Request.Context(), userID, school.TargetJiaowu, "")
-	if err != nil {
-		return ""
+// 建会话失败、未接入 issuer、或没有 tgt，都只记 session_unavailable。
+// 不把 issuer 的错误文本写进响应或日志：那里可能带凭据前缀。
+func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType) cacheMissResponse {
+	address, parser := recipeOf(dt)
+	resp := cacheMissResponse{
+		Code:    "cache_miss",
+		Message: "没有可用缓存",
+		Target:  string(school.TargetJiaowu),
+		Address: address,
+		Method:  http.MethodGet,
+		Cookies: []IssuedCookie{},
+		Parser:  parser,
+		Session: "unavailable",
 	}
-	return res.Address
+	if s.sessions == nil {
+		s.audit(ctx, userID, "cache_miss", "session_unavailable", string(school.TargetJiaowu))
+		return resp
+	}
+	cookies, err := s.sessions.IssueSession(ctx, userID)
+	if err != nil || len(cookies) == 0 {
+		s.audit(ctx, userID, "cache_miss", "session_unavailable", string(school.TargetJiaowu))
+		return resp
+	}
+	resp.Cookies = cookies
+	resp.Session = "ok"
+	s.audit(ctx, userID, "cache_miss", "session_ok", string(school.TargetJiaowu))
+	return resp
 }
 
 // envelopeOf 把缓存快照翻成对外信封。

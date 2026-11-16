@@ -40,10 +40,14 @@ func RegisterWithAuth(r gin.IRouter, svc *Service) {
 	r.DELETE("/school/logout", logoutHandler(svc))
 }
 
-// addressResponse 是成功响应：地址 + 逻辑目标名。
+// addressResponse 是成功响应：编码地址 + 逻辑目标名 + 方法。
+//
+// 这里不下发 Cookie。编码地址认的是 vpn ticket，不是 ASPSESSIONID；
+// 会话 cookie 只出现在 cache_miss 的直连 recipe 里。
 type addressResponse struct {
 	Target  string `json:"target"`
 	Address string `json:"address"`
+	Method  string `json:"method"`
 }
 
 // errorResponse 是错误响应：统一错误码 + 可读信息。
@@ -67,6 +71,7 @@ func addressHandler(svc *Service) gin.HandlerFunc {
 		c.JSON(http.StatusOK, addressResponse{
 			Target:  result.Target,
 			Address: result.Address,
+			Method:  http.MethodGet,
 		})
 	}
 }

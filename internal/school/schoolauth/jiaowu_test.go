@@ -1603,3 +1603,63 @@ func TestFetchXSGZToken_RejectsEmptyTGT(t *testing.T) {
 		t.Fatal("空 tgt 必须被拒绝")
 	}
 }
+
+// TestIssueSessionCookies_ReturnsASPSESSIONIDAndDoesNotFetchCoursePage
+// 只建会话、不抓课表页，且不把 go-admin-tgt 交出去。
+func TestIssueSessionCookies_ReturnsASPSESSIONIDAndDoesNotFetchCoursePage(t *testing.T) {
+	ticketData := encryptForTest(t, "ticket-req-issue", `{"st":"ST:FAKE-TICKET","tgt":"201690:TGT:new"}`)
+	d := &scriptedDoer{responses: map[string]*scriptedResp{
+		"/api/v1/cas/login": {body: ticketData},
+		"/jiaoshi/aspsso/caslogin.asp": {
+			status:   302,
+			location: "https://jiaowu.sicau.edu.cn/web/web/web/index.asp",
+			headers: map[string]string{
+				"Set-Cookie": "ASPSESSIONIDabc=xyz; Path=/",
+			},
+		},
+		"/web/web/web/index.asp": {body: "ok"},
+	}}
+	src, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{
+		Doer:          d,
+		AuthBaseURL:   "https://auth.sicau.edu.cn",
+		JiaowuBaseURL: "https://jiaowu.sicau.edu.cn",
+	})
+	if err != nil {
+		t.Fatalf("NewJiaowuSource: %v", err)
+	}
+	now := time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)
+	mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
+		Store:  newMemTGTStore(),
+		Cipher: platform.NewMockCipher("tgt-key-for-tests-32-bytes!!!!!"),
+		Source: src,
+		Clock:  platform.NewMockClock(now),
+	})
+	if err != nil {
+		t.Fatalf("NewTGTManager: %v", err)
+	}
+	if err := mgr.Save(context.Background(), "42", schoolauth.TGTBundle{
+		TGT:          "201690:TGT:stored",
+		CookieHeader: "go-admin-tgt=201690:TGT:stored",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	src.WithTGT(mgr)
+
+	cookies, err := src.IssueSessionCookies(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("IssueSessionCookies: %v", err)
+	}
+	if len(cookies) != 1 || cookies[0].Name != "ASPSESSIONIDabc" || cookies[0].Value != "xyz" {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+	for _, c := range cookies {
+		if c.Name == "go-admin-tgt" {
+			t.Fatal("不应把 tgt 下发给客户端")
+		}
+	}
+	for _, req := range d.requests {
+		if strings.Contains(req.path, "kbbanji.asp") {
+			t.Fatalf("建会话不应抓课表页，实际请求了 %s", req.path)
+		}
+	}
+}

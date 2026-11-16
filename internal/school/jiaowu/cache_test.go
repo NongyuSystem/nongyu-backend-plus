@@ -1,9 +1,11 @@
 package jiaowu
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -722,5 +724,161 @@ func TestCache_DegradesToMemory(t *testing.T) {
 	payload, _ := body["payload"].([]any)
 	if len(payload) != 1 {
 		t.Fatalf("降级读取的 payload 不对: %v", body["payload"])
+	}
+}
+
+type fakeSessionIssuer struct {
+	cookies []IssuedCookie
+	err     error
+	calls   int
+}
+
+func (f *fakeSessionIssuer) IssueSession(context.Context, string) ([]IssuedCookie, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.cookies, nil
+}
+
+// TestCache_MissReturnsDirectRecipe 锁住未命中 recipe：直连课表地址、GET、解析器名。
+// 没接会话下发时仍是 200，cookies 为空，session=unavailable，且不打教务。
+func TestCache_MissReturnsDirectRecipe(t *testing.T) {
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	svc.doer = doer
+
+	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK {
+		t.Fatalf("未命中应回 200，实际 %d", code)
+	}
+	if body["code"] != "cache_miss" {
+		t.Fatalf("code = %v", body["code"])
+	}
+	wantAddr := "https://jiaowu.sicau.edu.cn/xuesheng/gongxuan/gongxuan/kbbanji.asp?title_id1=4"
+	if body["address"] != wantAddr {
+		t.Fatalf("address = %v，期望直连课表地址", body["address"])
+	}
+	if body["method"] != "GET" {
+		t.Fatalf("method = %v", body["method"])
+	}
+	if body["parser"] != "jiaowu-course-v1" {
+		t.Fatalf("parser = %v", body["parser"])
+	}
+	if body["session"] != "unavailable" {
+		t.Fatalf("未接 issuer 时应 session=unavailable，实际 %v", body["session"])
+	}
+	cookies, ok := body["cookies"].([]any)
+	if !ok || len(cookies) != 0 {
+		t.Fatalf("cookies 应为空数组，实际 %v", body["cookies"])
+	}
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("未接 issuer 时 miss 不得出站，实际 %d", got)
+	}
+}
+
+// TestCache_MissOmitsUnconfirmedPath 教室搜索要用户关键词，不编一条假地址。
+func TestCache_MissOmitsUnconfirmedPath(t *testing.T) {
+	engine, _, _, _ := newCacheTestServer(t, "user-1")
+	_, body := doJSON(t, engine, http.MethodGet, "/school/cache/classroomInfo", "")
+	if body["address"] != nil {
+		t.Fatalf("未确认路径不应下发 address，实际 %v", body["address"])
+	}
+	if body["parser"] != "jiaowu-classroom-info-v1" {
+		t.Fatalf("parser = %v", body["parser"])
+	}
+}
+
+// TestCache_MissIssuesSessionCookieWithoutLoggingIt 下发 ASPSESSIONID，值不进审计、不进日志。
+func TestCache_MissIssuesSessionCookieWithoutLoggingIt(t *testing.T) {
+	const secret = "ASPSESSION-SECRET-VALUE"
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	audit := &recordingAuditStore{}
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: secret}}}
+
+	gin.SetMode(gin.TestMode)
+	clock := newFakeClock()
+	cache := newMemCache(func() time.Time { return clock.Now() })
+	svc := NewWithAuth(platform.NewMockHTTPDoer(platform.DoerPolicy{}), platform.NewMockTicketStore(),
+		platform.NewMockCipher("k"), clock, logger)
+	validator, err := NewSchemaValidator()
+	if err != nil {
+		t.Fatalf("编译 schema 失败: %v", err)
+	}
+	svc.BindCache(cache)
+	svc.BindSchemaValidator(validator)
+	svc.BindAuditStore(audit)
+	svc.BindSessionIssuer(issuer)
+
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-1"); c.Next() })
+	RegisterCache(engine, svc)
+
+	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK || body["session"] != "ok" {
+		t.Fatalf("应下发会话，实际 %d body=%v", code, body)
+	}
+	cookies, _ := body["cookies"].([]any)
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %v", body["cookies"])
+	}
+	first, _ := cookies[0].(map[string]any)
+	if first["name"] != "ASPSESSIONIDabc" || first["value"] != secret {
+		t.Fatalf("cookie 不符: %v", first)
+	}
+	if issuer.calls != 1 {
+		t.Fatalf("应建一次会话，实际 %d", issuer.calls)
+	}
+	if results := audit.results("cache_miss"); len(results) != 1 || results[0] != "session_ok" {
+		t.Fatalf("审计结果 = %v", results)
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	for _, e := range audit.entries {
+		blob := e.RequestID + e.UserID + e.Action + e.Target + e.Result
+		if strings.Contains(blob, secret) || strings.Contains(blob, "go-admin-tgt") {
+			t.Fatalf("审计泄漏了 cookie: %+v", e)
+		}
+	}
+	if strings.Contains(logBuf.String(), secret) {
+		t.Fatalf("日志泄漏了 cookie: %s", logBuf.String())
+	}
+}
+
+// TestCache_MissSessionErrorStays200 建会话失败仍是 cache_miss，且错误文本不进响应。
+func TestCache_MissSessionErrorStays200(t *testing.T) {
+	const leaked = "go-admin-tgt=SECRET-TGT"
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	svc.BindSessionIssuer(&fakeSessionIssuer{err: fmt.Errorf("schoolauth: 续期失败：%s", leaked)})
+
+	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK {
+		t.Fatalf("失败也应 200，实际 %d", code)
+	}
+	if body["code"] != "cache_miss" || body["session"] != "unavailable" {
+		t.Fatalf("body = %v", body)
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "SECRET-TGT") || strings.Contains(string(raw), "go-admin-tgt") {
+		t.Fatalf("响应泄漏了 tgt: %s", raw)
+	}
+}
+
+// TestCache_HitDoesNotIssueSession 命中不得建会话。
+func TestCache_HitDoesNotIssueSession(t *testing.T) {
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
+	svc.BindSessionIssuer(issuer)
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+		t.Fatal("回传失败")
+	}
+	issuer.calls = 0
+	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK || body["code"] == "cache_miss" {
+		t.Fatalf("应命中，实际 %d body=%v", code, body)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("命中不应建会话，实际调用 %d 次", issuer.calls)
 	}
 }

@@ -69,12 +69,16 @@ func TestAddressWhitelistReturnsEncodedAddressAndNoOutbound(t *testing.T) {
 	var body struct {
 		Target  string `json:"target"`
 		Address string `json:"address"`
+		Method  string `json:"method"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应体不是合法 JSON：%v，body=%s", err, w.Body.String())
 	}
 	if body.Target != "jiaowu" {
 		t.Fatalf("响应体应含逻辑目标名，实际 target=%q", body.Target)
+	}
+	if body.Method != http.MethodGet {
+		t.Fatalf("address 应带 method=GET，实际 %q", body.Method)
 	}
 	if !strings.Contains(body.Address, keyHexPrefix) {
 		t.Fatalf("地址应含 WebVPN KEY_HEX 前缀，实际 address=%q", body.Address)

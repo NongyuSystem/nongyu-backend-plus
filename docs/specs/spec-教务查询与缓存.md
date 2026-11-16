@@ -1,7 +1,9 @@
 # 教务查询与缓存：前端解析、后端缓存
 
-> 状态：**已实现**（2026-11-11）。决策来源见 [地图 #30](https://github.com/NongyuSystem/nongyu-backend-plus/issues/30) 及其 12 张子票；
+> 状态：**已实现**（2026-11-11；2026-11-16 修订 cache_miss recipe）。决策来源见 [地图 #30](https://github.com/NongyuSystem/nongyu-backend-plus/issues/30) 及其 12 张子票；
 > 逐条决策的完整依据住在各 decision ticket 里，本文只做汇总与落地说明。
+>
+> **2026-11-16 修订**：未命中不再只下发 WebVPN 编码地址。`cache_miss` 下发直连教务地址、`GET`、解析器名，以及用已保管的 `go-admin-tgt` 换出的教务会话 Cookie（`ASPSESSIONID*`）。tgt 不下发。解析仍在客户端，POST 仍收解析后的 JSON。见文末「2026-11-16 推翻了什么」。
 >
 > 术语遵循仓库 `GLOSSARY.md`：**农屿会话**（自有 token）/ **票据失效**（WebVPN 网关 302→/login）/
 > **教务会话失效**（教务 ASPSESSIONID，正文「登录超时」）。三者不可混用。
@@ -23,9 +25,10 @@
 2. **后端校验**：只做 schema/形状校验（JSON Schema 2020-12）。不合格回 `400 schema_rejected`，
    且**一个字节都不写**，保证坏数据永远顶不掉能读的旧数据；
 3. **有缓存**：前端直接 `GET /school/cache/:dataType` 命中返回，不再打教务；未命中回
-   `200 + code=cache_miss` 并顺带下发编码地址，省掉再调一次 address。
+   `200 + code=cache_miss`，并下发该类型的直连地址、方法、解析器名和教务会话 Cookie。
 
-后端对教务**零知识**：不代取、不解析、不认识 `title_id1` 之类的上游参数（由前端拼进 `path`）。
+后端不解析 HTML，也不代取业务页。它认识已写进契约的固定 path（例如课表的 `title_id1=4`），
+用来拼直连地址。需要用户输入才能确定的 path（教室名、教师编号）不编。
 
 ## User Stories
 
@@ -77,7 +80,7 @@
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
 | `/school/address` | GET | 下发经 WebVPN 编码的地址，支持任意白名单 `path` + query |
-| `/school/cache/:dataType` | GET | 命中直返；未命中 `200 + code=cache_miss` 并附地址 |
+| `/school/cache/:dataType` | GET | 命中直返；未命中 `200 + code=cache_miss`，附直连 recipe |
 | `/school/cache/:dataType` | POST | 回传解析后的 JSON，schema 校验后写入 |
 | `/school/cache/:dataType` | DELETE | 缓存失效，60 秒间隔 |
 
@@ -139,7 +142,7 @@
 
 | 场景 | HTTP | code |
 | --- | --- | --- |
-| 未命中 | 200 | `cache_miss` |
+| 未命中 | 200 | `cache_miss`（附 recipe；`session=unavailable` 仍是这条，不是 500） |
 | 回传形状不合格 | 400 | `schema_rejected` |
 | dataType 不在白名单 | 400 | `target_denied` |
 | 缺认证身份 | 401 | `unauthorized` |
@@ -207,6 +210,37 @@
 
 **回归夹具**：`testdata/jiaowu/`（6 份真实页 + 3 份手工 + README）。
 脱敏口径是「结构保留 + 身份占位」；只保留 UTF-8（GBK 解码路径的补偿做法见 README）。
+
+## 2026-11-16 推翻了什么
+
+未命中响应从「编码地址」改成 recipe：
+
+```json
+{
+  "code": "cache_miss",
+  "target": "jiaowu",
+  "address": "https://jiaowu.sicau.edu.cn/xuesheng/gongxuan/gongxuan/kbbanji.asp?title_id1=4",
+  "method": "GET",
+  "cookies": [{ "name": "ASPSESSIONID…", "value": "…" }],
+  "parser": "jiaowu-course-v1",
+  "session": "ok"
+}
+```
+
+推翻的：
+
+- miss 只下发 WebVPN 编码地址。现在 `address` 是直连教务 URL，校外打不进。这是下发 `ASPSESSIONID` 的代价：那张 Cookie 只对 `jiaowu.sicau.edu.cn` 有效，贴到编码地址上不会登录。
+- 后端不认识固定 path。已写明的 path 由后端拼进 `address`。教室/教师这类要用户输入的 path 仍不下发，避免编假地址。培养方案只给第一跳 `jjihua.asp?title_id1=1`，不编不能静态化的隐藏域。
+- Cookie 只在客户端罐里。miss 时后端用已保管的 `go-admin-tgt` 换票、走教务域内三跳，把 `ASPSESSIONID*` 交给本人。tgt 不下发。没有 tgt 或建会话失败时仍是 200，`cookies` 为空，`session=unavailable`。Cookie 值不进日志、不进审计。
+- ADR-0001 第 5 条「不回显非必要 Set-Cookie」在这一条路径上放宽为：可回显给本人的教务会话 Cookie。见该 ADR 的 2026-11-16 修订。
+
+没有推翻的：
+
+- 解析仍在客户端。`parser` 只是名字（如 `jiaowu-course-v1`），本轮不实现 HTML 解析器。
+- `POST /school/cache/:dataType` 仍收解析后的 JSON，仍进现有缓存，不新建表。
+- `GET /school/address` 仍返回编码地址、零出站，只追加 `method=GET`，不附 `ASPSESSIONID`。
+- 命中路径零出站，不建会话。
+- 后端不代取课表 HTML 作为主路径。
 
 ## Out of Scope
 

@@ -36,6 +36,9 @@ type Service struct {
 	// schema 是回传体的形状校验器（#41），由 BindSchemaValidator 注入。
 	// 为 nil 时缓存读写直接报错——没有校验器就绝不能放数据进缓存。
 	schema *SchemaValidator
+	// sessions 在 cache_miss 时用已保管的 tgt 建教务会话，把 ASPSESSIONID 交给本人。
+	// 为 nil 时 miss 仍成功，只是 cookies 为空、session=unavailable。
+	sessions SessionIssuer
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -77,6 +80,11 @@ func NewWithAccel(doer platform.HTTPDoer, tickets platform.TicketStore, cipher p
 // BindAuditStore 接入审计持久化通道（PG）。未接入时审计只写 slog。
 func (s *Service) BindAuditStore(store platform.AuditStore) {
 	s.audit_store = store
+}
+
+// BindSessionIssuer 接入教务会话下发。未接入时 cache_miss 不建会话。
+func (s *Service) BindSessionIssuer(issuer SessionIssuer) {
+	s.sessions = issuer
 }
 
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。

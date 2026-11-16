@@ -479,6 +479,58 @@ func (s *JiaowuSource) establishSession(ctx context.Context, st string) (string,
 	return "", fmt.Errorf("schoolauth: 跳转次数超过上限")
 }
 
+// IssueSessionCookies 用已保管的 tgt 换票并建立教务会话，只返回 cookie，不抓业务页。
+//
+// tgt 留在服务端。返回给调用方的是教务域会话（ASPSESSIONID* 等），不含 go-admin-tgt。
+// 错误文本可能带凭据前缀，调用方不得把它写入日志或 HTTP 响应。
+func (s *JiaowuSource) IssueSessionCookies(ctx context.Context, userID string) ([]SessionCookie, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("schoolauth: 缺少用户身份")
+	}
+	if s.tgt == nil {
+		return nil, fmt.Errorf("schoolauth: 未接入 tgt 保管")
+	}
+	tgt, err := s.tgt.EnsureFresh(ctx, userID, Credential{})
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(tgt) == "" {
+		return nil, fmt.Errorf("schoolauth: 没有可用的 tgt")
+	}
+	st, _, err := s.exchangeTicket(ctx, tgt, "")
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.establishSession(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	out := parseSessionCookies(raw)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("schoolauth: 教务未下发会话 cookie")
+	}
+	return out, nil
+}
+
+// parseSessionCookies 把 "name=value; name2=value2" 拆开。
+// 丢掉 go-admin-tgt：那张票不该出现在给客户端的课表请求里。
+func parseSessionCookies(header string) []SessionCookie {
+	if strings.TrimSpace(header) == "" {
+		return nil
+	}
+	parts := strings.Split(header, ";")
+	out := make([]SessionCookie, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		name, value, ok := strings.Cut(part, "=")
+		if !ok || name == "" || strings.EqualFold(name, goAdminTgtCookie) {
+			continue
+		}
+		out = append(out, SessionCookie{Name: name, Value: value})
+	}
+	return out
+}
+
 // fetchAcademicPage 带着教务会话抓学籍页。
 func (s *JiaowuSource) fetchAcademicPage(ctx context.Context, sessionCookies string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.jiaowuBase+academicPagePath, nil)

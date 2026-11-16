@@ -521,6 +521,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowuSvc.BindAuditStore(auditStore)
+	if jwSrc != nil {
+		// cache_miss 用已保管的 tgt 建教务会话，把 ASPSESSIONID 交给本人。
+		// 没有 tgt 时 miss 仍是 200，cookies 为空。
+		jiaowuSvc.BindSessionIssuer(jiaowuSessionBridge{src: jwSrc})
+	}
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
 	// 回传缓存子域（#40/#41/#32/#34）：把缓存层与 schema 校验器注入教务子域，
