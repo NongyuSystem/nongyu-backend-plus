@@ -1205,6 +1205,35 @@ func identityDDLStatements() []string {
 			user_id      bigint      NOT NULL,
 			received_at  timestamptz NOT NULL DEFAULT now()
 		)`,
+		// 0007：皮肤包上传/下载域（元数据 + 全局单指针）。
+		// 逐列照 migrations/0007_skins.sql 的定义与顺序，供 DDL 一致性守卫比对。
+		// 注意：迁移里额外的 skin_packs_created_at_idx 属「已知差异」（测试隔离
+		// schema 不建二级索引），守卫只提示不判失败。
+		`CREATE TABLE IF NOT EXISTS skin_packs (
+			id              BIGSERIAL   PRIMARY KEY,
+			pack_id         TEXT        NOT NULL,
+			version         TEXT        NOT NULL,
+			schema_version  INTEGER     NOT NULL,
+			min_app_version INTEGER     NOT NULL,
+			display_name    TEXT        NOT NULL,
+			object_key      TEXT        NOT NULL,
+			pack_sha256     TEXT        NOT NULL,
+			pack_size       BIGINT      NOT NULL,
+			manifest_json   TEXT        NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			created_by      TEXT        NOT NULL DEFAULT '',
+			CONSTRAINT skin_packs_ref_unique UNIQUE (pack_id, version)
+		)`,
+		`CREATE TABLE IF NOT EXISTS skin_current (
+			id          INTEGER     PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			pack_id     TEXT        NOT NULL,
+			version     TEXT        NOT NULL,
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT skin_current_ref_fk
+				FOREIGN KEY (pack_id, version)
+				REFERENCES skin_packs (pack_id, version)
+				ON DELETE RESTRICT
+		)`,
 	}
 }
 

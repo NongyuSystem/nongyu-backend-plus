@@ -38,6 +38,8 @@ var migrationTables = []string{
 	// 按表名字母序排列，与 information_schema 查询结果一致
 	"announcements", "audit_log", "login_methods", "messages",
 	"post_reactions", "post_replies", "posts", "sessions",
+	// 0007_skins.sql：皮肤包元数据 + 全局单指针
+	"skin_current", "skin_packs",
 	"student_family_members", "student_profile_groups",
 	"student_profiles", "student_resumes", "track_event",
 	"user_profiles", "users",

@@ -634,6 +634,9 @@ var migrationTables = []string{
 	"post_replies",
 	"posts",
 	"sessions",
+	// 0007_skins.sql：皮肤包元数据 + 全局单指针
+	"skin_current",
+	"skin_packs",
 	"student_family_members",
 	"student_profile_groups",
 	"student_profiles",
