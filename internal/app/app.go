@@ -488,6 +488,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				School: schoolAdapter,
 				// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
 				TGTSaver: tgtSaverBridge{mgr: tgtMgr},
+				// 登录失败计数的跨实例存储：配了 Redis 就用外置原子计数，
+				// 未配则留空退回进程内 map（单实例足够；多实例时攻击者可在
+				// 实例间分摊尝试次数，见 login/lockout.go 的说明）。
+				FailCounter: loginFailCounter(cache),
 			})
 		}
 	} else {

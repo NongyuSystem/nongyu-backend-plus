@@ -200,6 +200,11 @@ type Service struct {
 	initials    PinyinInitializer
 	// tgtSaver 可选：登录成功后把学校会话凭据按用户保管，供后续免密取学籍。
 	tgtSaver TGTSaver
+	// loginFailures 是「半公开凭据」类登录的按账号失败计数器。
+	//
+	// 覆盖 idcard（学号+身份证后四位+拼音首字母）与 password（学号+农屿账密）
+	// 两种可被穷举的登录方式。见 lockout.go 的完整说明。
+	loginFailures *failureTracker
 }
 
 // Options 是构造参数。
@@ -221,6 +226,11 @@ type Options struct {
 	Initials PinyinInitializer
 	// TGTSaver 可选：登录成功后保管学校会话凭据（tgt）。
 	TGTSaver TGTSaver
+	// FailCounter 可选：跨实例共享的失败计数器（生产注入 RedisCache 适配实现）。
+	//
+	// 为 nil 时退回进程内 map——单实例部署足够，多实例时攻击者可在实例间
+	// 分摊尝试次数（已知残余面，见 lockout.go）。
+	FailCounter Counter
 }
 
 // New 构造登录子域服务。
@@ -228,6 +238,11 @@ func New(o Options) *Service {
 	initials := o.Initials
 	if initials == nil {
 		initials = DefaultInitializer{}
+	}
+	clock := o.Clock
+	var nowFn func() time.Time
+	if clock != nil {
+		nowFn = clock.Now
 	}
 	return &Service{
 		users:       o.Users,
@@ -242,6 +257,8 @@ func New(o Options) *Service {
 		mailer:      o.Mailer,
 		initials:    initials,
 		tgtSaver:    o.TGTSaver,
+		// 按账号的失败计数：见 lockout.go。注入 FailCounter 时跨实例共享。
+		loginFailures: newFailureTracker(o.FailCounter, nowFn),
 	}
 }
 
@@ -377,9 +394,18 @@ func (s *Service) LoginBySchool(ctx context.Context, cred SchoolCredential) (Res
 
 // LoginByPassword 走农屿账密登录。
 // 该方式**不建号**：用户不存在时返回 NeedSchoolAuth。
+//
+// 按账号失败计数见 lockout.go：农屿账密同样是可被穷举的"半公开/弱口令"面，
+// 只靠按 IP 的全局限流挡不住换 IP 的攻击者。
 func (s *Service) LoginByPassword(ctx context.Context, studentNo, password string) (Result, error) {
+	// 锁定判断放在最外层：连"该账号是否注册"都不在锁定期内暴露。
+	if s.loginFailures.Locked(ctx, ScopePassword, studentNo) {
+		return Result{}, identity.NewError(identity.CodeTooManyAttempts, "尝试次数过多，请稍后再试")
+	}
+
 	u, err := s.users.ByStudentNo(ctx, studentNo)
 	if platform.IsNotFound(err) {
+		s.loginFailures.Fail(ctx, ScopePassword, studentNo)
 		return Result{NeedSchoolAuth: true}, identity.NewError(identity.CodeNeedSchoolAuth, "该账号尚未注册，请先完成学校认证登录")
 	}
 	if err != nil {
@@ -401,9 +427,12 @@ func (s *Service) LoginByPassword(ctx context.Context, studentNo, password strin
 		return Result{}, identity.WrapError(identity.CodeInternal, "解密密码失败", err)
 	}
 	if !constantTimeEqual(string(plain), password) {
+		s.loginFailures.Fail(ctx, ScopePassword, studentNo)
 		return Result{}, identity.NewError(identity.CodeBadCredentials, "学号或密码错误")
 	}
 
+	// 成功后清除失败计数，避免正常用户被自己之前的误输拖累。
+	s.loginFailures.Reset(ScopePassword, studentNo)
 	prof, _ := s.profiles.ByUserID(ctx, u.ID)
 	return Result{User: u, Profile: prof}, nil
 }
@@ -442,8 +471,20 @@ func (s *Service) LoginByMailCode(ctx context.Context, email, code string) (Resu
 
 // LoginByIDCard 走「学号 + 身份证后四位 + 姓名拼音首字母」登录。不建号。
 func (s *Service) LoginByIDCard(ctx context.Context, studentNo, suffix4, nameInitials string) (Result, error) {
+	// 按账号失败计数：先判锁定，再走任何探测分支。
+	//
+	// 必须在**最前面**判：既然「该学号是否已注册」本身也是可枚举信息
+	// （未注册返回 need_school_auth、已注册返回其它码），锁定就要挡在最外层，
+	// 否则攻击者仍能用这个端点做账号枚举。锁定期内一律返回 TooManyAttempts，
+	// 不区分学号是否存在。
+	if s.loginFailures.Locked(ctx, ScopeIDCard, studentNo) {
+		return Result{}, identity.NewError(identity.CodeTooManyAttempts,
+			"尝试次数过多，请稍后再试")
+	}
+
 	u, err := s.users.ByStudentNo(ctx, studentNo)
 	if platform.IsNotFound(err) {
+		s.loginFailures.Fail(ctx, ScopeIDCard, studentNo)
 		return Result{NeedSchoolAuth: true}, identity.NewError(identity.CodeNeedSchoolAuth, "该学号尚未注册，请先完成学校认证登录")
 	}
 	if err != nil {
@@ -465,6 +506,7 @@ func (s *Service) LoginByIDCard(ctx context.Context, studentNo, suffix4, nameIni
 		return Result{}, identity.NewError(identity.CodeLoginMethodUnbound, "该账号缺少身份证信息，请先完成学校认证登录")
 	}
 	if !constantTimeEqual(p.IDCardSuffix4, strings.TrimSpace(suffix4)) {
+		s.loginFailures.Fail(ctx, ScopeIDCard, studentNo)
 		return Result{}, identity.NewError(identity.CodeBadCredentials, "学号、身份证后四位或姓名首字母错误")
 	}
 	// 姓名首字母：算不出来就拒绝（fail-closed），绝不用猜测值比对。
@@ -476,9 +518,12 @@ func (s *Service) LoginByIDCard(ctx context.Context, studentNo, suffix4, nameIni
 		return Result{}, identity.NewError(identity.CodeLoginMethodUnbound, "无法为该姓名计算拼音首字母，请使用其它登录方式")
 	}
 	if !constantTimeEqual(wantInitials, NormalizeInitials(nameInitials)) {
+		s.loginFailures.Fail(ctx, ScopeIDCard, studentNo)
 		return Result{}, identity.NewError(identity.CodeBadCredentials, "学号、身份证后四位或姓名首字母错误")
 	}
 
+	// 成功后清除失败计数，避免正常用户被自己之前的误输拖累。
+	s.loginFailures.Reset(ScopeIDCard, studentNo)
 	_ = s.bindOrIgnore(ctx, u.ID, platform.LoginIDCard, u.StudentNo, nil)
 	return Result{User: u, Profile: p}, nil
 }

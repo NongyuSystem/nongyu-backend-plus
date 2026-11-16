@@ -268,6 +268,71 @@ func (c *RedisCache) TTL(ctx context.Context, key string) (time.Duration, error)
 	return c.client.TTL(ctx, c.fullKey(key)).Result()
 }
 
+// IncrBy 在缓存命名空间里原子自增一个整数计数器，并在**首次创建**时设置 TTL。
+//
+// 用途：跨实例共享的计数（例如登录失败次数）。多副本部署时进程内 map 各算各的，
+// 攻击者可在实例间分摊尝试次数；用 Redis 的原子 INCR 才能全局一致。
+//
+// 语义细节：
+//   - 键不存在 → 置为 delta 并设 ttl；
+//   - 键已存在 → 只 INCR（**不刷新 TTL**），这样窗口是从第一次失败开始算的
+//     固定滑窗，而不是「一直被尝试就一直不过期」。
+//   - 熔断/Redis 错误 → 返回 error，调用方必须自行决定 fail-open 还是 fail-closed。
+func (c *RedisCache) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	if c == nil {
+		return 0, fmt.Errorf("platform: IncrBy 需要 RedisCache")
+	}
+	if delta == 0 {
+		return 0, fmt.Errorf("platform: IncrBy delta 不能为 0")
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("platform: IncrBy ttl 必须为正")
+	}
+	if !c.breaker.allow() {
+		return 0, fmt.Errorf("platform: 缓存已熔断，无法自增（key=%s）", key)
+	}
+	full := c.fullKey(key)
+	// 用一段 Lua 保证「首次设 TTL」与「自增」原子，且已有键不重置 TTL。
+	const script = `
+local v = redis.call('INCRBY', KEYS[1], ARGV[1])
+if tonumber(v) == tonumber(ARGV[1]) then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return v`
+	n, err := c.client.Eval(ctx, script, []string{full}, delta, ttl.Milliseconds()).Int64()
+	if err != nil {
+		c.breaker.onFailure()
+		return 0, err
+	}
+	c.breaker.onSuccess()
+	return n, nil
+}
+
+// IncrGet 读取由 IncrBy 维护的计数器当前值（键不存在时返回 0）。
+//
+// 单独成方法而不是复用 Get：Get 返回的是 []byte 且走降级回灌逻辑，
+// 而计数器语义要求「读不到就是 0」，不能把本地积压当成精确值。
+func (c *RedisCache) IncrGet(ctx context.Context, key string) (int64, error) {
+	if c == nil {
+		return 0, fmt.Errorf("platform: IncrGet 需要 RedisCache")
+	}
+	if !c.breaker.allow() {
+		return 0, fmt.Errorf("platform: 缓存已熔断，无法读取计数器（key=%s）", key)
+	}
+	n, err := c.client.Get(ctx, c.fullKey(key)).Int64()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			// 键不存在 = 计数为 0，这是正常态不是错误。
+			c.breaker.onSuccess()
+			return 0, nil
+		}
+		c.breaker.onFailure()
+		return 0, err
+	}
+	c.breaker.onSuccess()
+	return n, nil
+}
+
 // Delete 删除缓存键。
 func (c *RedisCache) Delete(ctx context.Context, key string) error {
 	err := c.client.Del(ctx, c.fullKey(key)).Err()
