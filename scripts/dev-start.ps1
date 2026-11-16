@@ -51,9 +51,40 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# ---- 定位仓库根（脚本在 <root>\scripts\ 下）----
+# ---- 定位仓库根 ----
+#
+# 正常情况：脚本在 <root>\scripts\ 下，取上一级即仓库根。
+#
+# 但不能盲信这个推导：脚本被复制到别处（实测踩到——有人把 dev-start.ps1
+# 拷到仓库根后运行，于是「根」变成了 apps\，.env 找不到、日志写到 apps\ 下、
+# go run 也报 cannot find main module）。
+# 因此这里做一次校验：推导出的目录必须含 go.mod；否则从脚本所在目录向上找。
+function Resolve-RepoRoot([string]$StartDir) {
+    $candidate = $null
+    $dir = $StartDir
+    for ($i = 0; $i -lt 5; $i++) {
+        if (Test-Path -LiteralPath (Join-Path $dir 'go.mod')) { $candidate = $dir; break }
+        $parent = Split-Path -Parent $dir
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $candidate
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+
+# 先按约定推导（脚本父目录），再校验；不行就从脚本所在目录向上找
+$Root = $null
+$guess = (Resolve-Path (Join-Path $ScriptDir '..') -ErrorAction SilentlyContinue)
+if ($guess) { $Root = Resolve-RepoRoot -StartDir $guess.Path }
+if (-not $Root) { $Root = Resolve-RepoRoot -StartDir $ScriptDir }
+if (-not $Root) {
+    Write-Host "[env] 找不到仓库根（向上 5 层内没有 go.mod）。请把脚本放在 <repo>\scripts\ 下运行。" -ForegroundColor Red
+    exit 1
+}
+if ($ScriptDir -ne (Join-Path $Root 'scripts')) {
+    Write-Host "[env] 注意：脚本不在 <repo>\scripts\ 下（当前：$ScriptDir），已按 go.mod 定位仓库根：$Root" -ForegroundColor Yellow
+}
 Set-Location -LiteralPath $Root
 
 $PidFile = Join-Path $Root '.dev-server.pid'

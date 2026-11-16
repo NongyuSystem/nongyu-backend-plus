@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  dev-start.bat - thin wrapper that forwards to dev-start.ps1
+REM  dev-start.bat - thin wrapper that forwards to scripts\dev-start.ps1
 REM
 REM  Why so thin: cmd.exe has hard limits that bit us repeatedly - it parses
 REM  .bat with the active code page (so non-ASCII comments break before chcp
@@ -17,10 +17,16 @@ REM    scripts\dev-start.bat -Foreground    run in foreground
 REM    scripts\dev-start.bat -Build         build .exe then run
 REM ===========================================================================
 setlocal
+
+REM Look for the real script next to this wrapper first, then one level up
+REM (in case this .bat was copied into the repo root by mistake).
 set "SCRIPT=%~dp0dev-start.ps1"
+if not exist "%SCRIPT%" set "SCRIPT=%~dp0scripts\dev-start.ps1"
 
 if not exist "%SCRIPT%" (
-    echo [error] dev-start.ps1 not found next to this .bat: %SCRIPT%
+    echo [error] dev-start.ps1 not found.
+    echo         looked in: %~dp0dev-start.ps1
+    echo         and:       %~dp0scripts\dev-start.ps1
     exit /b 1
 )
 
