@@ -19,6 +19,7 @@
 package skin
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -160,12 +161,24 @@ type Current struct {
 	UpdatedAt     time.Time
 }
 
-// ObjectKey 生成皮肤包对象 key：skins/{packId}/{version}.zip。
-// 与 post 的 posts/yyyy/MM/{uuid}.{ext} 同思路（确定性、可预测、前缀隔离），
-// 但用 packId/version 而非随机 uuid —— 同一 (packId, version) 重复上传会
-// 覆盖同一对象，语义上「重传同一版本」本就该得到同一份包。
-func ObjectKey(packID, version string) string {
-	return fmt.Sprintf("%s/%s/%s.zip", objectKeyPrefix, packID, version)
+// ObjectKey 生成皮肤包对象 key：skins/{packId}/{version}/{id}.zip。
+//
+// id 由每次上传**唯一生成**（不按 packId/version 确定性派生），这是刻意的：
+// 同一 (packId, version) 的重复上传必须失败且**不得覆盖/删除已生效那版的包体**。
+// 若 key 确定性派生，「重复上传 → Create 失败 → 回滚删对象」会把线上包体删掉；
+// 唯一 key 让回滚只删本次刚写的那一个对象，与已登记版本互不影响。
+func ObjectKey(packID, version, id string) string {
+	return fmt.Sprintf("%s/%s/%s/%s.zip", objectKeyPrefix, packID, version, id)
+}
+
+// NewObjectID 生成一个对象 key 的随机段（16 字节 hex，32 字符）。
+// 用 crypto/rand：几十万次上传的碰撞概率可忽略，且不可被外部猜中。
+func NewObjectID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // CheckPathAllowed 与客户端 SkinPackIntegrity.checkPathAllowed 逐条对齐：

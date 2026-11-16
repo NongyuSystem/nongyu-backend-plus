@@ -103,8 +103,8 @@ func TestService_UploadActivateCatalogDownload(t *testing.T) {
 	if store.PutCount() != 1 {
 		t.Fatalf("应写入 1 个对象，实际 %d", store.PutCount())
 	}
-	// 对象确实可按 ObjectKey 取出，且字节与上传一致
-	rc, err := store.Get(ctx, skin.ObjectKey("default-green", "1.0.0"))
+	// 对象确实可按 Upload 返回的 ObjectKey 取出，且字节与上传一致
+	rc, err := store.Get(ctx, p.ObjectKey)
 	if err != nil {
 		t.Fatalf("对象取不到：%v", err)
 	}
@@ -170,17 +170,40 @@ func TestService_UploadBadVersionRejected(t *testing.T) {
 func TestService_DuplicateVersionIsConflict(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"}); err != nil {
+	first, err := svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// 同一 (packId, version) 再传一次：不可变，返回 conflict
-	_, err := svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"})
+	_, err = svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"})
 	assertCode(t, err, "conflict")
-	// 第二次上传失败时，Upload 会尽力 Delete 回滚刚写的对象；
-	// 净结果应是「写了 2 次、删了 1 次」，当前对象仍是最初那份。
-	if store.DeleteCount() != 1 {
-		t.Fatalf("重复上传应回滚刚写的对象，DeleteCount=%d", store.DeleteCount())
+
+	// 关键回归：重复上传**不得**写对象、更不得删既有包体。
+	// 早先实现会 Put 再回滚删除同 key，把线上已生效那版的包体删掉。
+	if store.PutCount() != 1 {
+		t.Fatalf("重复上传不应再写对象，PutCount=%d", store.PutCount())
 	}
+	if store.DeleteCount() != 0 {
+		t.Fatalf("重复上传不应删除任何对象（否则会误删既有包体），DeleteCount=%d", store.DeleteCount())
+	}
+	// 既有包体仍然可取且内容正确
+	rc, err := store.Get(ctx, first.ObjectKey)
+	if err != nil {
+		t.Fatalf("既有包体被误删：%v", err)
+	}
+	defer rc.Close()
+	if !bytes.Equal(mustReadAll(t, rc), validPack(t)) {
+		t.Fatal("既有包体内容被破坏")
+	}
+}
+
+func mustReadAll(t *testing.T, rc interface{ Read([]byte) (int, error) }) []byte {
+	t.Helper()
+	b, err := readAll(rc)
+	if err != nil {
+		t.Fatalf("读流失败：%v", err)
+	}
+	return b
 }
 
 func TestService_ListAndDetail(t *testing.T) {
@@ -255,14 +278,15 @@ func TestService_DownloadMissingMaps404(t *testing.T) {
 func TestService_ObjectMissingButMetaExistsMaps404(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"}); err != nil {
+	p, err := svc.Upload(ctx, skin.UploadInput{PackBytes: validPack(t), Version: "1.0.0"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// 人为把对象从存储里删掉，模拟「库里有、MinIO 里没了」
-	if err := store.Delete(ctx, skin.ObjectKey("default-green", "1.0.0")); err != nil {
+	if err := store.Delete(ctx, p.ObjectKey); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := svc.Download(ctx, "default-green", "1.0.0")
+	_, _, err = svc.Download(ctx, "default-green", "1.0.0")
 	assertCode(t, err, "not_found")
 }
 

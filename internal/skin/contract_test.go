@@ -59,8 +59,20 @@ func TestCheckPathAllowed(t *testing.T) {
 // ---------- ObjectKey ----------
 
 func TestObjectKey(t *testing.T) {
-	if got := skin.ObjectKey("default-green", "1.0.0"); got != "skins/default-green/1.0.0.zip" {
+	if got := skin.ObjectKey("default-green", "1.0.0", "abc123"); got != "skins/default-green/1.0.0/abc123.zip" {
 		t.Fatalf("ObjectKey 不符：%q", got)
+	}
+	// 每次上传的对象 key 必须唯一（重复上传不得覆盖线上包体）
+	a, err := skin.NewObjectID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := skin.NewObjectID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || len(a) != 32 {
+		t.Fatalf("NewObjectID 应返回唯一 32 位 hex，得到 %q / %q", a, b)
 	}
 }
 

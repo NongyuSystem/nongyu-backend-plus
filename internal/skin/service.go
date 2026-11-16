@@ -85,7 +85,24 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*Pack, error) {
 	}
 	m := vr.Manifest
 
-	key := ObjectKey(m.PackID, version)
+	// 先查版本是否已存在：重复上传必须在这里就失败，**绝不能先 Put 再回滚**。
+	// 早先「Put → Create 失败 → Delete」的实现会因为对象 key 确定性派生而把
+	// 线上已生效那版的包体一起删掉（集成测试实测抓到的 bug）。
+	// 现在的顺序保证：重复上传既不写 MinIO、也不碰既有对象。
+	if _, err := s.repo.GetByRef(ctx, m.PackID, version); err == nil {
+		return nil, apperr.Errorf(apperr.CodeConflict, "皮肤包 %s/%s 已存在且不可覆盖", m.PackID, version)
+	} else if !errors.Is(err, ErrVersionNotFound) {
+		return nil, fmt.Errorf("skin: 检查版本是否已存在失败：%w", err)
+	}
+
+	// 每次上传用唯一对象 key：即便并发同版本上传，落败那笔的回滚也只会删
+	// 自己刚写的对象，不会碰到胜出者的包体。
+	id, err := NewObjectID()
+	if err != nil {
+		return nil, fmt.Errorf("skin: 生成对象 key 失败：%w", err)
+	}
+	key := ObjectKey(m.PackID, version, id)
+
 	if _, err := s.store.Put(ctx, key, bytes.NewReader(in.PackBytes), vr.PackSize, "application/zip"); err != nil {
 		s.logger.Error("皮肤包写入对象存储失败", "key", key, "err", err)
 		return nil, fmt.Errorf("skin: 写入对象存储失败：%w", err)
@@ -106,11 +123,12 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (*Pack, error) {
 		CreatedBy:     in.CreatedBy,
 	}
 	if err := s.repo.Create(ctx, p); err != nil {
-		// 登记失败：尽力回滚刚写的对象（旁路，失败只记日志）。
+		// 登记失败：尽力回滚刚写的**唯一**对象（不会影响任何已登记版本）。
 		if derr := s.store.Delete(ctx, key); derr != nil {
 			s.logger.Warn("皮肤包登记失败后的对象回滚也失败", "key", key, "deleteErr", derr, "createErr", err)
 		}
 		if errors.Is(err, ErrVersionExists) {
+			// 并发竞态：另一笔先登记成功，本笔按冲突返回。
 			return nil, apperr.Errorf(apperr.CodeConflict, "皮肤包 %s/%s 已存在且不可覆盖", m.PackID, version)
 		}
 		return nil, fmt.Errorf("skin: 登记皮肤包元数据失败：%w", err)
