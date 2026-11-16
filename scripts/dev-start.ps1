@@ -152,7 +152,16 @@ function Import-DotEnv([string]$Path) {
         }
     }
 
-    Write-Host ("[env] 已读取 .env（载入 {0} 项，跳过已存在 {1} 项）" -f $loaded, $skipped) -ForegroundColor Green
+    Write-Host ("[env] 已读取 .env（载入 {0} 项，沿用环境已有 {1} 项）" -f $loaded, $skipped) -ForegroundColor Green
+
+    # 「已存在就不覆盖」与 .sh 语义一致，但有个隐患：当前 PowerShell 会话里残留的
+    # 旧值会静默压过 .env，改了 .env 却不生效（实测：预设 ADDR=:9999 后脚本仍用 9999）。
+    # 这里在有跳过项时给一行提示，把「为什么改了 .env 没反应」的排查成本降到零。
+    if ($skipped -gt 0) {
+        Write-Host ("[env] ⚠ 有 {0} 项因环境变量已存在而未采用 .env 的值；若要强制以 .env 为准，" -f $skipped) -ForegroundColor Yellow
+        Write-Host '          请开一个新的 PowerShell 窗口再运行（当前会话的环境变量会被沿用）。' -ForegroundColor Yellow
+    }
+
     return $loaded
 }
 
