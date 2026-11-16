@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -27,14 +28,15 @@ type ObjectInfo struct {
 
 // ObjectStore 是对象存储的外部能力接缝。
 //
-// 为什么接口方法只有四个（来自 map #43 子票 #53 的决议，见
-// docs/tech/决策-MinIO接入落点.md）：
-//   - 本 effort 只做「帖子图片附件」，读取一律走短 TTL 预签名，
-//     没有分片上传、没有服务端复制、没有列目录的需求；
-//   - 不提前塞 List/Copy/分片，避免接口变成没人用的负债。
+// 接口刻意保持小：Put 写、Get 读、PresignGet 签只读 URL、Delete 删、Stat 查元信息。
+// 早期只有帖子图片附件一个消费者（读取一律走短 TTL 预签名）；皮肤包域接入后
+// 增加了 Get —— 皮肤包下载走**后端流式代理**而不是直连对象存储，
+// 这样内存实现与 MinIO 实现行为一致（无需把 MinIO 暴露给公网、无 CORS、
+// 无预签名过期窗口），也才能在不起 MinIO 的情况下端到端测试。
+// 不提前塞 List/Copy/分片，避免接口变成没人用的负债。
 //
 // 注意这里**没有 PresignPut**：上传走后端中转（客户端 → 本服务 → 对象存储），
-// 因为只有流量过服务端，「单张 5MB + 四种格式」才是后端可执行的硬约束，
+// 因为只有流量过服务端，「体积 / 格式 / 内容」才是后端可执行的硬约束，
 // 而不是靠客户端自律或桶策略。将来若真要做直传，再加方法。
 //
 // 实现必须放在 platform 的子包里（如 platform/objectstore），并且那个子包是
@@ -43,6 +45,11 @@ type ObjectStore interface {
 	// Put 写入一个对象。r 从当前位置读到 EOF 为止；size 为声明的字节数，
 	// 实现可用它做长度校验（与 r 实际长度不一致时应报错）。
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) (ObjectInfo, error)
+
+	// Get 读取一个对象的内容，返回可关闭的只读流。
+	// 对象不存在时返回 ErrObjectNotFound（与 Stat / Delete 同一哨兵）。
+	// 调用方**必须** Close，且应在受控的 context 下读完，避免连接泄漏。
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
 
 	// PresignGet 生成一个限时只读 URL。ttl 由调用方决定（短 TTL 是刻意的：
 	// 已签发的 URL 在过期前无法回收，TTL 越短，内容软删后的残留窗口越小）。
@@ -106,6 +113,20 @@ func (m *MemoryObjectStore) Put(_ context.Context, key string, r io.Reader, size
 	m.mu.Unlock()
 
 	return ObjectInfo{Key: key, Size: int64(len(body)), ContentType: contentType, ETag: etag}, nil
+}
+
+// Get 实现 ObjectStore。返回对象体的只读快照：
+// 拷贝一份而非直接暴露内部 []byte，避免调用方改写内存存储的内容。
+func (m *MemoryObjectStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	m.mu.RLock()
+	o, ok := m.objects[key]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, ErrObjectNotFound
+	}
+	body := make([]byte, len(o.body))
+	copy(body, o.body)
+	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
 // PresignGet 实现 ObjectStore。内存实现给不出真签名，返回可预测的伪 URL。

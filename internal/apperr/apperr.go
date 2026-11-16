@@ -34,6 +34,9 @@ const (
 	CodeSelfSendForbidden  Code = "self_send_forbidden"
 	CodeRateLimited        Code = "rate_limited"
 	CodeSchemaRejected     Code = "schema_rejected"
+	// CodeConflict 表示「目标已存在且不可覆盖」（如同一 packId/version 的皮肤包
+	// 内容不同却想重复上传）。语义上区别于 locked（编辑窗口过期）。
+	CodeConflict Code = "conflict"
 )
 
 // Error 是带错误码的领域错误。
@@ -79,7 +82,7 @@ func HTTPStatus(code Code) int {
 		return 403
 	case CodeNotFound, CodeRecipientNotFound:
 		return 404
-	case CodeLocked:
+	case CodeLocked, CodeConflict:
 		return 409
 	case CodeAttachmentTooLarge, CodePayloadTooLarge:
 		return 413

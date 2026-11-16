@@ -109,6 +109,29 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64, co
 	}, nil
 }
 
+// Get 读取对象内容，返回可关闭的流。
+//
+// 供皮肤包下载这类「后端流式代理」消费者使用：不把对象存储暴露给客户端，
+// 也避免预签名 URL 的 TTL 窗口。对象不存在时统一成 ErrObjectNotFound，
+// 不把 minio-go 的 ToErrorResponse 泄漏给业务域。
+func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("objectstore: 读取 %q 失败：%w", key, err)
+	}
+	// GetObject 是惰性的：首次 Read/Stat 才真正发请求。这里先 Stat 一次，
+	// 把「不存在」变成可判定的 ErrObjectNotFound（与 Stat/Delete 同哨兵），
+	// 否则调用方要读到 EOF 才发现是 NoSuchKey，且错误形状不一致。
+	if _, err := obj.Stat(); err != nil {
+		_ = obj.Close()
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil, platform.ErrObjectNotFound
+		}
+		return nil, fmt.Errorf("objectstore: 读取 %q 元信息失败：%w", key, err)
+	}
+	return obj, nil
+}
+
 // PresignGet 生成限时只读 URL。
 //
 // **未在本仓对 MinIO 实测**：预签名行为依据 AWS S3 文档与 minio-go 的实现，
