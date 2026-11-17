@@ -29,18 +29,16 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"nongyu-backend-plus/internal/platform"
 )
 
-// CacheStore 是教务缓存对 platform 缓存层的最小依赖面。
+// CacheStore 是平台层缓存存储契约在本包的别名（issue #72）。
 //
-// 只声明实际用到的四个方法，让业务域不依赖 *platform.RedisCache 这个具体类型：
-// 装配层注入真实现，测试注入内存假实现，两边都不用起 Redis。
-type CacheStore interface {
-	Get(ctx context.Context, key string) ([]byte, error)
-	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-	Delete(ctx context.Context, key string) error
-	TryAcquire(ctx context.Context, key string, ttl time.Duration) (bool, error)
-}
+// 契约已上移到 internal/platform：二课等其它业务域可直接依赖
+// platform.CacheStore，无需 import 教务域；本包保留此别名，使既有引用
+// （Service.cache、BindCache、测试 memCache）一行不改、行为完全不变。
+type CacheStore = platform.CacheStore
 
 const (
 	// staleMaxAge 是旧数据下发的硬上限（#32 定 7 天）。
