@@ -5,7 +5,7 @@ package jiaowu
 //	POST   /school/webvpn-session        客户端交上登录网关后拿到的 wengine_vpn_ticket
 //	GET    /school/webvpn-session        查询是否已保管（永不回显票值）
 //	DELETE /school/webvpn-session        清掉票（登出或客户端发现失效时）
-//	GET    /school/cache/:dataType/fetch 用已保管的票代取页面（校外形态）
+//	GET    /school/jiaowu/cache/:dataType/fetch 用已保管的票代取页面（校外形态）
 //
 // 为什么票值只在提交方向流动：票据是活凭证，能读出来就等于能冒用。
 // 查询端点只回 present/expiresAt，绝不含 value。
@@ -24,7 +24,7 @@ func RegisterWebVPN(r gin.IRouter, svc *Service) {
 	r.POST("/school/webvpn-session", submitWebVPNTicketHandler(svc))
 	r.GET("/school/webvpn-session", statusWebVPNTicketHandler(svc))
 	r.DELETE("/school/webvpn-session", clearWebVPNTicketHandler(svc))
-	r.GET("/school/cache/:dataType/fetch", fetchViaWebVPNHandler(svc))
+	r.GET("/school/jiaowu/cache/:dataType/fetch", fetchViaWebVPNHandler(svc))
 }
 
 // webvpnSubmitRequest 是提交票的请求体。

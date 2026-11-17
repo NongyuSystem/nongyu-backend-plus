@@ -584,7 +584,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 
 	// 回传缓存子域（#40/#41/#32/#34）：把缓存层与 schema 校验器注入教务子域，
-	// 再挂 GET/POST/DELETE /school/cache/:dataType。
+	// 再挂 GET/POST/DELETE /school/jiaowu/cache/:dataType。
 	//
 	// 这两件能力都是「有则启用、无则端点回 503」的可选依赖：
 	//   - cache 为 nil：没配 REDIS_ADDR，纯缓存语义无处落地；

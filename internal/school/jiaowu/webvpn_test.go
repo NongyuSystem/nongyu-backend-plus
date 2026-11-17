@@ -212,7 +212,7 @@ func TestWebVPN_FetchWithoutTicket(t *testing.T) {
 	doer := &scriptedWebVPNDoer{}
 	engine, _, _ := newWebVPNEngine(t, doer)
 
-	code, body := doReq(t, engine, http.MethodGet, "/school/cache/course/fetch", "")
+	code, body := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
 	if code != http.StatusConflict {
 		t.Fatalf("没有票应回 409，实际 %d body=%v", code, body)
 	}
@@ -234,7 +234,7 @@ func TestWebVPN_FetchSuccessCarriesOnlyGatewayTicket(t *testing.T) {
 		t.Fatal("前置：提交票失败")
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/school/cache/course/fetch", nil)
+	req := httptest.NewRequest(http.MethodGet, "/school/jiaowu/cache/course/fetch", nil)
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
 
@@ -267,7 +267,7 @@ func TestWebVPN_FetchExpiredClearsTicket(t *testing.T) {
 		t.Fatal("前置：提交票失败")
 	}
 
-	code, body := doReq(t, engine, http.MethodGet, "/school/cache/course/fetch", "")
+	code, body := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
 	if code != http.StatusUnauthorized {
 		t.Fatalf("票失效应回 401，实际 %d body=%v", code, body)
 	}
@@ -292,7 +292,7 @@ func TestWebVPN_NonLoginRedirectKeepsTicket(t *testing.T) {
 		t.Fatal("前置：提交票失败")
 	}
 
-	code, _ := doReq(t, engine, http.MethodGet, "/school/cache/course/fetch", "")
+	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
 	if code != http.StatusFound {
 		t.Fatalf("非登录跳转应原样透出，实际 %d", code)
 	}
@@ -310,7 +310,7 @@ func TestWebVPN_FetchNeedsInputTypeRejects(t *testing.T) {
 		`{"ticket":"43d5b3947913eab2"}`); code != http.StatusOK {
 		t.Fatal("前置：提交票失败")
 	}
-	code, _ := doReq(t, engine, http.MethodGet, "/school/cache/classroomInfo/fetch", "")
+	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/classroomInfo/fetch", "")
 	if code == http.StatusOK {
 		t.Fatal("缺入参的类型不应代取成功")
 	}
@@ -327,7 +327,7 @@ func TestWebVPN_Clear(t *testing.T) {
 	if code, _ := doReq(t, engine, http.MethodDelete, "/school/webvpn-session", ""); code != http.StatusOK {
 		t.Fatalf("清票应成功，实际 %d", code)
 	}
-	code, _ := doReq(t, engine, http.MethodGet, "/school/cache/course/fetch", "")
+	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
 	if code != http.StatusConflict {
 		t.Fatalf("清票后应回 409，实际 %d", code)
 	}

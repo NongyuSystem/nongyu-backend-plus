@@ -232,7 +232,7 @@ func TestCache_FullRoundTrip(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
 
 	// 1) 首次 GET：必须是 200 + cache_miss。
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK {
 		t.Fatalf("未命中应回 200，实际 %d", code)
 	}
@@ -241,7 +241,7 @@ func TestCache_FullRoundTrip(t *testing.T) {
 	}
 
 	// 2) POST 回传一份合法数据。
-	code, body = doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody)
+	code, body = doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody)
 	if code != http.StatusOK {
 		t.Fatalf("回传应成功，实际 %d，body=%v", code, body)
 	}
@@ -256,7 +256,7 @@ func TestCache_FullRoundTrip(t *testing.T) {
 	}
 
 	// 3) 再 GET：必须命中，且带回原来的 payload。
-	code, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body = doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK {
 		t.Fatalf("命中应回 200，实际 %d", code)
 	}
@@ -297,14 +297,14 @@ func TestCache_HitDoesNotTouchUpstream(t *testing.T) {
 	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-1"); c.Next() })
 	RegisterCache(engine, svc)
 
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("回传失败，code=%d", code)
 	}
 	before := len(doer.Requests())
 
 	// 连续命中若干次。
 	for i := 0; i < 3; i++ {
-		code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+		code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 		if code != http.StatusOK || body["code"] == "cache_miss" {
 			t.Fatalf("第 %d 次命中失败: code=%d body=%v", i, code, body)
 		}
@@ -321,13 +321,13 @@ func TestCache_RejectBadSchemaAndKeepOldData(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
 
 	// 先写入一份好的。
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("首次回传失败，code=%d", code)
 	}
 
 	// 再回传一份坏的（缺 courseName）。
 	bad := `{"schemaVersion":1,"payload":[{"weeks":"1-16"}]}`
-	code, body := doJSON(t, engine, http.MethodPost, "/school/cache/course", bad)
+	code, body := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", bad)
 	if code != http.StatusBadRequest {
 		t.Fatalf("坏数据应回 400，实际 %d", code)
 	}
@@ -336,7 +336,7 @@ func TestCache_RejectBadSchemaAndKeepOldData(t *testing.T) {
 	}
 
 	// 旧数据必须还在。
-	code, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body = doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK || body["code"] == "cache_miss" {
 		t.Fatalf("坏数据被拒后旧缓存丢了: code=%d body=%v", code, body)
 	}
@@ -351,7 +351,7 @@ func TestCache_RejectUnknownDataType(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
 
 	for _, name := range []string{"unknown", "Course", "scores"} {
-		code, body := doJSON(t, engine, http.MethodGet, "/school/cache/"+name, "")
+		code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/"+name, "")
 		if code != http.StatusBadRequest {
 			t.Errorf("未知 dataType %q 应回 400，实际 %d", name, code)
 		}
@@ -365,7 +365,7 @@ func TestCache_RejectUnknownDataType(t *testing.T) {
 func TestCache_RequiresUserID(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "") // 不注入 userID
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusUnauthorized {
 		t.Fatalf("缺少身份应回 401，实际 %d", code)
 	}
@@ -380,12 +380,12 @@ func TestCache_RequiresUserID(t *testing.T) {
 func TestCache_StaleOnlyOnFallback(t *testing.T) {
 	engine, _, cache, clock := newCacheTestServer(t, "user-1")
 
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("回传失败")
 	}
 
 	// 刚写完：正常 GET 命中、stale=false。
-	_, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	_, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if body["stale"] != false {
 		t.Fatalf("新鲜数据 stale 应为 false，实际 %v", body["stale"])
 	}
@@ -395,13 +395,13 @@ func TestCache_StaleOnlyOnFallback(t *testing.T) {
 	cache.forceAge(t, "user-1", DataTypeCourse, 90*time.Minute)
 
 	// 正常 GET：应当 cache_miss（数据还在，但不新鲜了，让客户端去取新的）。
-	_, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	_, body = doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if body["code"] != "cache_miss" {
 		t.Fatalf("超过新鲜度窗口应回 cache_miss，实际 %v", body)
 	}
 
 	// fallback=1：应拿到旧数据 + stale=true。
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course?fallback=1", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course?fallback=1", "")
 	if code != http.StatusOK {
 		t.Fatalf("fallback 应回 200，实际 %d", code)
 	}
@@ -417,14 +417,14 @@ func TestCache_StaleOnlyOnFallback(t *testing.T) {
 func TestCache_StaleHardCap(t *testing.T) {
 	engine, _, cache, _ := newCacheTestServer(t, "user-1")
 
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("回传失败")
 	}
 
 	// 把 fetchedAt 往前拨 8 天（超过 7 天上限）。
 	cache.forceAge(t, "user-1", DataTypeCourse, 8*24*time.Hour)
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course?fallback=1", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course?fallback=1", "")
 	if code != http.StatusOK {
 		t.Fatalf("超期应回 200（cache_miss 语义），实际 %d", code)
 	}
@@ -437,12 +437,12 @@ func TestCache_StaleHardCap(t *testing.T) {
 func TestCache_InvalidateThrottled(t *testing.T) {
 	engine, _, _, clock := newCacheTestServer(t, "user-1")
 
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("回传失败")
 	}
 
 	// 第一次失效：成功。
-	code, body := doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK {
 		t.Fatalf("首次失效应成功，实际 %d body=%v", code, body)
 	}
@@ -451,13 +451,13 @@ func TestCache_InvalidateThrottled(t *testing.T) {
 	}
 
 	// 失效之后缓存应真的没了。
-	_, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	_, body = doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if body["code"] != "cache_miss" {
 		t.Fatalf("失效后应 cache_miss，实际 %v", body)
 	}
 
 	// 立即再来一次：应被节流。
-	code, body = doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+	code, body = doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", "")
 	if code != http.StatusTooManyRequests {
 		t.Fatalf("窗口内重复失效应回 429，实际 %d", code)
 	}
@@ -467,7 +467,7 @@ func TestCache_InvalidateThrottled(t *testing.T) {
 
 	// 推进 61 秒后应恢复可用。
 	clock.Advance(61 * time.Second)
-	if code, _ := doJSON(t, engine, http.MethodDelete, "/school/cache/course", ""); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", ""); code != http.StatusOK {
 		t.Fatalf("窗口过后失效应恢复可用，实际 %d", code)
 	}
 }
@@ -476,21 +476,21 @@ func TestCache_InvalidateThrottled(t *testing.T) {
 func TestCache_InvalidateDoesNotCascade(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
 
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("课表回传失败")
 	}
 	scoreBody := `{"schemaVersion":1,"payload":[{"courseName":"高等数学","score":"90"}]}`
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/score", scoreBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/score", scoreBody); code != http.StatusOK {
 		t.Fatalf("成绩回传失败")
 	}
 
 	// 失效课表。
-	if code, _ := doJSON(t, engine, http.MethodDelete, "/school/cache/course", ""); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", ""); code != http.StatusOK {
 		t.Fatalf("失效课表失败")
 	}
 
 	// 成绩必须还在。
-	_, body := doJSON(t, engine, http.MethodGet, "/school/cache/score", "")
+	_, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/score", "")
 	if body["code"] == "cache_miss" {
 		t.Fatal("失效课表级联删掉了成绩缓存（#34 明确不级联）")
 	}
@@ -519,18 +519,18 @@ func TestCache_IsolatedByUser(t *testing.T) {
 	alice := build("alice")
 	bob := build("bob")
 
-	if code, _ := doJSON(t, alice, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, alice, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("alice 回传失败")
 	}
 
 	// bob 不该读到 alice 的缓存。
-	_, body := doJSON(t, bob, http.MethodGet, "/school/cache/course", "")
+	_, body := doJSON(t, bob, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if body["code"] != "cache_miss" {
 		t.Fatalf("bob 读到了 alice 的缓存（键维度隔离失效）: %v", body)
 	}
 
 	// alice 自己读得到。
-	_, body = doJSON(t, alice, http.MethodGet, "/school/cache/course", "")
+	_, body = doJSON(t, alice, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if body["code"] == "cache_miss" {
 		t.Fatal("alice 读不到自己刚写的缓存")
 	}
@@ -544,7 +544,7 @@ func TestCache_PayloadTooLarge(t *testing.T) {
 	huge := `{"schemaVersion":1,"payload":[{"courseName":"` +
 		strings.Repeat("课", maxSubmitBytes/3+1024) + `"}]}`
 
-	code, body := doJSON(t, engine, http.MethodPost, "/school/cache/course", huge)
+	code, body := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", huge)
 	if code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("超限体应回 413，实际 %d body=%v", code, body)
 	}
@@ -560,7 +560,7 @@ func TestCache_UnavailableWhenNotBound(t *testing.T) {
 	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-1"); c.Next() })
 	RegisterCache(engine, svc)
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("未配置缓存应回 503，实际 %d", code)
 	}
@@ -576,7 +576,7 @@ func TestCache_SuccessFieldIsAuditOnly(t *testing.T) {
 
 	// success=false，但 payload 形状完全合法。
 	body := `{"schemaVersion":1,"success":false,"payload":[{"courseName":"某课"}]}`
-	code, resp := doJSON(t, engine, http.MethodPost, "/school/cache/course", body)
+	code, resp := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", body)
 	if code != http.StatusOK {
 		t.Fatalf("形状合法时 success=false 不应影响准入，实际 %d body=%v", code, resp)
 	}
@@ -586,7 +586,7 @@ func TestCache_SuccessFieldIsAuditOnly(t *testing.T) {
 
 	// 反过来：success=true 但形状不对，必须被拒——证明准入看形状不看 success。
 	bad := `{"schemaVersion":1,"success":true,"payload":[{"weeks":"1-16"}]}`
-	code, resp = doJSON(t, engine, http.MethodPost, "/school/cache/course", bad)
+	code, resp = doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", bad)
 	if code != http.StatusBadRequest {
 		t.Fatalf("success=true 但形状不对时必须拒收，实际 %d body=%v", code, resp)
 	}
@@ -648,15 +648,15 @@ func TestCache_AuditResults(t *testing.T) {
 	RegisterCache(engine, svc)
 
 	// 1) 成功回传 → ok
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatalf("回传失败")
 	}
 	// 2) 坏数据 → schema_rejected
-	doJSON(t, engine, http.MethodPost, "/school/cache/course", `{"schemaVersion":1,"payload":[{"weeks":"1"}]}`)
+	doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", `{"schemaVersion":1,"payload":[{"weeks":"1"}]}`)
 	// 3) 失效成功 → ok
-	doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+	doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", "")
 	// 4) 立即再失效 → too_soon
-	doJSON(t, engine, http.MethodDelete, "/school/cache/course", "")
+	doJSON(t, engine, http.MethodDelete, "/school/jiaowu/cache/course", "")
 
 	submit := audit.results("cache_submit")
 	wantSubmit := []string{"ok", "schema_rejected"}
@@ -729,13 +729,13 @@ func TestCache_DegradesToMemory(t *testing.T) {
 	RegisterCache(engine, svc)
 
 	// Redis 不可达，但写入应降级到内存成功。
-	code, body := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody)
+	code, body := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody)
 	if code != http.StatusOK {
 		t.Fatalf("Redis 不可用时回传应降级成功，实际 %d body=%v", code, body)
 	}
 
 	// 读取也应能从内存兜底拿到。
-	code, body = doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body = doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK {
 		t.Fatalf("Redis 不可用时读取应降级成功，实际 %d", code)
 	}
@@ -771,7 +771,7 @@ func TestCache_MissDefaultsToVPNRecipe(t *testing.T) {
 	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
 	svc.BindSessionIssuer(issuer)
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK || body["code"] != "cache_miss" {
 		t.Fatalf("应回 200 cache_miss，实际 %d %v", code, body["code"])
 	}
@@ -809,7 +809,7 @@ func TestCache_MissCampusHeaderSelectsDirect(t *testing.T) {
 
 	for _, raw := range []string{"direct", "campus", "1", "TRUE", " direct "} {
 		issuer.calls = 0
-		code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		code, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 			HeaderCampusNetwork, raw)
 		if code != http.StatusOK {
 			t.Fatalf("%q: 应回 200，实际 %d", raw, code)
@@ -837,7 +837,7 @@ func TestCache_MissVPNHeaderKeepsCookiesOut(t *testing.T) {
 	svc.BindSessionIssuer(issuer)
 
 	for _, raw := range []string{"vpn", "webvpn", "0", "false"} {
-		_, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		_, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 			HeaderCampusNetwork, raw)
 		if body["mode"] != "vpn" {
 			t.Fatalf("%q: 应判定 vpn，实际 %v", raw, body["mode"])
@@ -894,7 +894,7 @@ func TestCache_MissVPNNeverIssuesCookies(t *testing.T) {
 	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
 	svc.BindSessionIssuer(issuer)
 
-	_, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+	_, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 		HeaderCampusNetwork, "vpn")
 	if body["mode"] != "vpn" {
 		t.Fatalf("应判定 vpn，实际 %v", body["mode"])
@@ -921,7 +921,7 @@ func TestCache_MissReturnsDirectRecipe(t *testing.T) {
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	svc.doer = doer
 
-	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK {
 		t.Fatalf("未命中应回 200，实际 %d", code)
@@ -956,7 +956,7 @@ func TestCache_MissReturnsDirectRecipe(t *testing.T) {
 // 但必须告诉客户端「缺什么」和「骨架路径」，否则它拿到空 address 无从下手。
 func TestCache_MissOmitsUnconfirmedPath(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
-	_, body := doJSON(t, engine, http.MethodGet, "/school/cache/classroomInfo", "")
+	_, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/classroomInfo", "")
 	if body["address"] != nil {
 		t.Fatalf("未确认路径不应下发 address，实际 %v", body["address"])
 	}
@@ -999,7 +999,7 @@ func TestCache_MissIssuesSessionCookieWithoutLoggingIt(t *testing.T) {
 	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-1"); c.Next() })
 	RegisterCache(engine, svc)
 
-	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK || body["session"] != "ok" {
 		t.Fatalf("应下发会话，实际 %d body=%v", code, body)
@@ -1037,7 +1037,7 @@ func TestCache_MissSessionErrorStays200(t *testing.T) {
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	svc.BindSessionIssuer(&fakeSessionIssuer{err: fmt.Errorf("schoolauth: 续期失败：%s", leaked)})
 
-	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "",
 		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK {
 		t.Fatalf("失败也应 200，实际 %d", code)
@@ -1056,11 +1056,11 @@ func TestCache_HitDoesNotIssueSession(t *testing.T) {
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
 	svc.BindSessionIssuer(issuer)
-	if code, _ := doJSON(t, engine, http.MethodPost, "/school/cache/course", validCourseBody); code != http.StatusOK {
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
 		t.Fatal("回传失败")
 	}
 	issuer.calls = 0
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
 	if code != http.StatusOK || body["code"] == "cache_miss" {
 		t.Fatalf("应命中，实际 %d body=%v", code, body)
 	}

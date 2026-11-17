@@ -15,16 +15,21 @@ import (
 
 // RegisterCache 挂载回传缓存子域的三条路由（#40/#34）。
 //
-//	GET    /school/cache/:dataType          命中直返；未命中回 200 + code=cache_miss
-//	POST   /school/cache/:dataType          回传解析后的 JSON（schema 校验后写入）
-//	DELETE /school/cache/:dataType          缓存失效（60 秒间隔）
+//	GET    /school/jiaowu/cache/:dataType   命中直返；未命中回 200 + code=cache_miss
+//	POST   /school/jiaowu/cache/:dataType   回传解析后的 JSON（schema 校验后写入）
+//	DELETE /school/jiaowu/cache/:dataType   缓存失效（60 秒间隔）
 //
 // 与 #37 的结论一致：**不为 14 个功能各建语义端点**。前端要取教务页面时用已有的
 // GET /school/address?path=<教务路径> 自己拼——语义端点的信息量与它等价。
+//
+// 2026-11-17 前缀分层：原为 /school/cache/*，改为 /school/jiaowu/cache/*。
+// 理由是 /school/ 下将同时存在 jiaowu 与 secondclass 两个学校侧系统，
+// 顶层的 /school/cache 说不出「是谁的缓存」；加 /jiaowu/ 段后归属自明。
+// 二课侧对应 /school/secondclass/cache/*，两边形状同构、前缀不同。
 func RegisterCache(r gin.IRouter, svc *Service) {
-	r.GET("/school/cache/:dataType", cacheGetHandler(svc))
-	r.POST("/school/cache/:dataType", cacheSubmitHandler(svc))
-	r.DELETE("/school/cache/:dataType", cacheInvalidateHandler(svc))
+	r.GET("/school/jiaowu/cache/:dataType", cacheGetHandler(svc))
+	r.POST("/school/jiaowu/cache/:dataType", cacheSubmitHandler(svc))
+	r.DELETE("/school/jiaowu/cache/:dataType", cacheInvalidateHandler(svc))
 }
 
 // cacheEnvelope 是成功响应的信封（#40 + #41 Q4 + #32 Q4 三层叠加后的最终形状）。

@@ -113,7 +113,7 @@
 - 票据明文下发给已认证本人：ADR-0001 明确允许，退出登录即清除，非 0-day。
 
 ### 已排除（审阅确认防住）
-`presence` 票据越权、`/school/cache/:dataType` 跨用户读写与 schema 绕过、WebVPN 编码地址开放代理、app 签名重放/时钟/覆盖不全、埋点信封伪造 userID、通知派生投错人、管理端被普通用户调用、软删过滤遗漏、SQL 注入（PG 侧全参数化）。
+`presence` 票据越权、`/school/jiaowu/cache/:dataType` 跨用户读写与 schema 绕过、WebVPN 编码地址开放代理、app 签名重放/时钟/覆盖不全、埋点信封伪造 userID、通知派生投错人、管理端被普通用户调用、软删过滤遗漏、SQL 注入（PG 侧全参数化）。
 
 ## Git 提交状态
 

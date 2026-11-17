@@ -23,10 +23,10 @@
 **解析在客户端、缓存在服务端。** 分三段：
 
 1. **无缓存**：前端调 `GET /school/address?target=jiaowu&path=<教务路径>` 拿到经网关编码的地址 →
-   自己直连教务取 HTML → 自己解析成结构化 JSON → `POST /school/cache/:dataType` 回传；
+   自己直连教务取 HTML → 自己解析成结构化 JSON → `POST /school/jiaowu/cache/:dataType` 回传；
 2. **后端校验**：只做 schema/形状校验（JSON Schema 2020-12）。不合格回 `400 schema_rejected`，
    且**一个字节都不写**，保证坏数据永远顶不掉能读的旧数据；
-3. **有缓存**：前端直接 `GET /school/cache/:dataType` 命中返回，不再打教务；未命中回
+3. **有缓存**：前端直接 `GET /school/jiaowu/cache/:dataType` 命中返回，不再打教务；未命中回
    `200 + code=cache_miss`，并下发该类型的取数 recipe：地址形态、方法、解析器名、会话 Cookie。
    地址形态由请求头 `X-Nongyu-Campus-Network` 声明——
    `direct` 给直连教务地址 + `ASPSESSIONID`；缺省/`vpn` 给 WebVPN 编码地址且不换票。
@@ -84,11 +84,11 @@
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
 | `/school/address` | GET | 下发经 WebVPN 编码的地址，支持任意白名单 `path` + query |
-| `/school/cache/:dataType` | GET | 命中直返；未命中 `200 + code=cache_miss`，附直连 recipe |
-| `/school/cache/:dataType` | POST | 回传解析后的 JSON，schema 校验后写入 |
-| `/school/cache/:dataType` | DELETE | 缓存失效，60 秒间隔 |
+| `/school/jiaowu/cache/:dataType` | GET | 命中直返；未命中 `200 + code=cache_miss`，附直连 recipe |
+| `/school/jiaowu/cache/:dataType` | POST | 回传解析后的 JSON，schema 校验后写入 |
+| `/school/jiaowu/cache/:dataType` | DELETE | 缓存失效，60 秒间隔 |
 
-不做语义端点的理由：`Service.Address` 已支持任意白名单路径，`/school/cache` 承载所有数据类型，
+不做语义端点的理由：`Service.Address` 已支持任意白名单路径，`/school/jiaowu/cache` 承载所有数据类型，
 再包一层 `/school/scores` 之类只是把 path 拼装挪个地方，还让教务改路径变成后端改动。
 
 ### dataType 受控词表
@@ -241,7 +241,7 @@
 没有推翻的：
 
 - 解析仍在客户端。`parser` 只是名字（如 `jiaowu-course-v1`），本轮不实现 HTML 解析器。
-- `POST /school/cache/:dataType` 仍收解析后的 JSON，仍进现有缓存，不新建表。
+- `POST /school/jiaowu/cache/:dataType` 仍收解析后的 JSON，仍进现有缓存，不新建表。
 - `GET /school/address` 仍返回编码地址、零出站，只追加 `method=GET`，不附 `ASPSESSIONID`。
 - 命中路径零出站，不建会话。
 - 后端不代取课表 HTML 作为主路径。
