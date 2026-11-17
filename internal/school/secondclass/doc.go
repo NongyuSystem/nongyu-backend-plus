@@ -7,4 +7,5 @@
 // 与 internal/platform 的接口（CacheStore / Clock / AuditStore / AuditEntry）。
 // 不 import 教务域 jiaowu、不 import app/server/config、不引入 HTTPDoer 或任何出站能力
 // （规格 §2：后端对二课零出站、零凭据）。
+// #75 追加写类配方端点：GET /school/secondclass/recipe/:recipeId 按稳定 id 下发 14 个写操作配方，只给参数槽位不给值。
 package secondclass
