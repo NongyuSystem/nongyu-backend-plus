@@ -64,7 +64,12 @@
 
 1. **配方七字段结构**：`id`/`target`/`method`/`path`/`contentType`/`auth`/`params`+`fields`（#62）
 2. **参数槽位 `origin` 三值**：`client_local`/`fixed`/`optional`（#62）
-3. **四个端点路径与请求响应形状**：`/school/secondclass/recipe/:recipeId` + `record/:dataType`（POST·GET·DELETE）（#60）
+3. **端点路径与请求响应形状**（2026-11-17 按维护者决定改为 cache 形态）：
+   - 读三类：`GET/POST/DELETE /school/secondclass/cache/:dataType`——命中直返 / 未命中回 `cache_miss` **并捎带配方**
+   - 写一类：`GET /school/secondclass/recipe/:recipeId`——写不经 GET，没有 miss 时机，必须独立入口
+   - **理由**：二课 61 接口里 47 读 / 14 写（学生视角 47:10，读占 82%），读类占绝大多数；合并进 `cache_miss` 可让客户端少一次往返
+   - **与教务对称**：`/school/jiaowu/cache/:dataType` 与 `/school/secondclass/cache/:dataType` 形状同构，客户端可复用处理逻辑
+   - 出处：#60（已按此修订）、#64 讨论
 4. **信封**：本仓 `{code,message}`+camelCase、成功不带 code（#63）——**不复制二课的 `content`**
 5. **dataType 词表**（受控枚举 + `ParseDataType` 白名单）（#61）
 6. **缓存键格式**：`nongyu:cache:<userID>:<dataType>`，不做共享键（#61）
@@ -111,6 +116,8 @@
 - **`code` 双类型解析**（字符串 `"0"` 与数字 `6` 都要能判）
 
 **② HTTP 集成测**（fake `CacheStore` + fake `AuditStore`）：
+- 读三类 cache 端点：命中直返 / 未命中回 `cache_miss` **且响应体内含配方**（这是与教务同构的关键断言）
+- 写类 recipe 端点：未知 recipeId 400、写操作参数槽位 `origin` 正确
 - 未认证 401 / 未知 recipeId 400 / 未知 dataType 400
 - 回传体超 1 MiB 413
 - schema 不合格 400 **且不写入**（旧数据仍可读）
@@ -153,7 +160,7 @@
 | 素材 | 路径 | 用途 |
 | --- | --- | --- |
 | PRD | [prd-学校二课接入.md](../specs/prd-学校二课接入.md) | 范围、用户故事、验收标准 |
-| 架构草图 | [架构落点草图-学校二课.md](架构落点草图-学校二课.md) | 域形状、四端点、降级、测试两层 |
+| 架构草图 | [架构落点草图-学校二课.md](架构落点草图-学校二课.md) | 域形状、三加一端点、降级、测试两层 |
 | 凭据边界 | [决策-二课凭据边界与ADR-0001再修订.md](决策-二课凭据边界与ADR-0001再修订.md) | 零出站零凭据 |
 | 范围 | [决策-二课范围切分与OutOfScope.md](决策-二课范围切分与OutOfScope.md) | 61 接口 + Out of Scope |
 | 横切 | [决策-二课横切口径.md](决策-二课横切口径.md) | 信封/错误码/鉴权/盲区/NY1/脱敏/**不动清单 11 条** |
