@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -99,7 +100,12 @@ func cacheGetHandler(svc *Service) gin.HandlerFunc {
 		snap, err := svc.CacheGet(c.Request.Context(), userID, dt, fallback)
 		if err != nil {
 			if errors.Is(err, ErrCacheMiss) {
-				c.JSON(http.StatusOK, svc.cacheMiss(c.Request.Context(), userID, dt))
+				miss, missErr := svc.cacheMiss(c.Request.Context(), userID, dt)
+				if missErr != nil {
+					writeCacheError(c, missErr)
+					return
+				}
+				c.JSON(http.StatusOK, miss)
 				return
 			}
 			writeCacheError(c, err)
@@ -196,18 +202,33 @@ func writeCacheError(c *gin.Context, err error) {
 	}
 }
 
+// ErrRecipeMissing 表示某个受控 dataType 竟然取不到读配方——这是内部数据不一致
+// （词表与配方表漂移），不是客户端错误。cacheMiss 用它做 fail-closed：绝不下发空配方。
+var ErrRecipeMissing = errors.New("secondclass: 受控 dataType 缺少读配方")
+
 // cacheMiss 组装未命中响应（200 + code=cache_miss + 完整配方）。
 //
-// 配方是纯静态数据，不依赖缓存层是否可用，也不做任何出站；下发这件事本身记审计
+// 配方是包级静态表数据，不依赖缓存层是否可用，也不做任何出站；下发这件事本身记审计
 // secondclass.recipe_issue（规格 §3.4 审计 action 表）。
-func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType) cacheMissResponse {
-	recipe, _ := RecipeFor(dt) // dt 已过白名单，必然命中
+//
+// fail-closed（code-review BLOCKER-1）：RecipeFor 的 ok **不再丢弃**。「dt 已过白名单」
+// 只能说明它在 dataTypeSpecs 里，不能保证它在 pageRecipes 里（历史上 B 组 24 个
+// dataType 正因这句错误注释被下发了空配方）。缺配方时记 Error 日志并返回错误，
+// 由 handler 走 writeCacheError 映射成 500 internal_error，绝不把空 id/path 的
+// 配方发给客户端。返回签名带 error 就是为了把这条失败路径显式交给调用方。
+func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType) (cacheMissResponse, error) {
+	recipe, ok := RecipeFor(dt)
+	if !ok {
+		s.logger.Error("受控 dataType 缺少读配方，回 internal_error（fail-closed，不下发空配方）",
+			"dataType", string(dt), "userID", userID)
+		return cacheMissResponse{}, fmt.Errorf("%w: %q", ErrRecipeMissing, dt)
+	}
 	s.audit(ctx, userID, "secondclass.recipe_issue", "ok", string(dt))
 	return cacheMissResponse{
 		Code:    "cache_miss",
 		Message: "没有可用缓存，请按配方取数后自愿回传",
 		Recipe:  recipe,
-	}
+	}, nil
 }
 
 // envelopeOf 把缓存快照翻成对外信封。

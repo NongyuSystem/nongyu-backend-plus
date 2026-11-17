@@ -68,7 +68,8 @@ func (s *Service) BindAuditStore(store platform.AuditStore) { s.auditStore = sto
 // 失败原因；不得声称已限流或已审计。
 //
 // action 沿用规格定的两个：secondclass.recipe_issue（配方下发）/ secondclass.record
-// （副本写入）；失效等动作沿用教务的 cache_invalidate 口径（本票不扩展审计取值表）。
+// （副本写入）；失效按 §10.1 ② 扩展第三个 action secondclass.invalidate
+// （见 cache.go 的 CacheInvalidate 三处调用）。
 func (s *Service) audit(ctx context.Context, userID, action, result, target string) {
 	s.logger.Info("school.audit",
 		slog.String("userID", userID),

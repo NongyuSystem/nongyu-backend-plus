@@ -118,9 +118,9 @@ func TestParseUpstreamCode_HandlesBothStringAndNumber(t *testing.T) {
 		{`not json`, 0, false},
 	}
 	for _, tc := range cases {
-		got, ok := ParseUpstreamCode([]byte(tc.raw))
+		got, ok := parseUpstreamCode([]byte(tc.raw))
 		if ok != tc.wantOK || (ok && got != tc.wantCode) {
-			t.Errorf("ParseUpstreamCode(%s) = (%d,%v)，应为 (%d,%v)", tc.raw, got, ok, tc.wantCode, tc.wantOK)
+			t.Errorf("parseUpstreamCode(%s) = (%d,%v)，应为 (%d,%v)", tc.raw, got, ok, tc.wantCode, tc.wantOK)
 		}
 	}
 }
@@ -128,7 +128,7 @@ func TestParseUpstreamCode_HandlesBothStringAndNumber(t *testing.T) {
 // 真实失败夹具：{"code": 6, ...} 没有 content，且是数字 code。
 func TestParseUpstreamCode_RealFailureFixture(t *testing.T) {
 	raw := readFixture(t, "3-未登录失败.json")
-	code, ok := ParseUpstreamCode(raw)
+	code, ok := parseUpstreamCode(raw)
 	if !ok || code != 6 {
 		t.Errorf("未登录失败夹具应解析出数字 code=6，实际 (%d,%v)", code, ok)
 	}

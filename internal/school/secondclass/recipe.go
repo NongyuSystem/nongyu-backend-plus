@@ -175,6 +175,204 @@ var pageRecipes = map[DataType]Recipe{
 		},
 		Fields: []RecipeField{}, Headers: deviceHeaders,
 	},
+
+	// ---- B 组 24 个 dataType 的读配方（code-review BLOCKER-1 补，防 cache_miss 下发空配方）----
+	// path 取自一手清单 datatype_b_test.go 的 bGroupReadEndpoints（ALL_API.md B 组 35 个读接口）：
+	// 多个接口归并到同一 dataType 时只取该 dataType 的主接口路径，归并处逐条注明。
+	// 全部 POST（一手清单 B 组 48 接口均为 @POST，无 GET 特例）；Auth 用 clientAuth、
+	// Headers 用 deviceHeaders（7 头）。参数只给槽位、绝不编具体值；client_local 只声明名字，
+	// 值由客户端现场产生。与 A 组一样不发任何出站、不含凭据值。
+	DataTypeActDetail: {
+		ID: "secondclass.act.getActDetail", Target: "secondclass",
+		Method: "POST", Path: "/act/actInfo/v1.0.0/getActDetail", // #6
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "actId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActList: {
+		// 主接口取 #14 getActivityByName；同组的 #17 getMyActivitySearchList / #25
+		// getGroupActivityList / #37 getUserSchoolActList / #43 selectBeSignAdminActList
+		// 也归到 actList，按「一个 dataType 一条主配方」只取其一。
+		ID: "secondclass.act.getActivityByName", Target: "secondclass",
+		Method: "POST", Path: "/query/solrAct/v1.0.0/getActivityByName",
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "title", Origin: "client_local", Note: "活动名称关键字，客户端现场输入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActMemberList: {
+		// 去重（票面点名）：#27 actId 版 / #28 activityId 版两接口共用本 dataType，
+		// 主接口取 #27 actId 版。
+		ID: "secondclass.member.getActMemberList", Target: "secondclass",
+		Method: "POST", Path: "/act/actInfo/v1.0.0/getActMemberList",
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "actId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActEvalList: {
+		// 主接口取 #20 getEvalua；#7 getActEvalList 也归到 actEvalList。
+		ID: "secondclass.eval.getActEvalList", Target: "secondclass",
+		Method: "POST", Path: "/act/eval/v1.0.0/getActEvalList",
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "actId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActTriviaList: {
+		ID: "secondclass.trivia.getActTriviaList", Target: "secondclass",
+		Method: "POST", Path: "/act/tidbit/v1.0.0/getActTriviaList", // #12
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "actId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActTypeDict: {
+		ID: "secondclass.dict.getSchoolActType", Target: "secondclass",
+		Method: "POST", Path: "/act/actType/v1.0.0/getSchoolActType", // #13 / #30 同路径
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActLevelDict: {
+		ID: "secondclass.dict.getActLevelList", Target: "secondclass",
+		Method: "POST", Path: "/act/actLevel/v1.0.0/getActLevelList", // #9
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActTagDict: {
+		ID: "secondclass.dict.getActTagList", Target: "secondclass",
+		Method: "POST", Path: "/act/actTag/v1.0.0/getActTagList", // #11
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActGroupDict: {
+		ID: "secondclass.dict.getActGroupList", Target: "secondclass",
+		Method: "POST", Path: "/act/actGroup/v1.0.0/getActGroupList", // #8
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeMyCollectList: {
+		ID: "secondclass.collect.getActivityForMyCollect", Target: "secondclass",
+		Method: "POST", Path: "/act/actInfo/v1.0.0/getActivityForMyCollect", // #21
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeMyActList: {
+		ID: "secondclass.act.getActForUserMyList", Target: "secondclass",
+		Method: "POST", Path: "/act/actInfo/v1.0.0/getActForUserMyList", // #29
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeCollegeClassInfo: {
+		ID: "secondclass.org.getCollegeAndClassInfoByUser", Target: "secondclass",
+		Method: "POST", Path: "/act/sysOrg/v1.0.0/getCollegeAndClassInfoByUser", // #19
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActStatus: {
+		// 主接口取 #10 getActStatusById；#18 getActivityVerifierList 也归到 actStatus。
+		ID: "secondclass.act.getActStatusById", Target: "secondclass",
+		Method: "POST", Path: "actInfo/v1.0.0/getActStatusById",
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "actId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActEditDetail: {
+		// 主接口取 #15 getActivityEditDetail；#16 getActivityModifyDetail 也归到 actEditDetail。
+		ID: "secondclass.act.getActivityEditDetail", Target: "secondclass",
+		Method: "POST", Path: "activity/v1.0.0/getActivityEditDetail",
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "activityId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeFirstReviewPerson: {
+		ID: "secondclass.review.getFirstReviewPerson", Target: "secondclass",
+		Method: "POST", Path: "/act/actconfig/v1.0.0/getFirstReviewPerson", // #22
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "gid", Required: true, Origin: "client_local", Note: "部落 id，客户端按所选部落填入"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeGpsRange: {
+		ID: "secondclass.config.getGpsR", Target: "secondclass",
+		Method: "POST", Path: "actInfo/v1.0.0/getGpsR", // #23（一手清单此接口无 @Field）
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeGroupSearchList: {
+		ID: "secondclass.group.getGroupByTitle", Target: "secondclass",
+		Method: "POST", Path: "/query/solrGroup/v1.0.0/getGroupByTitle", // #24
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "title", Origin: "client_local", Note: "部落名称关键字，客户端现场输入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeImportMemberResult: {
+		ID: "secondclass.scan.getImportMemberResult", Target: "secondclass",
+		Method: "POST", Path: "scanCode/v1.0.0/getImportMemberResult", // #26
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "uuid", Required: true, Origin: "client_local", Note: "导入批次 uuid，客户端现场产生"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeSchoolGroupDict: {
+		// 去重（票面点名）：#31 无参版 / #32 group/v1.0.0/getSchoolGroup 多参版
+		// 两接口共用本 dataType，主接口取 #31 无参版。
+		ID: "secondclass.group.getSchoolGroup", Target: "secondclass",
+		Method: "POST", Path: "/act/actconfig/v1.0.0/getSchoolGroup",
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeSchoolLogo: {
+		ID: "secondclass.school.getSchoolLogo", Target: "secondclass",
+		Method: "POST", Path: "/act/actInfo/v1.0.0/getSchoolLogo", // #33
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeUploadFileDetail: {
+		ID: "secondclass.scan.getUploadFileDetail", Target: "secondclass",
+		Method: "POST", Path: "scanCode/v1.0.0/getUploadFileDetail", // #34
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "activityId", Required: true, Origin: "client_local", Note: "活动 id，客户端按所选活动填入"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeUploadResult: {
+		ID: "secondclass.scan.getUploadResult", Target: "secondclass",
+		Method: "POST", Path: "scanCode/v1.0.0/getUploadResult", // #35
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{{Name: "uuid", Required: true, Origin: "client_local", Note: "上传批次 uuid，客户端现场产生"}},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeUserSearchList: {
+		ID: "secondclass.user.getUserByName", Target: "secondclass",
+		Method: "POST", Path: "/query/solrUser/v1.0.0/getUserByName", // #36
+		ContentType: "form", Auth: clientAuth,
+		Params: []RecipeParam{
+			{Name: "nameKey", Origin: "client_local", Note: "用户姓名关键字，客户端现场输入"},
+			{Name: "cid", Origin: "client_local", Note: "筛选 id，客户端现场填入"},
+			{Name: "sex", Origin: "client_local", Note: "性别筛选，客户端现场填入"},
+			{Name: "page", Origin: "client_local", Note: "分页页码，客户端现场产生"},
+		},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
+	DataTypeActEvaluateTagDict: {
+		// 去重（票面点名）：#38 getevaluationlList / #39 getevaluationlList_TagNamesBean
+		// 两接口共用本 dataType，路径相同。
+		ID: "secondclass.dict.getActEvaluateTagList", Target: "secondclass",
+		Method: "POST", Path: "/act/actTag/v1.0.0/getActEvaluateTagList",
+		ContentType: "form", Auth: clientAuth, Params: []RecipeParam{},
+		Fields: []RecipeField{}, Headers: deviceHeaders,
+	},
 }
 
 // RecipeFor 按 dataType 取配方。未知类型返回 false（调用方绝不能把 :dataType 拼进别的键）。
@@ -393,7 +591,7 @@ func RecipeForID(recipeID string) (Recipe, bool) {
 	return r, ok
 }
 
-// ParseUpstreamCode 解析二课响应信封里的 code。
+// parseUpstreamCode 解析二课响应信封里的 code。
 //
 // 规格 §7.1 / §8.2：上游 code 类型不稳定——成功是字符串 "0"，未登录是数字 6，
 // 还有 "2"/"104" 等字符串。必须按「字符串或数字」双类型处理，绝不假设单一类型。
@@ -403,9 +601,10 @@ func RecipeForID(recipeID string) (Recipe, bool) {
 // 「双类型」这条实测结论。它**不在**后端请求路径上——规格 §3.1 明确「本仓不复制
 // 二课平台的响应壳，二课响应由客户端直接消费，后端完全不接触」，POST 回传体是
 // {schemaVersion, payload}（payload 即实测的 content），不带上游 code/message。
+// 故改为非导出（code-review NIT-2）：零生产调用者，导出只会误导成「后端会解析响应」。
 //
 // 返回 (code, true) 表示成功解析出整数 code；false 表示缺失/非数字/非法 JSON。
-func ParseUpstreamCode(raw []byte) (int, bool) {
+func parseUpstreamCode(raw []byte) (int, bool) {
 	var env struct {
 		Code json.RawMessage `json:"code"`
 	}

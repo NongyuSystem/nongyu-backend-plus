@@ -1,7 +1,8 @@
-// Package secondclass 的 schema 校验器：启动期把 12 份 JSON Schema 编译好，运行期只做校验。
+// Package secondclass 的 schema 校验器：启动期把 36 份 JSON Schema 编译好，运行期只做校验。
 //
 // 形状照 jiaowu/schemavalidate.go（go:embed + 启动期 Compile + KnownDataTypes 反查缺失），
-// 但自己实现、不 import 教务域；词表换成二课 A 组 12 个 dataType。
+// 但自己实现、不 import 教务域；词表是二课全部 36 个 dataType（A 组 12 由 #73 落地、
+// B 组 24 由 #74 落地），每个一份 schema。
 // 载体 jsonschema/v6（Draft 2020-12）已在 go.mod，不引入新依赖。
 package secondclass
 
