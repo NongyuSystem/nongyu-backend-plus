@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "actMemberList payload（成员列表，0 用户态字段）",
+  "type": "object",
+  "required": [
+    "payload",
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "fetchedAt": {
+      "type": "string"
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "uid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "realName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "face": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "schoolName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "userStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "userType": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

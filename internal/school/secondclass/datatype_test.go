@@ -21,10 +21,12 @@ var allTwelve = []DataType{
 	DataTypeReportCardPreview,
 }
 
-func TestDataType_ControlledVocabularyHasTwelveEntries(t *testing.T) {
+func TestDataType_ControlledVocabularyCoversAuthoritativeTable(t *testing.T) {
 	got := KnownDataTypes()
-	if len(got) != 12 {
-		t.Fatalf("受控词表应有 12 项，实际 %d 项: %v", len(got), got)
+	// 词表必须逐项覆盖权威表 dataTypeSpecs（A 组 12 + B 组 #74 追加项）。
+	// 不再断言固定数量 12：#74 起词表随 B 组扩展，固定值会误报。
+	if len(got) != len(dataTypeSpecs) {
+		t.Fatalf("受控词表应与 dataTypeSpecs 一一对应（%d 项），实际 %d 项: %v", len(dataTypeSpecs), len(got), got)
 	}
 	seen := map[DataType]bool{}
 	for _, d := range got {
@@ -32,10 +34,13 @@ func TestDataType_ControlledVocabularyHasTwelveEntries(t *testing.T) {
 			t.Errorf("KnownDataTypes 有重复项 %q", d)
 		}
 		seen[d] = true
+		if _, ok := dataTypeSpecs[d]; !ok {
+			t.Errorf("KnownDataTypes 含权威表之外的项 %q", d)
+		}
 	}
 	for _, d := range allTwelve {
 		if !seen[d] {
-			t.Errorf("受控词表缺 %q", d)
+			t.Errorf("受控词表缺 A 组 %q", d)
 		}
 	}
 }
