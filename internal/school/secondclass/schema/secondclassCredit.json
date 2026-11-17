@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "secondclassCredit payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "properties": {
+        "unitName": { "type": "string" },
+        "totalTitle": { "type": "string" },
+        "totalHours": { "type": "string" },
+        "thisTermTitle": { "type": "string" },
+        "thisTermHours": { "type": "string" },
+        "ratio": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "parentValidCredit": { "type": "number" },
+              "parentTypeName": { "type": "string" },
+              "parentTypeId": { "type": ["string", "null"] },
+              "scale": { "type": "string" }
+            }
+          }
+        },
+        "appealCount": { "type": "integer" }
+      }
+    }
+  }
+}

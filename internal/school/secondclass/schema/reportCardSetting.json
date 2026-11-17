@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reportCardSetting payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": ["object", "null"],
+      "properties": {
+        "totalScoreFlag": { "type": ["integer", "string"] },
+        "classTopFlag": { "type": ["integer", "string"] },
+        "majorTopFlag": { "type": ["integer", "string"] },
+        "gradeTopFlag": { "type": ["integer", "string"] },
+        "schoolTopFlag": { "type": ["integer", "string"] }
+      }
+    }
+  }
+}
