@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ranking payload",
+  "type": "object",
+  "required": ["payload", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "success": { "type": "boolean" },
+    "fetchedAt": { "type": "string" },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "classTop": { "type": ["integer", "null"] },
+        "majorTop": { "type": ["integer", "null"] },
+        "gradeTop": { "type": ["integer", "null"] },
+        "schoolTop": { "type": ["integer", "null"] },
+        "list": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}
