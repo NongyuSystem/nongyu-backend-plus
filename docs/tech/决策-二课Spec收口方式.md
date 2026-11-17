@@ -72,7 +72,11 @@
    - 出处：#60（已按此修订）、#64 讨论
 4. **信封**：本仓 `{code,message}`+camelCase、成功不带 code（#63）——**不复制二课的 `content`**
 5. **dataType 词表**（受控枚举 + `ParseDataType` 白名单）（#61）
-6. **缓存键格式**：`nongyu:cache:<userID>:<dataType>`，不做共享键（#61）
+6. **缓存键格式**：`nongyu:cache:<userID>:<dataType>`，**全部按用户隔离，不做共享键**（#61；2026-11-17 维护者复核确认选 A）
+   - **为什么不做共享键**：实测 `ActDetailVo` 里混着用户态字段（`collectFlag`/`signInTime`/`currentUserButton`/`significance`/`evaluationScore` 等），`ActivityMainVo` 命中 7 个用户态字段——**共享键必然串数据**（甲的收藏状态显示给乙）
+   - **已知代价（明确接受）**：N 个用户看同一个活动就存 N 份几乎相同的 JSON，存储放大 N 倍
+   - **留的优化口子**进 ② 施工期可定：用户量上来后，可把**纯共享类**（`GroupListVo`/`MemberListVo` 实测 0 个用户态字段，以及类型/等级/标签元数据）拆出共享键；`getActDetail` 这类混合类仍按用户存（拆两份的复杂度不值）
+   - **触发条件**：Redis 内存占用或缓存命中率指标显示需要时再做，不预先优化
 7. **错误码表两张**（表 A 后端产生的 / 表 B 客户端本地态），**不为 `code=5` 定义码**（#63）
 8. **脱敏字段白名单**（token/GPS/扫码时间戳/响应体全禁；配方只给槽位不给值）（#63）
 9. **`code` 双类型处理口径**：后端不接触上游 `code`；客户端按「字符串或数字」判（#70 新增）
