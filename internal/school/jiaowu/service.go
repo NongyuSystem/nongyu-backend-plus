@@ -47,6 +47,9 @@ type Service struct {
 	sessions SessionIssuer
 	// tgtRefresher 让续期回调走真正的 tgt 续期，而不是自己拼假请求。
 	tgtRefresher TGTRefresher
+	// webvpnTickets 保管客户端交来的 wengine_vpn_ticket（校外代取用）。
+	// 为 nil 时提交/查询端点回 503，校外代取不可用。
+	webvpnTickets WebVPNTicketStore
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -98,6 +101,11 @@ func (s *Service) BindSessionIssuer(issuer SessionIssuer) {
 // BindTGTRefresher 接入 tgt 续期能力（由装配层把 schoolauth.TGTManager 适配进来）。
 func (s *Service) BindTGTRefresher(r TGTRefresher) {
 	s.tgtRefresher = r
+}
+
+// BindWebVPNTicketStore 接入网关票保管（校外代取用）。
+func (s *Service) BindWebVPNTicketStore(store WebVPNTicketStore) {
+	s.webvpnTickets = store
 }
 
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。

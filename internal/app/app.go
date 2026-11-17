@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -141,28 +142,66 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 
 	// 票据存储：配了 REDIS_ADDR 就用外置持久实现（生产必须），否则回落到进程内存（仅本地开发）。
-	var tickets platform.TicketStore
+	//
+	// **必须按用途分命名空间**（2026-11-17 事故）：TicketStore 的 key 只有
+	// `<prefix>ticket:<userID>`，而「教务 tgt」「校内状态」「网关票」三种东西都要
+	// 「按用户存一段不透明字节」。共用实例会互相当成对方的记录覆盖——一次
+	// POST /school/login 或续期回调把上游返回的 HTML 写进去，就把真正的
+	// {TGT, CookieHeader} 顶掉了。症状是次日 cache_miss 全部 session=unavailable。
+	//
+	// 现在每个用途一个独立实例（Redis 用不同 Prefix 段、内存用独立 map），
+	// 从存储层保证「谁也不会写到别人的记录上」，不依赖调用方自觉。
+	var tickets platform.TicketStore      // 教务 tgt（只给 TGTManager 用）
+	var presenceStore platform.TicketStore // 校内/校外上报状态
+	var webvpnStore platform.TicketStore   // 客户端交上来的 wengine_vpn_ticket
 	var closeTickets func() error
 	if cfg.RedisAddr != "" {
-		redisStore, err := platform.NewRedisTicketStore(platform.RedisOptions{
-			Addr:     cfg.RedisAddr,
-			Password: cfg.RedisPassword,
-			DB:       cfg.RedisDB,
-			Prefix:   cfg.RedisPrefix,
-		})
+		newStore := func(kind string) (*platform.RedisTicketStore, error) {
+			s, err := platform.NewRedisTicketStore(platform.RedisOptions{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+				Prefix:   cfg.RedisPrefix + kind + ":",
+			})
+			if err != nil {
+				return nil, err
+			}
+			// 启动期探测：连不上就拒绝启动，避免带着坏依赖上线。
+			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := s.Ping(pingCtx); err != nil {
+				_ = s.Close()
+				return nil, fmt.Errorf("票据存储（Redis）不可达 %s：%w", cfg.RedisAddr, err)
+			}
+			return s, nil
+		}
+
+		tgtStore, err := newStore("tgt")
 		if err != nil {
 			return nil, fmt.Errorf("票据存储（Redis）初始化失败：%w", err)
 		}
-		// 启动期探测：连不上就拒绝启动，避免带着坏依赖上线。
-		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := redisStore.Ping(pingCtx); err != nil {
-			return nil, fmt.Errorf("票据存储（Redis）不可达 %s：%w", cfg.RedisAddr, err)
+		presenceRedis, err := newStore("presence")
+		if err != nil {
+			_ = tgtStore.Close()
+			return nil, fmt.Errorf("校内状态存储（Redis）初始化失败：%w", err)
 		}
-		tickets = redisStore
-		closeTickets = redisStore.Close
+		webvpnRedis, err := newStore("webvpn")
+		if err != nil {
+			_ = tgtStore.Close()
+			_ = presenceRedis.Close()
+			return nil, fmt.Errorf("网关票存储（Redis）初始化失败：%w", err)
+		}
+
+		tickets = tgtStore
+		presenceStore = presenceRedis
+		webvpnStore = webvpnRedis
+		closeTickets = func() error {
+			return errors.Join(tgtStore.Close(), presenceRedis.Close(), webvpnRedis.Close())
+		}
 	} else {
 		tickets = platform.NewMockTicketStore()
+		presenceStore = platform.NewMockTicketStore()
+		webvpnStore = platform.NewMockTicketStore()
 		logger.Warn("票据存储使用进程内存实现：重启即丢票，仅限本地开发/测试", "hint", "配置 REDIS_ADDR 以启用外置持久")
 	}
 
@@ -604,17 +643,32 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		flushDone = runCacheFlusher(renewCtx, cache, logger)
 	}
 
-	// #16 校内/校外状态：给 presence 一个**独立**的票据存储实例，避免与后续票据
-	// 共用 userID 单键互相覆盖（#16 子代理回报里提示的键冲突，此处拍板隔离）。
+	// #16 校内/校外状态：用独立命名空间的 presenceStore（不再临时 NewMockTicketStore——
+	// 那会让上报状态在配了 Redis 的生产里也丢，且与 tgt 争同一个 key）。
 	// 后端配置先用常量 ModeDirect、陈旧阈值显式传 5 分钟；两者若要可配置需扩 config，
 	// 属后续 effort，本期不动 config 以免超出票范围。
 	presenceSvc := presence.New(
-		platform.NewMockTicketStore(),
+		presenceStore,
 		clock,
 		presence.ModeDirect,
 		5*time.Minute,
 	)
 	presence.Register(engine, presenceSvc)
+
+	// 校外访问：客户端交上来的 wengine_vpn_ticket 按用户加密保管，
+	// 后端用它经编码地址代取教务页（不需要 tgt、不需要教务 st）。
+	//
+	// 票的来源只能是客户端真实登录网关——后端换不到（见 schoolauth 里删除
+	// IssueGatewayCookies 的说明）。所以这里只做保管与代取，绝不自造票。
+	if webvpnStore != nil {
+		jiaowuSvc.BindWebVPNTicketStore(webvpnTicketStore{
+			store:  webvpnStore,
+			cipher: platform.NewAESCipher(cfg.TicketKey + ":webvpn"),
+		})
+		jiaowu.RegisterWebVPN(engine, jiaowuSvc)
+	} else {
+		logger.Warn("WebVPN 代取端点未挂载：需要可用的票据存储")
+	}
 
 	// 内容域（map #43 / Spec 六类常见功能）：公告的读者侧与管理端。
 	//
