@@ -62,6 +62,11 @@ func (s *Service) BindAuditStore(store platform.AuditStore) { s.auditStore = sto
 // audit 只写结构化字段，绝不把票据/密文/GPS/二维码/二课响应体放进任何字段
 // （规格 §3.4 / §3.6、ADR-0001 第 4 条）。审计是旁路：写库失败被吞、不影响业务。
 //
+// 这里的「记审计」只覆盖后端自己经手的交互（配方下发、副本写入、失效），不覆盖
+// 客户端直连二课的请求——见 doc.go 包注释里的规格 §3.4 盲区固定措辞：后端对二课
+// 全部请求无观测能力，不代发、不转发、不缓存其响应，无法限流、无法记审计、无法判定
+// 失败原因；不得声称已限流或已审计。
+//
 // action 沿用规格定的两个：secondclass.recipe_issue（配方下发）/ secondclass.record
 // （副本写入）；失效等动作沿用教务的 cache_invalidate 口径（本票不扩展审计取值表）。
 func (s *Service) audit(ctx context.Context, userID, action, result, target string) {
