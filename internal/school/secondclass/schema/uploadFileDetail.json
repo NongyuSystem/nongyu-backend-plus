@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uploadFileDetail payload（上传文件详情）",
+  "type": "object",
+  "required": [
+    "payload",
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "fetchedAt": {
+      "type": "string"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "activityId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

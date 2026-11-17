@@ -4,15 +4,16 @@ import (
 	"testing"
 )
 
-func TestSchemaValidator_CompilesAllTwelveAtStartup(t *testing.T) {
+func TestSchemaValidator_CompilesAllKnownTypesAtStartup(t *testing.T) {
 	// 规格 §8.2：go:embed schema 在启动期全部编译通过（fail-fast）。
+	// 数量随受控词表增长（A 组 12 + B 组 #74 追加项），不再断言固定 12。
 	v, err := NewSchemaValidator()
 	if err != nil {
 		t.Fatalf("启动期 schema 编译失败: %v", err)
 	}
 	got := v.DataTypes()
-	if len(got) != 12 {
-		t.Fatalf("编译出的 schema 应有 12 份，实际 %d: %v", len(got), got)
+	if len(got) != len(KnownDataTypes()) {
+		t.Fatalf("编译出的 schema 数应与受控词表一致（%d 份），实际 %d: %v", len(KnownDataTypes()), len(got), got)
 	}
 	have := map[DataType]bool{}
 	for _, d := range got {
@@ -20,7 +21,7 @@ func TestSchemaValidator_CompilesAllTwelveAtStartup(t *testing.T) {
 	}
 	for _, d := range allTwelve {
 		if !have[d] {
-			t.Errorf("缺 %q 的 schema", d)
+			t.Errorf("缺 A 组 %q 的 schema", d)
 		}
 	}
 }

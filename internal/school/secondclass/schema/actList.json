@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "actList payload（活动列表，分页总数不写死）",
+  "type": "object",
+  "required": [
+    "payload",
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "fetchedAt": {
+      "type": "string"
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "typeName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "levelName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "addr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "logo": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "statusName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "endTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startDate": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signupStartTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signupEndTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "activityMemberCounts": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "allowUserCount": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "allowSignAdminCount": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "gid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "groupName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "schoolName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tagNames": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {}
+              },
+              "tagIds": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "totalScore": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "fistActTypeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "firstActTypeName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "collectFlag": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signInTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signBackTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "currentUserButton": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "currentUserIdentity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "canJoin": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "triviaStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "evaluationScore": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

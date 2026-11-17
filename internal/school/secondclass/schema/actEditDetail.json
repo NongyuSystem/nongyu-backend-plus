@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "actEditDetail payload（活动编辑/修改详情）",
+  "type": "object",
+  "required": [
+    "payload",
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "fetchedAt": {
+      "type": "string"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "gid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "groupName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schoolName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allowCollegeNames": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "typeName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "levelName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "addr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signupStartTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signupEndTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activityMemberCounts": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "allowUserCount": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "allowClassIds": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allowCollegeIds": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tagNames": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {}
+        },
+        "collectFlag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signInTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signBackTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currentUserButton": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currentUserIdentity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluationScore": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "triviaStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "canJoin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bulletinReadFlag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signUpType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signWay": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
