@@ -13,7 +13,22 @@ import (
 type pageRecipe struct {
 	path   string
 	parser string
+	// needs 说明「为什么没有 path」：缺哪个入参客户端得自己填。
+	// 非空时响应会把 req 一并下发，客户端据此知道该问用户要什么，
+	// 而不是拿到空 address 后无从下手。
+	needs string
+	// basePath 是缺入参时仍可用的「骨架路径」（不带 query），供客户端自己拼。
+	basePath string
 }
+
+// 缺入参的说明文案 + 骨架路径，来自契约清单 §1.2：
+//   - classroomInfo：jshi_new.asp?bj=<教室名关键词>
+//   - teacherInfo：  jiaoshishow.asp?title_id1=2&xingming=<教师编号>
+//   - teacherCourse：jiaoshi_new.asp?xm=<GBK 姓名>&shou1=（先搜索拿 bianhao，再查详情页）
+//   - classroomCourse：jshi_new.asp?bj=<教室名>（先搜索拿 bianhao，再查 kbjshi_new.asp）
+//
+// 骨架路径里**故意不带 query**：把用户的输入拼进 URL 必须由客户端做
+// （教师姓名还要 GBK 编码，后端替它编码只会多一个出错点）。
 
 // AccessMode 是这一次取数该用哪种地址形态。
 //
@@ -75,40 +90,83 @@ var pageRecipes = map[DataType]pageRecipe{
 	DataTypeTeachingNotice:  {path: "/web/web/web/index.asp", parser: "jiaowu-teaching-notice-v1"},
 	DataTypeCompetition:     {path: "/web/web/web/index.asp", parser: "jiaowu-competition-v1"},
 	DataTypeKaike:           {path: "/xuesheng/gongxuan/gongxuan/kai.asp", parser: "jiaowu-kaike-v1"},
-	DataTypeClassroomInfo:   {parser: "jiaowu-classroom-info-v1"},
-	DataTypeTeacherInfo:     {parser: "jiaowu-teacher-info-v1"},
-	DataTypeTeacherCourse:   {parser: "jiaowu-teacher-course-v1"},
-	DataTypeClassroomCourse: {parser: "jiaowu-classroom-course-v1"},
+	DataTypeClassroomInfo: {
+		parser:   "jiaowu-classroom-info-v1",
+		needs:    "教室名关键词（bj）",
+		basePath: "/web/web/js_kb_cha/jshi_new.asp",
+	},
+	DataTypeTeacherInfo: {
+		parser:   "jiaowu-teacher-info-v1",
+		needs:    "教师编号（xingming，非姓名）",
+		basePath: "/xuesheng/gongxuan/gongxuan/jiaoshishow.asp?title_id1=2",
+	},
+	DataTypeTeacherCourse: {
+		parser:   "jiaowu-teacher-course-v1",
+		needs:    "教师姓名（xm，GBK 编码）——先查 jiaoshi_new.asp 拿 bianhao，再查 jiaoshikb_new.asp",
+		basePath: "/web/web/lanmu/jiaoshi_new.asp",
+	},
+	DataTypeClassroomCourse: {
+		parser:   "jiaowu-classroom-course-v1",
+		needs:    "教室名（bj）——先查 jshi_new.asp 拿 bianhao，再查 kbjshi_new.asp",
+		basePath: "/web/web/js_kb_cha/jshi_new.asp",
+	},
 }
 
-// recipeOf 返回该形态下的地址与解析器名。
+// recipeResult 是 recipeOf 的输出。
+type recipeResult struct {
+	// Address 是完整可用的取数地址；缺入参时为空。
+	Address string
+	// Parser 是给客户端的解析器标识。
+	Parser string
+	// Needs 说明缺哪个入参（仅缺入参的类型有值）。
+	Needs string
+	// BasePath 是缺入参时可用的骨架路径（不含 query），供客户端自己拼。
+	BasePath string
+}
+
+// recipeOf 按形态产出取数说明。
 //
 //   - AccessDirect：白名单 host 的直连地址；
 //   - AccessVPN：同一个 host 经纯函数 Encode 产出的编码地址（网关形态）。
 //
-// 两种形态都从 school.Resolve 出发，不另写一套 host 常量。没有确认路径时 address 为空。
-func recipeOf(dt DataType, mode AccessMode) (address, parser string) {
+// 两种形态都从 school.Resolve 出发，不另写一套 host 常量。
+//
+// 没有确认路径时 Address 为空，但会把 Needs/BasePath 填上——
+// 客户端据此知道「该问用户要什么」，而不是拿到空地址后无从下手。
+func recipeOf(dt DataType, mode AccessMode) recipeResult {
 	spec, ok := pageRecipes[dt]
 	if !ok {
-		return "", ""
+		return recipeResult{}
 	}
-	parser = spec.parser
-	if spec.path == "" {
-		return "", parser
-	}
+	out := recipeResult{Parser: spec.parser, Needs: spec.needs}
+
 	tgt, err := school.Resolve(school.TargetJiaowu)
 	if err != nil {
-		return "", parser
+		return out
 	}
+
+	if spec.path == "" {
+		// 缺入参：给骨架路径，由客户端自己拼 query。
+		if spec.basePath != "" {
+			out.BasePath = encodePath(tgt, spec.basePath, mode)
+		}
+		return out
+	}
+	out.Address = encodePath(tgt, spec.path, mode)
+	return out
+}
+
+// encodePath 把台内路径按形态拼成完整地址（直连或编码）。
+func encodePath(tgt school.Target, path string, mode AccessMode) string {
 	if mode == AccessDirect {
-		return tgt.Direct.String() + spec.path, parser
+		return tgt.Direct.String() + path
 	}
 	// 编码形态必须「先拼完整直连 URL 再 Encode」：tgt.Vpn 是 Encode(无 path 的 host)
 	// 的结果，Encode 对无 path 的地址会补 "/"，直接接 path 会变成 "...e0//xuesheng/..."。
 	// 与 Service.Address 的拼法保持一致，路径因此仍是明文。
-	encoded, err := school.Encode(tgt.Direct.String() + spec.path)
+	encoded, err := school.Encode(tgt.Direct.String() + path)
 	if err != nil {
-		return "", parser
+		return ""
 	}
-	return encoded, parser
+	return encoded
 }

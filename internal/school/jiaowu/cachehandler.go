@@ -58,6 +58,11 @@ type cacheMissResponse struct {
 	Method  string         `json:"method,omitempty"`
 	Cookies []IssuedCookie `json:"cookies"`
 	Parser  string         `json:"parser,omitempty"`
+	// Needs / BasePath：缺入参的类型（教室、教师）没有完整地址，
+	// 但必须告诉客户端缺什么、骨架路径长什么样，否则它拿到空 address 无从下手。
+	Needs string `json:"needs,omitempty"`
+	// BasePath 是缺入参时可用的骨架路径（不含 query），客户端自己拼。
+	BasePath string `json:"basePath,omitempty"`
 	// Mode 是本次判定出的地址形态：direct（直连）或 vpn（经网关编码）。
 	Mode string `json:"mode,omitempty"`
 	// Session 是会话语义：ok（已下发票）/ unavailable（需要票但没拿到）/ client_side（票由客户端自备）。
@@ -232,17 +237,19 @@ func writeCacheError(c *gin.Context, err error) {
 // 不把 issuer 的错误文本写进响应或日志：那里可能带凭据前缀。
 func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, declared string) cacheMissResponse {
 	mode := accessModeOf(declared)
-	address, parser := recipeOf(dt, mode)
+	recipe := recipeOf(dt, mode)
 	resp := cacheMissResponse{
-		Code:    "cache_miss",
-		Message: "没有可用缓存",
-		Target:  string(school.TargetJiaowu),
-		Address: address,
-		Method:  http.MethodGet,
-		Cookies: []IssuedCookie{},
-		Parser:  parser,
-		Mode:    string(mode),
-		Session: sessionStateUnavailable,
+		Code:     "cache_miss",
+		Message:  "没有可用缓存",
+		Target:   string(school.TargetJiaowu),
+		Address:  recipe.Address,
+		Method:   http.MethodGet,
+		Cookies:  []IssuedCookie{},
+		Parser:   recipe.Parser,
+		Needs:    recipe.Needs,
+		BasePath: recipe.BasePath,
+		Mode:     string(mode),
+		Session:  sessionStateUnavailable,
 	}
 
 	if mode == AccessVPN {

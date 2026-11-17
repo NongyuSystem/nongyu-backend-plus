@@ -952,6 +952,8 @@ func TestCache_MissReturnsDirectRecipe(t *testing.T) {
 }
 
 // TestCache_MissOmitsUnconfirmedPath 教室搜索要用户关键词，不编一条假地址。
+//
+// 但必须告诉客户端「缺什么」和「骨架路径」，否则它拿到空 address 无从下手。
 func TestCache_MissOmitsUnconfirmedPath(t *testing.T) {
 	engine, _, _, _ := newCacheTestServer(t, "user-1")
 	_, body := doJSON(t, engine, http.MethodGet, "/school/cache/classroomInfo", "")
@@ -960,6 +962,14 @@ func TestCache_MissOmitsUnconfirmedPath(t *testing.T) {
 	}
 	if body["parser"] != "jiaowu-classroom-info-v1" {
 		t.Fatalf("parser = %v", body["parser"])
+	}
+	needs, _ := body["needs"].(string)
+	if !strings.Contains(needs, "教室名") {
+		t.Fatalf("应说明缺哪个入参，实际 needs=%q", needs)
+	}
+	base, _ := body["basePath"].(string)
+	if !strings.Contains(base, "jshi_new.asp") {
+		t.Fatalf("应给骨架路径，实际 basePath=%q", base)
 	}
 }
 
