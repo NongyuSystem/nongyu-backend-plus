@@ -42,11 +42,14 @@ type cacheEnvelope struct {
 
 // cacheMissResponse 是未命中的响应：HTTP 200 + 业务码 cache_miss。
 //
-// 客户端拿到它就按 method 请求 address，带上 cookies，自己解析 HTML，再把 JSON 回传。
-// address 形态取决于请求头 X-Nongyu-Campus-Network：校内是直连教务 URL，
-// 校外是 WebVPN 编码地址（校外直连不可达）。cookies 只在直连形态下出现，
-// 是教务会话（ASPSESSIONID*），不是 go-admin-tgt。换票失败时仍是 200，
-// cookies 为空，session=unavailable，不变成 500。
+// 客户端拿到它就按 method 请求 address，自己解析 HTML，再把 JSON 回传。
+//
+// address 形态取决于请求头 X-Nongyu-Campus-Network：
+//   - 校内（direct）：直连教务 URL，后端用已保管的 tgt 换出 ASPSESSIONID 一并下发；
+//   - 校外（vpn）：WebVPN 编码地址，**cookies 恒为空**——网关票只能由客户端自己登录网关产生，
+//     后端换不到（见 sessionStateClientSide 说明）。
+//
+// 无论哪种形态，取不到票时仍是 200，不变成 500。
 type cacheMissResponse struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
@@ -57,17 +60,18 @@ type cacheMissResponse struct {
 	Parser  string         `json:"parser,omitempty"`
 	// Mode 是本次判定出的地址形态：direct（直连）或 vpn（经网关编码）。
 	Mode string `json:"mode,omitempty"`
-	// Session 是会话下发状态：ok / unavailable / not_needed。
+	// Session 是会话语义：ok（已下发票）/ unavailable（需要票但没拿到）/ client_side（票由客户端自备）。
 	Session string `json:"session,omitempty"`
 }
-
-// sessionStateNotNeeded 表示这一次不需要下发任何票（无 issuer 时的占位，当前未使用）。
-const sessionStateNotNeeded = "not_needed"
 
 // sessionStateUnavailable 表示需要票但没拿到（未接 issuer、无 tgt、换票失败）。
 const sessionStateUnavailable = "unavailable"
 
 // sessionStateClientSide 表示票由客户端自备（vpn 形态：后端不参与票价链路）。
+//
+// 为什么不在后端换网关票：wengine_vpn_ticket 只在网关服务端已登记该会话为已登录时有效，
+// 那种票只有客户端真实登录网关才会产生。后端用 tgt 走门户 appid 换票再回投，
+// 只能拿到游客票（回投停在 /wui/#/ 的 fragment 上），打编码地址一律 302。
 const sessionStateClientSide = "client_side"
 
 // dataTypeFromPath 从 URL 取并校验 dataType。

@@ -12,6 +12,7 @@ package flow
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"nongyu-backend-plus/internal/identity"
@@ -29,6 +30,24 @@ type Service struct {
 	clock    platform.Clock
 	// userRepo 用于登录审计（TouchLogin，issue #29）。可为 nil（单测注入时可省）。
 	userRepo platform.UserRepo
+	// credentialCleaner 在登出时清理该用户的学校凭据（tgt）。
+	// 可为 nil：未注入时跳过，不影响登出本身。
+	credentialCleaner CredentialCleaner
+}
+
+// CredentialCleaner 清理某个用户已保管的学校凭据。
+//
+// 为什么需要它：go-admin-tgt 是等效长期凭据（学校侧 10 天），后端加密保管 9 天。
+// 用户登出后如果不清掉，凭据会一直留到自然过期——这与「退出登录即清除」的
+// 约定（ADR-0001 第 3 条）不一致。由装配层注入，flow 不 import schoolauth。
+type CredentialCleaner interface {
+	ClearCredential(ctx context.Context, userID string) error
+}
+
+// WithCredentialCleaner 注入登出时的凭据清理能力。
+func (s *Service) WithCredentialCleaner(c CredentialCleaner) *Service {
+	s.credentialCleaner = c
+	return s
 }
 
 // New 构造编排层。
@@ -180,8 +199,33 @@ func (s *Service) Logout(ctx context.Context, sessionID string) error {
 //
 // 与 Logout 的区别：Logout 只按 sessionID 吊销当前这一台；LogoutAll 按
 // userID + scope 清场，用于用户主动「退出所有设备」或改密后强制下线。
+//
+// 两者都会顺手清掉该用户保管的学校凭据（tgt）——「退出登录即清除」是 ADR-0001
+// 第 3 条的硬约定，而 tgt 是等效长期凭据，留着会一直有效到自然过期。
+// 清理失败只记日志，不让登出本身失败（会话已经吊销，凭据问题不应挡住用户）。
 func (s *Service) LogoutAll(ctx context.Context, userID int64, scope platform.SessionScope) (int, error) {
-	return s.sessions.RevokeAll(ctx, userID, scope)
+	n, err := s.sessions.RevokeAll(ctx, userID, scope)
+	if err != nil {
+		return n, err
+	}
+	s.clearCredential(ctx, userID)
+	return n, nil
+}
+
+// LogoutByUser 是「只清凭据」的那一半：供 Logout 在知道 userID 时调用。
+// 单独的 Logout 只拿到 sessionID，由调用方（handler）决定是否连带清凭据。
+func (s *Service) LogoutByUser(ctx context.Context, userID int64) {
+	s.clearCredential(ctx, userID)
+}
+
+// clearCredential 清理用户的学校凭据。失败只记日志。
+func (s *Service) clearCredential(ctx context.Context, userID int64) {
+	if s.credentialCleaner == nil || userID <= 0 {
+		return
+	}
+	if err := s.credentialCleaner.ClearCredential(ctx, strconv.FormatInt(userID, 10)); err != nil {
+		slog.Warn("清理学校凭据失败（不影响登出）", "userId", userID, "err", err.Error())
+	}
 }
 
 // SendMailCode 发送邮箱验证码。

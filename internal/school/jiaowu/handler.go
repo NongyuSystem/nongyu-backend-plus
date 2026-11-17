@@ -33,6 +33,9 @@ func RegisterAccel(r gin.IRouter, svc *Service) {
 
 // RegisterWithAuth 在 Register 的两条入口之外，额外挂载 #15 换票主路径的三条路由。
 // 装配层与测试若需要票据能力就用它；Register 保持 #13/#14 的原样形态不变。
+//
+// 2026-11-17 状态：Login 已停用（不再换票、不落库），保留路由只为不让既有调用方 404；
+// 它的响应带明确的 code=login_deprecated，客户端据此切到 /identity/login。
 func RegisterWithAuth(r gin.IRouter, svc *Service) {
 	Register(r, svc)
 	r.GET("/school/captcha", captchaHandler(svc))
@@ -147,30 +150,27 @@ type loginRequest struct {
 	UUID string `json:"uuid"`
 }
 
+// loginHandler 是已停用的换票端点。
+//
+// 2026-11-17：真实登录走 `POST /identity/login`（LoginBySchool → 换票 → 保管 tgt）。
+// 这条老路径打的是编码后的 auth 地址且不带 appid，并把上游响应原文封进与 TGTManager
+// 同一个 key——上游回 HTML 就把 HTML 当票存，会顶掉真正的 tgt 记录。
+//
+// 保留路由只为不让既有调用方 404；响应固定回 410 + code=login_deprecated，
+// 让客户端能明确知道「该换端点了」，而不是把 401 误读成「我的登录态过期了」。
 func loginHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 身份只来自认证中间件写入的上下文；请求体里的 userID 即便存在也一律不可用。
 		userID := c.GetString(school.CtxUserID)
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, errorResponse{Code: "unauthorized", Message: "缺少已认证身份"})
 			return
 		}
-		var in loginRequest
-		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
-			return
-		}
-		// 字段合法性校验：code / uuid 必填且不超长，避免空串走到学校侧换票。
-		if err := ValidateLoginRequest(in); err != nil {
-			c.JSON(http.StatusBadRequest, errorResponse{Code: "bad_request", Message: "请求体非法"})
-			return
-		}
-		result, err := svc.Login(c.Request.Context(), userID, in.Code, in.UUID)
-		if err != nil {
-			writeError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, result)
+		// 记一条审计，便于观察还有没有调用方在用这条老路径。
+		svc.Login(c.Request.Context(), userID, "", "")
+		c.JSON(http.StatusGone, errorResponse{
+			Code:    "login_deprecated",
+			Message: "该端点已停用，请改用 POST /identity/login",
+		})
 	}
 }
 

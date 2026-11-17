@@ -15,8 +15,15 @@ import (
 	"nongyu-backend-plus/internal/school"
 )
 
-// Service 是教务子域的服务。Address 只返回地址；Fetch 由后端经出站闸口代取；
-// Captcha/Login/Logout 是 #15 的换票主路径。
+// Service 是教务子域的服务。
+//
+// 职责现状（2026-11-17）：
+//   - Address：只返回经网关编码的地址，零出站；
+//   - Fetch：经出站闸口代取页面（逃生口，非主路径）；
+//   - Captcha：取验证码图；
+//   - Login：**已停用**（不再落库，见该方法注释），真实登录走身份域 /identity/login；
+//   - RenewFor：把续期委托给 TGTRefresher（真正的 tgt 续期）；
+//   - CacheGet/CacheSubmit/CacheInvalidate：回传缓存（见 cache.go）。
 //
 // 进程无状态：Service 没有任何可变字段，票据与上报状态全在 platform 外置能力里。
 type Service struct {
@@ -325,11 +332,10 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 // 保留端点形态（避免既有调用方 404），但只做换票探测、**不落任何存储**，
 // 并明确返回「请改用身份域登录」。
 func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginResult, error) {
-	if userID == "" || code == "" {
-		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
-	}
+	_ = code
 	_ = uuid
 	// 不再出站、不再写存储：落库会污染 tgt 记录（见上面注释）。
+	// userID 为空也要记审计——那本身就是「未认证状态调用已停用端点」的观测点。
 	s.audit(ctx, userID, "login", "deprecated_no_store", string(school.TargetAuth))
 	return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 }

@@ -576,6 +576,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		if identityLoginSvc != nil && identitySessionSvc != nil && identityUserSvc != nil {
 			// 注入 UserRepo 以记录登录审计（IP/设备/时间，issue #29）。
 			flowSvc := identityflow.New(identityLoginSvc, identitySessionSvc, identityUserSvc, clock).WithUserRepo(identityStore)
+			if jwSrc != nil {
+				// 登出时清掉学校凭据（tgt）：ADR-0001 第 3 条「退出登录即清除」。
+				// 用同一个桥，它的 ClearCredential 直接委托 TGTManager.Clear。
+				flowSvc.WithCredentialCleaner(jiaowuSessionBridge{src: jwSrc})
+			}
 			identityflow.Register(engine, flowSvc, tokenIssuer)
 		}
 		if identityUserSvc != nil {

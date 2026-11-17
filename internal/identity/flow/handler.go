@@ -34,7 +34,7 @@ type TokenIssuer interface {
 func Register(r gin.IRouter, svc *Service, issuer TokenIssuer) {
 	r.POST("/identity/login", loginHandler(svc, issuer))
 	r.POST("/identity/login/admin", adminLoginHandler(svc, issuer))
-	r.POST("/identity/logout", logoutHandler(svc, server.CurrentSessionID))
+	r.POST("/identity/logout", logoutHandler(svc, server.CurrentSessionID, server.CurrentUserID))
 	r.POST("/identity/logout/all", logoutAllHandler(svc, server.CurrentUserID))
 	r.POST("/identity/mailcode/send", sendMailCodeHandler(svc))
 }
@@ -145,7 +145,7 @@ func adminLoginHandler(svc *Service, issuer TokenIssuer) gin.HandlerFunc {
 	}
 }
 
-func logoutHandler(svc *Service, ctxSessionID func(*gin.Context) (string, bool)) gin.HandlerFunc {
+func logoutHandler(svc *Service, ctxSessionID func(*gin.Context) (string, bool), ctxUserID func(*gin.Context) (int64, bool)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sid, ok := ctxSessionID(c)
 		if !ok {
@@ -155,6 +155,11 @@ func logoutHandler(svc *Service, ctxSessionID func(*gin.Context) (string, bool))
 		if err := svc.Logout(c.Request.Context(), sid); err != nil {
 			writeIdentityError(c, err)
 			return
+		}
+		// 登出成功后再清学校凭据（tgt）：ADR-0001 第 3 条「退出登录即清除」。
+		// 拿不到 userID 也不影响登出本身——会话已经吊销。
+		if uid, ok := ctxUserID(c); ok {
+			svc.LogoutByUser(c.Request.Context(), uid)
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}

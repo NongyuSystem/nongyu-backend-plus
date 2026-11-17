@@ -281,6 +281,7 @@ func TestLoginAuditNeverContainsTicket(t *testing.T) {
 	if strings.Contains(audit.buf.String(), "SECRET-TICKET-VALUE") {
 		t.Fatalf("审计日志不得包含票据值，实际：%s", audit.buf.String())
 	}
+	// 端点已停用，但审计仍应记录「谁调了它」——这是观测老客户端是否还在用的唯一线索。
 	if !strings.Contains(audit.buf.String(), "test-user") {
 		t.Fatalf("审计应记录用户标识，实际：%s", audit.buf.String())
 	}
@@ -308,6 +309,38 @@ func TestLoginBadCaptchaNoTicketStored(t *testing.T) {
 	}
 	if _, _, err := tickets.Get(nil, "test-user"); err == nil {
 		t.Fatalf("验证码错误时存储里不应落任何票据")
+	}
+}
+
+// TestLoginEndpointReturnsGoneAndRecordsAudit 已停用的换票端点回 410 + login_deprecated。
+//
+// 为什么要 410 而不是 401：401 会被客户端读成「登录态过期，去重新登录」，
+// 而真实处置是「这个端点没了，换 /identity/login」。码不同，客户端动作才不同。
+func TestLoginEndpointReturnsGoneAndRecordsAudit(t *testing.T) {
+	doer := platform.NewMockHTTPDoer(enforcedPolicy())
+	h, tickets, _, audit := newAuthEngine(t, doer)
+
+	w := postJSON(t, h, "/school/login", map[string]string{
+		"code": "1234", "uuid": "cap-x",
+	})
+	if w.Code != http.StatusGone {
+		t.Fatalf("停用端点应回 410，实际 %d body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body.Code != "login_deprecated" {
+		t.Fatalf("应回 code=login_deprecated，实际 %q", body.Code)
+	}
+	if _, _, err := tickets.Get(nil, "test-user"); err == nil {
+		t.Fatal("停用端点绝不能写票据存储")
+	}
+	if !strings.Contains(audit.buf.String(), "deprecated_no_store") {
+		t.Fatalf("应留下 deprecated_no_store 审计，实际：%s", audit.buf.String())
+	}
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("停用端点不应出站，实际 %d 次", got)
 	}
 }
 

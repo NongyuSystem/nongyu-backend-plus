@@ -883,6 +883,37 @@ func TestAccessModeFromHeader(t *testing.T) {
 	}
 }
 
+// TestCache_MissVPNNeverIssuesCookies 校外形态恒不下发票。
+//
+// 2026-11-17 定案：wengine_vpn_ticket 只能由客户端真实登录网关产生，
+// 后端换到的是游客票（网关侧未登记登录态）。所以 vpn 形态无论接没接 issuer，
+// 都必须 session=client_side 且 cookies 为空——绝不把后端换来的票发出去。
+func TestCache_MissVPNNeverIssuesCookies(t *testing.T) {
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	// 即使接了 issuer，vpn 形态也不应调用它。
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
+	svc.BindSessionIssuer(issuer)
+
+	_, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		HeaderCampusNetwork, "vpn")
+	if body["mode"] != "vpn" {
+		t.Fatalf("应判定 vpn，实际 %v", body["mode"])
+	}
+	if body["session"] != "client_side" {
+		t.Fatalf("vpn 形态应 session=client_side，实际 %v", body["session"])
+	}
+	cookies, _ := body["cookies"].([]any)
+	if len(cookies) != 0 {
+		t.Fatalf("vpn 形态绝不下发票，实际 %v", cookies)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("vpn 形态不应调用 issuer，实际 %d 次", issuer.calls)
+	}
+}
+
+// TestLoginEndpointReturnsGoneAndRecordsAudit 已停用的换票端点回 410 + login_deprecated。
+// 放在 handler_test.go（package jiaowu_test）——那里才有 newAuthEngine 等 HTTP 层脚手架。
+
 // TestCache_MissReturnsDirectRecipe 锁住直连 recipe：声明校内时给直连地址、GET、解析器名。
 // 没接会话下发时仍是 200，cookies 为空，session=unavailable，且不打教务。
 func TestCache_MissReturnsDirectRecipe(t *testing.T) {

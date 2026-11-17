@@ -552,6 +552,17 @@ func (s *JiaowuSource) RefreshTGT(ctx context.Context, userID string) (string, e
 	return s.tgt.EnsureFresh(ctx, userID, Credential{})
 }
 
+// ClearTGT 删除该用户已保管的 tgt（登出时调用，ADR-0001 第 3 条「退出登录即清除」）。
+//
+// 幂等：记录不存在时返回 nil。未接入 TGTManager 时同样返回 nil——
+// 那种部署下根本没有保管任何凭据，也就没有要清的。
+func (s *JiaowuSource) ClearTGT(ctx context.Context, userID string) error {
+	if strings.TrimSpace(userID) == "" || s.tgt == nil {
+		return nil
+	}
+	return s.tgt.Clear(ctx, userID)
+}
+
 
 // parseSessionCookies 把 "name=value; name2=value2" 拆开。
 // 丢掉 go-admin-tgt：那张票不该出现在给客户端的课表请求里。

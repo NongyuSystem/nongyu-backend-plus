@@ -26,6 +26,14 @@ func (b jiaowuSessionBridge) RefreshTGT(ctx context.Context, userID string) (str
 	return b.src.RefreshTGT(ctx, userID)
 }
 
+// ClearCredential 登出时清掉该用户的 tgt（ADR-0001 第 3 条「退出登录即清除」）。
+//
+// userID 是农屿用户 ID 的十进制串；TGTManager 的保管键就是它，与登录成功时
+// tgtSaverBridge 写入时用的键完全一致。
+func (b jiaowuSessionBridge) ClearCredential(ctx context.Context, userID string) error {
+	return b.src.ClearTGT(ctx, userID)
+}
+
 func toIssued(raw []schoolauth.SessionCookie) []jiaowu.IssuedCookie {
 	out := make([]jiaowu.IssuedCookie, 0, len(raw))
 	for _, c := range raw {
