@@ -363,8 +363,10 @@ var writeRecipes = map[string]Recipe{
 		Fields: []RecipeField{}, Headers: deviceHeaders,
 	},
 
-	// ---- A 组唯一写操作：成绩单展示设置（决策 §二 的 8 个 flag）----
+	// ---- A 组唯一写操作：成绩单展示设置（一手 ALL_API.md:39 的 7 个 @Field）----
 	// 纯客户端配置：无现场态参数，故全为 optional（客户端可传可不传），不是 client_local。
+	// 注意：scoreDisplayFlag 属于相邻接口 previewReportCard（ALL_API.md:38），不属于本配方；
+	// 决策笔记 §二 曾把它误列进来（「8 个 flag」），#78 已按一手清单更正为 7 个。
 	"secondclass.reportCard.saveSetting": {
 		ID: "secondclass.reportCard.saveSetting", Target: "secondclass",
 		Method: "POST", Path: "/act/integrate/v1.0.0/saveReportCardSetting",
@@ -377,7 +379,6 @@ var writeRecipes = map[string]Recipe{
 			{Name: "schoolTopFlag", Origin: "optional", Note: "是否展示全校排名"},
 			{Name: "firstTypeArr", Origin: "optional", Note: "分项展示开关集合"},
 			{Name: "creditRecordIdArr", Origin: "optional", Note: "具体记录展示开关集合"},
-			{Name: "scoreDisplayFlag", Origin: "optional", Note: "分数展示标志（决策 §二 列入 8 flag）"},
 		},
 		Fields: []RecipeField{}, Headers: deviceHeaders,
 	},

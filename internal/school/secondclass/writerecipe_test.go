@@ -343,3 +343,32 @@ func TestWriteRecipes_NoJiaowuFieldsAndSingleHop(t *testing.T) {
 		}
 	}
 }
+
+// #78 更正回归：saveReportCardSetting 的一手契约（ALL_API.md:39）只有 7 个 @Field，
+// scoreDisplayFlag 属于相邻接口 previewReportCard（ALL_API.md:38），不得列入本配方。
+// 决策笔记 §二 曾误写「8 个 flag」，这里锁死修正后的 7 槽位与「无 scoreDisplayFlag」。
+func TestSaveSettingRecipe_ExactlySevenFlags(t *testing.T) {
+	r, ok := RecipeForID("secondclass.reportCard.saveSetting")
+	if !ok {
+		t.Fatal("缺少 secondclass.reportCard.saveSetting 写配方")
+	}
+	want := []string{
+		"totalScoreFlag", "classTopFlag", "majorTopFlag", "gradeTopFlag",
+		"schoolTopFlag", "firstTypeArr", "creditRecordIdArr",
+	}
+	if len(r.Params) != len(want) {
+		t.Errorf("saveReportCardSetting 应有 7 个参数槽位，实际 %d", len(r.Params))
+	}
+	byName := map[string]bool{}
+	for _, p := range r.Params {
+		byName[p.Name] = true
+	}
+	for _, n := range want {
+		if !byName[n] {
+			t.Errorf("saveReportCardSetting 缺少一手 @Field %q", n)
+		}
+	}
+	if byName["scoreDisplayFlag"] {
+		t.Errorf("saveReportCardSetting 不应含 scoreDisplayFlag（它属于 previewReportCard，一手 ALL_API.md:38）")
+	}
+}
