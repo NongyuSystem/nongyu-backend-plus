@@ -29,6 +29,7 @@ import (
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
+	"nongyu-backend-plus/internal/school/secondclass"
 	"nongyu-backend-plus/internal/server"
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
@@ -151,7 +152,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	//
 	// 现在每个用途一个独立实例（Redis 用不同 Prefix 段、内存用独立 map），
 	// 从存储层保证「谁也不会写到别人的记录上」，不依赖调用方自觉。
-	var tickets platform.TicketStore      // 教务 tgt（只给 TGTManager 用）
+	var tickets platform.TicketStore       // 教务 tgt（只给 TGTManager 用）
 	var presenceStore platform.TicketStore // 校内/校外上报状态
 	var webvpnStore platform.TicketStore   // 客户端交上来的 wengine_vpn_ticket
 	var closeTickets func() error
@@ -606,6 +607,40 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 	if !cacheSubdomainReady {
 		logger.Warn("回传缓存端点未挂载：需要 REDIS_ADDR 且 schema 全部编译通过",
+			"cache_configured", cache != nil)
+	}
+
+	// 学校二课（#71 / 规格 spec-学校二课接入.md）：后端只做「请求配方下发」与「记录」，
+	// 对二课零出站、零凭据。配方与写类端点只依赖编译期常量 + 审计，不依赖 Redis/schema，
+	// 故无条件挂载；读副本三条端点才需要缓存与 schema 校验，走与教务同款的降级 gate。
+	//
+	// 两个降级分支都必须「告警 + 不挂对应路由 + 进程照常起」，绝不静默降级，
+	// 也绝不因可选依赖缺失让整个进程起不来（其它子域不受影响）。
+	secondclassSvc := secondclass.New(secondclass.Options{
+		Clock:  clock,
+		Logger: logger,
+		Audit:  auditStore,
+	})
+
+	// 写类配方端点：无条件可用。没配 Redis 时客户端仍能拿到「怎么请求」的配方。
+	secondclass.RegisterRecipe(engine, secondclassSvc)
+
+	secondclassCacheReady := false
+	if cache != nil {
+		validator, verr := secondclass.NewSchemaValidator()
+		if verr != nil {
+			// schema 编译失败意味着某类回传永远不会被校验，宁可不挂记录端点，
+			// 也不能放未校验的数据进缓存（与教务同款 fail-fast 边界）。
+			logger.Error("二课记录端点未启用：schema 校验器编译失败", "err", verr)
+		} else {
+			secondclassSvc.BindCache(cache)
+			secondclassSvc.BindSchemaValidator(validator)
+			secondclass.RegisterCache(engine, secondclassSvc)
+			secondclassCacheReady = true
+		}
+	}
+	if !secondclassCacheReady {
+		logger.Warn("二课记录端点未挂载（写类配方端点仍可用）：需要 REDIS_ADDR 且 schema 全部编译通过",
 			"cache_configured", cache != nil)
 	}
 
