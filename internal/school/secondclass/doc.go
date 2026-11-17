@@ -1,7 +1,8 @@
-// Package secondclass 实现学校二课（PU / 川农定制版）接入的 A 组学分与成绩单读通路。
+// Package secondclass 实现学校二课（PU / 川农定制版）整个读/写域的接入。
 //
-// 本包是 issue #73 的首个可演示垂直切片：12 个受控 dataType + 每个一份 JSON Schema
-// （启动期编译）+ GET/POST/DELETE 三条读端点 + 未命中时下发的请求配方。
+// 受控词表共 36 个 dataType（A 组 12 由 #73 落地 + B 组 24 由 #74 落地），每个一份
+// JSON Schema（启动期编译，共 36 份）；读子域有 GET/POST/DELETE 三条缓存端点 +
+// 未命中时下发的请求配方；写子域有 14 条写类配方（#75）。
 //
 // 依赖方向（README 架构约束）：只依赖父包 internal/school（CtxUserID / CtxRequestID）
 // 与 internal/platform 的接口（CacheStore / Clock / AuditStore / AuditEntry）。
