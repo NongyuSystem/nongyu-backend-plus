@@ -534,9 +534,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowuSvc.BindAuditStore(auditStore)
 	if jwSrc != nil {
-		// cache_miss 用已保管的 tgt 建教务会话，把 ASPSESSIONID 交给本人。
-		// 没有 tgt 时 miss 仍是 200，cookies 为空。
-		jiaowuSvc.BindSessionIssuer(jiaowuSessionBridge{src: jwSrc})
+		// 两种能力共用同一个桥：
+		//   - SessionIssuer：direct 形态下用已保管 tgt 换 ASPSESSIONID（要求能到 jiaowu）
+		//   - TGTRefresher：续期回调走真正的 tgt 续期
+		// vpn 形态**不在这里取票**——网关票只能由客户端真实登录产生，后端换不到。
+		bridge := jiaowuSessionBridge{src: jwSrc}
+		jiaowuSvc.BindSessionIssuer(bridge)
+		jiaowuSvc.BindTGTRefresher(bridge)
 	}
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 

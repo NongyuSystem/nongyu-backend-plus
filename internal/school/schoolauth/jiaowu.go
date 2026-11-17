@@ -512,6 +512,47 @@ func (s *JiaowuSource) IssueSessionCookies(ctx context.Context, userID string) (
 	return out, nil
 }
 
+// PortalAppID 是 WebVPN 门户在统一身份认证平台上的应用标识。
+//
+// 与教务 appid 是两套，**不可混用**（契约清单 §4.1）：门户票只能换出 wengine_vpn_ticket，
+// 教务票只能换出 ASPSESSIONID；传错 appid 回投会 INVALID_TICKET。
+const PortalAppID = "aea49a21-6b26-4e8f-bcfc-80e3de591c93"
+
+// portalCallbackPath 是门户回投地址。带 cas_login=true 才会按 CAS 语义接票。
+const portalCallbackPath = "/login?cas_login=true"
+
+// gatewayTicketCookie 是网关会话票的 cookie 名。
+const gatewayTicketCookie = "wengine_vpn_ticketwebvpn_sicau_edu_cn"
+
+// 关于「网关票多长才算有效」——**没有长度判据，不要用长度判断有效性**。
+//
+// 2026-11-17 纠正：曾在这里放过一个 minGatewayTicketLen=40 的下限，假设「真票应该比
+// 后端换出来的 16 行长」。该假设不成立：浏览器真实登录后的票也是 16 位十六进制
+// （如 43d5b3947913eab2，8 字节）。票长与有效性无关。
+//
+// 网关判断「这个会话是否已登录」靠的是它**服务端**的会话记录，不是票里的内容。
+// 所以后端纯 HTTP 回投拿到的票虽然同样是 16 位，却是游客票——它的会话在网关侧
+// 从未被登记为已登录（回投停在 /wui/#/ 的 fragment 上，SPA 没跑完）。
+//
+// 由此：本包无法用任何「本地可判定」的特征来区分「有效票」与「游客票」。
+// 唯一可靠的判定是拿票去请求一个编码地址、看是否 302 回 /login——那要额外的出站，
+// 且判定结果不能提前告知调用方。故调用方应按「票即用即验」处理。
+
+// RefreshTGT 用已保管的整套凭据换一次票，滚动保存新 tgt，返回新值。
+//
+// 供续期调度器使用：不抓任何业务页，只做「换票 + 回写」。
+func (s *JiaowuSource) RefreshTGT(ctx context.Context, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", fmt.Errorf("schoolauth: 缺少用户身份")
+	}
+	if s.tgt == nil {
+		return "", fmt.Errorf("schoolauth: 未接入 tgt 保管")
+	}
+	// EnsureFresh：本地未临期直接返回，临期或缺失才真正出站换票。
+	return s.tgt.EnsureFresh(ctx, userID, Credential{})
+}
+
+
 // parseSessionCookies 把 "name=value; name2=value2" 拆开。
 // 丢掉 go-admin-tgt：那张票不该出现在给客户端的课表请求里。
 func parseSessionCookies(header string) []SessionCookie {

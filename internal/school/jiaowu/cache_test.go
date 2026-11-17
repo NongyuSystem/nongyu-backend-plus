@@ -198,6 +198,27 @@ func doJSON(t *testing.T, engine *gin.Engine, method, path, body string) (int, m
 	return w.Code, out
 }
 
+// doJSONHeader 同 doJSON，但额外带一个请求头。
+func doJSONHeader(t *testing.T, engine *gin.Engine, method, path, body, header, value string) (int, map[string]any) {
+	t.Helper()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	}
+	r.Header.Set(header, value)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, r)
+
+	out := map[string]any{}
+	if w.Body.Len() > 0 {
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+	}
+	return w.Code, out
+}
+
 const validCourseBody = `{"schemaVersion":1,"payload":[
 	{"courseName":"Web设计与应用","weeks":"1-16","scheduleTime":"3-3,3-4","credit":"2","teacher":"张XX"}]}`
 
@@ -741,14 +762,136 @@ func (f *fakeSessionIssuer) IssueSession(context.Context, string) ([]IssuedCooki
 	return f.cookies, nil
 }
 
-// TestCache_MissReturnsDirectRecipe 锁住未命中 recipe：直连课表地址、GET、解析器名。
+// TestCache_MissDefaultsToVPNRecipe 没声明校内可达时，默认下发 WebVPN 编码地址，
+// 且不出站换票：走网关由网关补上游 Cookie，贴 ASPSESSIONID 会干扰。
+func TestCache_MissDefaultsToVPNRecipe(t *testing.T) {
+	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	svc.doer = doer
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
+	svc.BindSessionIssuer(issuer)
+
+	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	if code != http.StatusOK || body["code"] != "cache_miss" {
+		t.Fatalf("应回 200 cache_miss，实际 %d %v", code, body["code"])
+	}
+	if body["mode"] != "vpn" {
+		t.Fatalf("未声明可达性应走 vpn，实际 mode=%v", body["mode"])
+	}
+	addr, _ := body["address"].(string)
+	if !strings.Contains(addr, "webvpn.sicau.edu.cn") {
+		t.Fatalf("vpn 形态应下发编码地址，实际 %q", addr)
+	}
+	if !strings.Contains(addr, "kbbanji.asp?title_id1=4") {
+		t.Fatalf("编码地址应保留明文 path，实际 %q", addr)
+	}
+	// 校外形态：后端不参与票价链路，票由客户端自备。
+	if body["session"] != "client_side" {
+		t.Fatalf("vpn 形态应 session=client_side，实际 %v", body["session"])
+	}
+	cookies, _ := body["cookies"].([]any)
+	if len(cookies) != 0 {
+		t.Fatalf("vpn 形态不应下发 cookie，实际 %v", cookies)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("vpn 形态不应建会话，实际调用 %d 次", issuer.calls)
+	}
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("vpn 形态 miss 不得出站，实际 %d", got)
+	}
+}
+
+// TestCache_MissCampusHeaderSelectsDirect 客户端声明校内可达时下发直连地址并换票。
+func TestCache_MissCampusHeaderSelectsDirect(t *testing.T) {
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
+	svc.BindSessionIssuer(issuer)
+
+	for _, raw := range []string{"direct", "campus", "1", "TRUE", " direct "} {
+		issuer.calls = 0
+		code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+			HeaderCampusNetwork, raw)
+		if code != http.StatusOK {
+			t.Fatalf("%q: 应回 200，实际 %d", raw, code)
+		}
+		if body["mode"] != "direct" {
+			t.Fatalf("%q: 应判定 direct，实际 %v", raw, body["mode"])
+		}
+		wantAddr := "https://jiaowu.sicau.edu.cn/xuesheng/gongxuan/gongxuan/kbbanji.asp?title_id1=4"
+		if body["address"] != wantAddr {
+			t.Fatalf("%q: address = %v", raw, body["address"])
+		}
+		if body["session"] != "ok" {
+			t.Fatalf("%q: 应下发会话，实际 %v", raw, body["session"])
+		}
+		if issuer.calls != 1 {
+			t.Fatalf("%q: 应建一次会话，实际 %d", raw, issuer.calls)
+		}
+	}
+}
+
+// TestCache_MissVPNHeaderKeepsCookiesOut 显式声明校外时与默认一致，不换票。
+func TestCache_MissVPNHeaderKeepsCookiesOut(t *testing.T) {
+	engine, svc, _, _ := newCacheTestServer(t, "user-1")
+	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
+	svc.BindSessionIssuer(issuer)
+
+	for _, raw := range []string{"vpn", "webvpn", "0", "false"} {
+		_, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+			HeaderCampusNetwork, raw)
+		if body["mode"] != "vpn" {
+			t.Fatalf("%q: 应判定 vpn，实际 %v", raw, body["mode"])
+		}
+		cookies, _ := body["cookies"].([]any)
+		if len(cookies) != 0 {
+			t.Fatalf("%q: vpn 不应下发 cookie，实际 %v", raw, cookies)
+		}
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("vpn 形态不应建会话，实际 %d", issuer.calls)
+	}
+}
+
+// TestAccessModeFromHeader 锁住头的取值表与「不可识别就不猜」。
+func TestAccessModeFromHeader(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want AccessMode
+		ok   bool
+	}{
+		{"direct", AccessDirect, true},
+		{"Campus", AccessDirect, true},
+		{" intranet ", AccessDirect, true},
+		{"true", AccessDirect, true},
+		{"vpn", AccessVPN, true},
+		{"WebVPN", AccessVPN, true},
+		{"0", AccessVPN, true},
+		{"false", AccessVPN, true},
+		{"", "", false},
+		{"maybe", "", false},
+		{"校园网", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := AccessModeFromHeader(tc.raw)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("AccessModeFromHeader(%q) = (%q,%v)，期望 (%q,%v)", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+	// 不可识别时回落 vpn，而不是猜 direct。
+	if got := accessModeOf("maybe"); got != AccessVPN {
+		t.Fatalf("不可识别应回落 vpn，实际 %q", got)
+	}
+}
+
+// TestCache_MissReturnsDirectRecipe 锁住直连 recipe：声明校内时给直连地址、GET、解析器名。
 // 没接会话下发时仍是 200，cookies 为空，session=unavailable，且不打教务。
 func TestCache_MissReturnsDirectRecipe(t *testing.T) {
 	doer := platform.NewMockHTTPDoer(platform.DoerPolicy{})
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	svc.doer = doer
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK {
 		t.Fatalf("未命中应回 200，实际 %d", code)
 	}
@@ -766,7 +909,7 @@ func TestCache_MissReturnsDirectRecipe(t *testing.T) {
 		t.Fatalf("parser = %v", body["parser"])
 	}
 	if body["session"] != "unavailable" {
-		t.Fatalf("未接 issuer 时应 session=unavailable，实际 %v", body["session"])
+		t.Fatalf("声明校内但未接 issuer 时应 session=unavailable，实际 %v", body["session"])
 	}
 	cookies, ok := body["cookies"].([]any)
 	if !ok || len(cookies) != 0 {
@@ -815,7 +958,8 @@ func TestCache_MissIssuesSessionCookieWithoutLoggingIt(t *testing.T) {
 	engine.Use(func(c *gin.Context) { c.Set(school.CtxUserID, "user-1"); c.Next() })
 	RegisterCache(engine, svc)
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK || body["session"] != "ok" {
 		t.Fatalf("应下发会话，实际 %d body=%v", code, body)
 	}
@@ -852,7 +996,8 @@ func TestCache_MissSessionErrorStays200(t *testing.T) {
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	svc.BindSessionIssuer(&fakeSessionIssuer{err: fmt.Errorf("schoolauth: 续期失败：%s", leaked)})
 
-	code, body := doJSON(t, engine, http.MethodGet, "/school/cache/course", "")
+	code, body := doJSONHeader(t, engine, http.MethodGet, "/school/cache/course", "",
+		HeaderCampusNetwork, "direct")
 	if code != http.StatusOK {
 		t.Fatalf("失败也应 200，实际 %d", code)
 	}

@@ -1,7 +1,6 @@
 package jiaowu
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +38,8 @@ type Service struct {
 	// sessions 在 cache_miss 时用已保管的 tgt 建教务会话，把 ASPSESSIONID 交给本人。
 	// 为 nil 时 miss 仍成功，只是 cookies 为空、session=unavailable。
 	sessions SessionIssuer
+	// tgtRefresher 让续期回调走真正的 tgt 续期，而不是自己拼假请求。
+	tgtRefresher TGTRefresher
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -87,9 +88,20 @@ func (s *Service) BindSessionIssuer(issuer SessionIssuer) {
 	s.sessions = issuer
 }
 
+// BindTGTRefresher 接入 tgt 续期能力（由装配层把 schoolauth.TGTManager 适配进来）。
+func (s *Service) BindTGTRefresher(r TGTRefresher) {
+	s.tgtRefresher = r
+}
+
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。
 func (s *Service) BindRenewScheduler(sched *RenewScheduler) {
 	s.scheduler = sched
+}
+
+// TicketTTL 返回当前写票窗口（由观测周期决定，未绑定调度器时回落 9 天）。
+// 导出是给装配层与测试观测「观测 → 周期 → TTL」闭环是否真正打通。
+func (s *Service) TicketTTL() time.Duration {
+	return s.currentTicketTTL()
 }
 
 // currentTicketTTL 返回本次写票应使用的过期窗口：绑定调度器时取观测周期，
@@ -302,59 +314,24 @@ func (s *Service) Captcha(ctx context.Context, userID string, name school.Target
 	return CaptchaResult{UUID: "cap-" + string(name), Image: p.Image}, nil
 }
 
-// Login 用「码 + 事务标识」向统一认证侧换票。
+// Login 是骨架期遗留的「码 + 事务标识」换票端点，**已停止写入票据存储**。
 //
-// 错误路径：上游响应体含「验证码错误」或业务码 500 → 可区分错误，且**不落任何票据**。
-// 成功路径：票据密封后按用户键控写入外置存储、记录过期时刻，并按 ADR-0001 第 3 条
-// 下发给已认证的本人。审计只记「谁/何时/目标/结果码」，绝不记录票据值。
+// 2026-11-17 改：真实登录走身份域的 `POST /identity/login`（LoginBySchool → 换票 →
+// tgtSaverBridge 保管 tgt）。这里是另一条独立的老路径，它做两件错事：
+//  1. 打的是 WebVPN 编码后的 auth 地址且**不带 appid**，学校侧不会按 CAS 语义回应；
+//  2. 把**上游响应原文**封进与 TGTManager 同一个 key——上游回 HTML 就把 HTML 当票存，
+//     并直接顶掉真正的 {TGT, CookieHeader}。
+//
+// 保留端点形态（避免既有调用方 404），但只做换票探测、**不落任何存储**，
+// 并明确返回「请改用身份域登录」。
 func (s *Service) Login(ctx context.Context, userID, code, uuid string) (LoginResult, error) {
 	if userID == "" || code == "" {
 		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 	}
-	// 骨架期不真的回传验证码事务；用 auth 逻辑目标构造一次换票请求，由假出站
-	// 实现注入「成功票据」或「验证码错误」两种上游行为。
-	tgt, err := school.Resolve(school.TargetAuth)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgt.Vpn.String()+"/api/v1/cas/login", nil)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	resp, err := s.doer.Do(ctx, req)
-	if err != nil {
-		return LoginResult{}, mapOutboundError(err)
-	}
-	if resp == nil {
-		return LoginResult{}, errors.New("jiaowu: nil response from outbound doer")
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return LoginResult{}, err
-	}
-
-	// 验证码错误判定：响应体含明确文案，或平台失败信封 code=500。
-	if bytes.Contains(raw, []byte("验证码错误")) || platformEnvelopeFailed(raw) {
-		s.audit(ctx, userID, "login", "captcha_error", string(school.TargetAuth))
-		s.recordLoginOutcome(false)
-		return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
-	}
-
-	ticket := string(raw)
-	sealed, err := s.cipher.Seal(raw)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	expiresAt := s.clock.Now().Add(s.currentTicketTTL())
-	if err := s.tickets.Put(ctx, userID, sealed, expiresAt); err != nil {
-		return LoginResult{}, err
-	}
-	s.recordLoginOutcome(true)
-	s.audit(ctx, userID, "login", "ok", string(school.TargetAuth))
-	// uuid 参与事务标识但绝不进审计，避免任何间接泄漏。
 	_ = uuid
-	return LoginResult{Ticket: ticket, ExpiresAt: expiresAt}, nil
+	// 不再出站、不再写存储：落库会污染 tgt 记录（见上面注释）。
+	s.audit(ctx, userID, "login", "deprecated_no_store", string(school.TargetAuth))
+	return LoginResult{}, &school.Error{Code: school.CodeSessionExpired}
 }
 
 // Logout 删除该用户的票据记录（幂等）。
@@ -498,50 +475,31 @@ func (s *Service) fallbackToCaptcha() (AccelResult, error) {
 	}, nil
 }
 
-// RenewFor 是 RenewScheduler 的执行回调：对一名即将过期的用户执行一次主路径换票。
-// 它只经 Service 已有的出站闸口（s.doer.Do），不绕过 platform.HTTPDoer；
-// 成功/失败回喂观测周期，形成「换票结果 → 观测 → 下一轮候选窗口」闭环。
-// 骨架期不真的向学校重放凭据（那需要用户重新输码），因此这里做一次「探测式」换票，
-// 由上游响应决定成败；不静默重试。
+// RenewFor 是 RenewScheduler 的执行回调：对一名即将过期的用户真正续期一次。
+//
+// 2026-11-17 重写。旧实现是骨架期的占位：拼一个 `appid=portal&renew=<userID>` 的假请求，
+// 把**上游响应原文**封进 TicketStore。它有两个致命问题：
+//  1. `appid=portal` 不是真实 appid（门户是 aea49a21-…），`renew` 参数是编的，学校侧不会认；
+//  2. 它写的是与 TGTManager 同一个 key，于是每轮续期都会把真正的 {TGT, CookieHeader}
+//     覆盖成一段 HTML 或错误信封——这是 cache_miss 第二天全部 session=unavailable 的直接原因。
+//
+// 现在只做一件事：把续期委托给 tgtManager（它持有整套凭据、会滚动保存新 tgt）。
+// 没有接入 tgtManager 时**什么都不做**——绝不写任何占位数据。
 func (s *Service) RenewFor(ctx context.Context, userID string) {
 	if userID == "" {
 		return
 	}
-	tgt, err := school.Resolve(school.TargetWebvpn)
-	if err != nil {
-		s.recordLoginOutcome(false)
+	if s.tgtRefresher == nil {
+		// 未接入续期能力：这是配置问题，不是业务失败；不写占位票、不动任何记录。
+		s.audit(ctx, userID, "renew", "skipped_no_refresher", string(school.TargetAuth))
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		tgt.Vpn.String()+"/api/v1/cas/login?appid=portal&renew="+url.QueryEscape(userID), nil)
-	if err != nil {
+	if _, err := s.tgtRefresher.RefreshTGT(ctx, userID); err != nil {
+		// 续期失败只回喂观测周期并记审计，不覆盖已有记录（失败时保留旧票仍可用）。
 		s.recordLoginOutcome(false)
-		return
-	}
-	resp, err := s.doer.Do(ctx, req)
-	if err != nil {
-		s.recordLoginOutcome(false)
-		return
-	}
-	if resp == nil {
-		s.recordLoginOutcome(false)
-		return
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil || len(raw) == 0 || platformEnvelopeFailed(raw) {
-		s.recordLoginOutcome(false)
-		return
-	}
-	sealed, err := s.cipher.Seal(raw)
-	if err != nil {
-		s.recordLoginOutcome(false)
-		return
-	}
-	if err := s.tickets.Put(ctx, userID, sealed, s.clock.Now().Add(s.currentTicketTTL())); err != nil {
-		s.recordLoginOutcome(false)
+		s.audit(ctx, userID, "renew", "refresh_failed", string(school.TargetAuth))
 		return
 	}
 	s.recordLoginOutcome(true)
-	s.audit(ctx, userID, "renew", "ok", string(school.TargetWebvpn))
+	s.audit(ctx, userID, "renew", "ok", string(school.TargetAuth))
 }

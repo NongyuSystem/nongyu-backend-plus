@@ -43,8 +43,9 @@ type cacheEnvelope struct {
 // cacheMissResponse 是未命中的响应：HTTP 200 + 业务码 cache_miss。
 //
 // 客户端拿到它就按 method 请求 address，带上 cookies，自己解析 HTML，再把 JSON 回传。
-// address 是直连教务 URL，不是 WebVPN 编码地址。校外打不进。
-// cookies 是教务会话（ASPSESSIONID*），不是 go-admin-tgt。建会话失败时仍是 200，
+// address 形态取决于请求头 X-Nongyu-Campus-Network：校内是直连教务 URL，
+// 校外是 WebVPN 编码地址（校外直连不可达）。cookies 只在直连形态下出现，
+// 是教务会话（ASPSESSIONID*），不是 go-admin-tgt。换票失败时仍是 200，
 // cookies 为空，session=unavailable，不变成 500。
 type cacheMissResponse struct {
 	Code    string         `json:"code"`
@@ -54,8 +55,20 @@ type cacheMissResponse struct {
 	Method  string         `json:"method,omitempty"`
 	Cookies []IssuedCookie `json:"cookies"`
 	Parser  string         `json:"parser,omitempty"`
-	Session string         `json:"session,omitempty"`
+	// Mode 是本次判定出的地址形态：direct（直连）或 vpn（经网关编码）。
+	Mode string `json:"mode,omitempty"`
+	// Session 是会话下发状态：ok / unavailable / not_needed。
+	Session string `json:"session,omitempty"`
 }
+
+// sessionStateNotNeeded 表示这一次不需要下发任何票（无 issuer 时的占位，当前未使用）。
+const sessionStateNotNeeded = "not_needed"
+
+// sessionStateUnavailable 表示需要票但没拿到（未接 issuer、无 tgt、换票失败）。
+const sessionStateUnavailable = "unavailable"
+
+// sessionStateClientSide 表示票由客户端自备（vpn 形态：后端不参与票价链路）。
+const sessionStateClientSide = "client_side"
 
 // dataTypeFromPath 从 URL 取并校验 dataType。
 //
@@ -102,7 +115,8 @@ func cacheGetHandler(svc *Service) gin.HandlerFunc {
 		snap, err := svc.CacheGet(c.Request.Context(), userID, dt, fallback)
 		if err != nil {
 			if errors.Is(err, ErrCacheMiss) {
-				c.JSON(http.StatusOK, svc.cacheMiss(c.Request.Context(), userID, dt))
+				c.JSON(http.StatusOK, svc.cacheMiss(c.Request.Context(), userID, dt,
+					c.GetHeader(HeaderCampusNetwork)))
 				return
 			}
 			writeCacheError(c, err)
@@ -200,10 +214,21 @@ func writeCacheError(c *gin.Context, err error) {
 
 // cacheMiss 组装未命中 recipe。
 //
-// 建会话失败、未接入 issuer、或没有 tgt，都只记 session_unavailable。
+// 地址形态由请求头 X-Nongyu-Campus-Network 决定：
+//
+//	direct → 直连教务地址 + ASPSESSIONID（后端用已保管 tgt 换；要求后端能到 jiaowu）
+//	vpn    → WebVPN 编码地址，**不下发票**（见下）
+//
+// 校外形态为什么不下发票：wengine_vpn_ticket 只能在网关**已经登记该会话为已登录**时有效，
+// 那种票只有客户端真实登录网关才会产生（回投链停在 /wui/#/ 的 fragment 上，后端拿不到）。
+// 所以 vpn 形态只下发编码地址，由客户端用自己 WebView 里的网关会话去访问；
+// 客户端没有会话时，网关会 302 到登录页，客户端据此重新登录并自己重试。
+//
+// 换票失败时**仍回 200**，只是 cookies 为空、session=unavailable。
 // 不把 issuer 的错误文本写进响应或日志：那里可能带凭据前缀。
-func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType) cacheMissResponse {
-	address, parser := recipeOf(dt)
+func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, declared string) cacheMissResponse {
+	mode := accessModeOf(declared)
+	address, parser := recipeOf(dt, mode)
 	resp := cacheMissResponse{
 		Code:    "cache_miss",
 		Message: "没有可用缓存",
@@ -212,8 +237,19 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType) cac
 		Method:  http.MethodGet,
 		Cookies: []IssuedCookie{},
 		Parser:  parser,
-		Session: "unavailable",
+		Mode:    string(mode),
+		Session: sessionStateUnavailable,
 	}
+
+	if mode == AccessVPN {
+		// 校外形态：后端不参与票价链路，只给编码地址。
+		// session 语义在这里是「后端没有代你准备凭据」，由客户端自带网关会话。
+		resp.Session = sessionStateClientSide
+		s.audit(ctx, userID, "cache_miss", "vpn_recipe_client_side", string(school.TargetWebvpn))
+		return resp
+	}
+
+	// 校内形态：拿教务会话票。
 	if s.sessions == nil {
 		s.audit(ctx, userID, "cache_miss", "session_unavailable", string(school.TargetJiaowu))
 		return resp

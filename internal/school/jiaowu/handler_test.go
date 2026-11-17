@@ -234,8 +234,11 @@ func TestCaptchaReturnsImageAndUUID(t *testing.T) {
 	}
 }
 
-// TestLoginSuccessStoresAndReturnsTicket 正确验证码 → 换票成功，票据入外置存储、下发给本人。
-func TestLoginSuccessStoresAndReturnsTicket(t *testing.T) {
+// TestLoginIsDeprecatedAndNeverStoresTicket 锁住 2026-11-17 的处置：
+// /school/login 不再向上游换票、不再写票据存储——它当年写的是上游响应原文，
+// 会覆盖 TGTManager 保存的 {TGT, CookieHeader}（cache_miss 全线 session=unavailable 的根因）。
+// 端点保留形态（不 404），但一律回 session_expired，并留下 deprecate 审计。
+func TestLoginIsDeprecatedAndNeverStoresTicket(t *testing.T) {
 	doer := platform.NewMockHTTPDoer(enforcedPolicy())
 	doer.SetResponder(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -245,37 +248,24 @@ func TestLoginSuccessStoresAndReturnsTicket(t *testing.T) {
 			Request: req,
 		}, nil
 	})
-	h, tickets, clock, _ := newAuthEngine(t, doer)
+	h, tickets, _, audit := newAuthEngine(t, doer)
 
 	w := postJSON(t, h, "/school/login", map[string]string{
 		"userID": "u1", "code": "1234", "uuid": "cap-1",
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("期望 200，实际 %d，body=%s", w.Code, w.Body.String())
+	if w.Code == http.StatusOK {
+		t.Fatalf("已停用的登录端点不应回 200，实际 body=%s", w.Body.String())
 	}
-	var body struct {
-		Ticket    string `json:"ticket"`
-		ExpiresAt string `json:"expiresAt"`
+	// 关键断言：存储里绝不能被写入任何东西（这正是它过去破坏 tgt 的方式）。
+	if _, _, err := tickets.Get(nil, "test-user"); err == nil {
+		t.Fatal("登录端点绝不能再写票据存储（会覆盖真正的 tgt）")
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("非法 JSON：%v", err)
+	if !strings.Contains(audit.buf.String(), "deprecated_no_store") {
+		t.Fatalf("应留下 deprecated_no_store 审计，实际：%s", audit.buf.String())
 	}
-	if body.Ticket == "" {
-		t.Fatalf("应把票据下发给本人，实际 body=%s", w.Body.String())
-	}
-	// 存储里落的是「加密后的票据」，不应出现明文。
-	sealed, expiresAt, err := tickets.Get(nil, "test-user")
-	if err != nil {
-		t.Fatalf("票据应入外置存储：%v", err)
-	}
-	if bytes.Contains(sealed, []byte("TICKET-XYZ")) {
-		t.Fatalf("存储里应是密文，不得出现明文票据")
-	}
-	if expiresAt.IsZero() {
-		t.Fatalf("过期时刻应随票据一起记录")
-	}
-	if !expiresAt.After(clock.Now()) {
-		t.Fatalf("过期时刻应晚于当前时刻")
+	// 也不应真的出站打学校站。
+	if got := len(doer.Requests()); got != 0 {
+		t.Fatalf("停用后不应出站，实际 %d 次", got)
 	}
 }
 
@@ -321,17 +311,20 @@ func TestLoginBadCaptchaNoTicketStored(t *testing.T) {
 	}
 }
 
-// TestLogoutDeletesTicket 退出登录后该用户票据记录被删除。
+// TestLogoutDeletesTicket 退出登录后该用户票据记录被删除（幂等）。
+//
+// 2026-11-17 改：不再借 `POST /school/login` 造前置数据（它已停止落库）。
+// 直接写入存储来验证 Logout 的删除语义本身。
 func TestLogoutDeletesTicket(t *testing.T) {
 	doer := platform.NewMockHTTPDoer(enforcedPolicy())
-	doer.SetResponse(http.StatusOK, "TICKET-LOGOUT")
 	h, tickets, _, _ := newAuthEngine(t, doer)
 
-	postJSON(t, h, "/school/login", map[string]string{
-		"userID": "u4", "code": "1234", "uuid": "cap-4",
-	})
+	// 前置：手工放一条记录，模拟「已登录并保管了 tgt」。
+	if err := tickets.Put(nil, "test-user", []byte("sealed"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("前置写入失败：%v", err)
+	}
 	if _, _, err := tickets.Get(nil, "test-user"); err != nil {
-		t.Fatalf("前置：登录应落票据，%v", err)
+		t.Fatalf("前置：记录应存在，%v", err)
 	}
 
 	w := httptest.NewRecorder()

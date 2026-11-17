@@ -18,9 +18,18 @@ func (b jiaowuSessionBridge) IssueSession(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, err
 	}
+	return toIssued(raw), nil
+}
+
+// RefreshTGT 让续期回调走真正的 tgt 续期，而不是自己拼假请求再覆盖存储。
+func (b jiaowuSessionBridge) RefreshTGT(ctx context.Context, userID string) (string, error) {
+	return b.src.RefreshTGT(ctx, userID)
+}
+
+func toIssued(raw []schoolauth.SessionCookie) []jiaowu.IssuedCookie {
 	out := make([]jiaowu.IssuedCookie, 0, len(raw))
 	for _, c := range raw {
 		out = append(out, jiaowu.IssuedCookie{Name: c.Name, Value: c.Value})
 	}
-	return out, nil
+	return out
 }

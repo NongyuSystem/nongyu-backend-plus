@@ -3,7 +3,9 @@
 > 状态：**已实现**（2026-11-11；2026-11-16 修订 cache_miss recipe）。决策来源见 [地图 #30](https://github.com/NongyuSystem/nongyu-backend-plus/issues/30) 及其 12 张子票；
 > 逐条决策的完整依据住在各 decision ticket 里，本文只做汇总与落地说明。
 >
-> **2026-11-16 修订**：未命中不再只下发 WebVPN 编码地址。`cache_miss` 下发直连教务地址、`GET`、解析器名，以及用已保管的 `go-admin-tgt` 换出的教务会话 Cookie（`ASPSESSIONID*`）。tgt 不下发。解析仍在客户端，POST 仍收解析后的 JSON。见文末「2026-11-16 推翻了什么」。
+> **2026-11-16 修订**：未命中不再只下发 WebVPN 编码地址。`cache_miss` 下发取数 recipe（地址 + 方法 + 解析器名 + 会话 Cookie）。tgt 不下发。解析仍在客户端，POST 仍收解析后的 JSON。见文末「2026-11-16 推翻了什么」。
+>
+> **2026-11-17 修订**：地址形态改由客户端声明。请求头 `X-Nongyu-Campus-Network: direct` 表示「客户端能直连校园网」，此时下发直连地址并换出 `ASPSESSIONID`；该头缺失或为 `vpn`/`0`/`false` 时下发 WebVPN 编码地址，且**不**出站换票（网关按 vpn ticket 自己补上游 Cookie）。判定权在客户端：教务站只在校内可达，后端出口位置推不出学生位置。
 >
 > 术语遵循仓库 `GLOSSARY.md`：**农屿会话**（自有 token）/ **票据失效**（WebVPN 网关 302→/login）/
 > **教务会话失效**（教务 ASPSESSIONID，正文「登录超时」）。三者不可混用。
@@ -25,10 +27,12 @@
 2. **后端校验**：只做 schema/形状校验（JSON Schema 2020-12）。不合格回 `400 schema_rejected`，
    且**一个字节都不写**，保证坏数据永远顶不掉能读的旧数据；
 3. **有缓存**：前端直接 `GET /school/cache/:dataType` 命中返回，不再打教务；未命中回
-   `200 + code=cache_miss`，并下发该类型的直连地址、方法、解析器名和教务会话 Cookie。
+   `200 + code=cache_miss`，并下发该类型的取数 recipe：地址形态、方法、解析器名、会话 Cookie。
+   地址形态由请求头 `X-Nongyu-Campus-Network` 声明——
+   `direct` 给直连教务地址 + `ASPSESSIONID`；缺省/`vpn` 给 WebVPN 编码地址且不换票。
 
 后端不解析 HTML，也不代取业务页。它认识已写进契约的固定 path（例如课表的 `title_id1=4`），
-用来拼直连地址。需要用户输入才能确定的 path（教室名、教师编号）不编。
+用来拼地址。需要用户输入才能确定的 path（教室名、教师编号）不编。
 
 ## User Stories
 
@@ -241,6 +245,55 @@
 - `GET /school/address` 仍返回编码地址、零出站，只追加 `method=GET`，不附 `ASPSESSIONID`。
 - 命中路径零出站，不建会话。
 - 后端不代取课表 HTML 作为主路径。
+
+## 2026-11-17 地址形态分流
+
+`cache_miss` 现在读请求头 `X-Nongyu-Campus-Network` 决定下发哪种地址：
+
+| 请求头取值 | mode | address | cookies | session |
+| --- | --- | --- | --- | --- |
+| `direct` / `campus` / `intranet` / `1` / `true` | `direct` | `https://jiaowu.sicau.edu.cn/...` | `ASPSESSIONID*` | `ok` / `unavailable` |
+| `vpn` / `webvpn` / `0` / `false`，或缺省、不可识别 | `vpn` | `https://webvpn.sicau.edu.cn/https/<KEY_HEX><密文>/...` | 空 | `client_side` |
+
+`session=client_side` 表示**票由客户端自备**，不是失败：`vpn` 形态后端完全不出站、不下发任何票，
+客户端用自己的 WebView 会话（`wengine_vpn_ticket`）去访问编码地址。
+
+为什么后端不下发网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
+该会话为已登录**时才有效。后端用 tgt 走门户 appid 换票并回投网关，只能拿到 16 位游客票
+（回投链停在 `/wui/#/` 的 fragment 上，fragment 不进 HTTP，剩余会话绑定全在门户 SPA 里），
+拿这张票打任何编码地址都 302 回 `/login`。因此该能力已从代码中删除，
+`vpn` 形态只下发编码地址。
+
+为什么判定权在客户端：教务站只在校内网可达，而「这个学生此刻在校内还是校外」只有客户端知道。
+后端出口在校内也推不出学生位置，所以不做后端探测，也不复用 `/school/presence` 的持久化上报
+（那个端点仍在，用于「进入/切换网络时上报」这类更重的场景）。
+
+不可识别/缺省回落 `vpn`，不回落 `direct`：PRD 前提是「离校后必须经网关」，按校外处理不会让
+常见用户拿到一个必然失败的地址。
+
+编码地址的拼法是「先拼完整直连 URL 再 Encode」，不能拿 `tgt.Vpn` 直接接 path——
+`Encode` 对无 path 的地址会补 `/`，会拼出 `...e0//xuesheng/...` 双斜杠。
+
+## 2026-11-17 实测：三票分工
+
+三种票各管一段，互不可替代（全部真账号实测）：
+
+| 票 | 来源 | 能做什么 | 不能做什么 |
+| --- | --- | --- | --- |
+| `go-admin-tgt`（`auth` 域） | 客户端登录统一身份认证后交后端 | 换任意 appid 的 `st`：教务 st（`code=200`）、门户 st、学工 token | 直接访问编码地址（302） |
+| `wengine_vpn_ticket`（`webvpn` 域） | 客户端真实登录网关后自带 | 过网关；网关按需补出 `ASPSESSIONID` | 去 auth 换 st（`code=500 未登录`） |
+| `ASPSESSIONID`（教务） | 网关按需吐出 | 直连教务（校内）或经网关访问教务（校外） | 单独过网关（302） |
+
+两条链路的实测结论：
+
+- **校内**：`go-admin-tgt` → 换教务 st → 回投 `jiaowu.sicau.edu.cn` → `ASPSESSIONID` → 直连。
+  换 st 一步只打 `auth`（已验证 `code=200`）；回投要求后端能到 `jiaowu`。
+- **校外（后端代理也不行，走客户端）**：客户端登录网关 → 自带 `wengine_vpn_ticket` →
+  直接访问编码地址。若需登录页（课表/成绩/学籍），客户端还要在自己 WebView 里完成一次
+  教务 CAS（网关会推动），或由客户端把 tgt 交后端另行处理。
+
+**票长不能判断有效性**：有效票与游客票都是 16 位十六进制（如 `43d5b3947913eab2`，8 字节）。
+网关判断登录与否看的是服务端会话记录，不是票里的内容。
 
 ## Out of Scope
 

@@ -520,9 +520,11 @@ func TestAccelLoginPageHTMLFallsBack(t *testing.T) {
 
 // TestObservedPeriodDrivesTicketTTL 证明写票 TTL 由观测周期决定，而非硬编码常量：
 // 绑定 scheduler 后，收紧观测周期会让新写票据的过期时刻同步前移（B1 闭环）。
+//
+// 2026-11-17 改：`Login` 已停止落库（它会用上游原文覆盖 tgt），所以这里改测
+// 「Service 按观测周期算出的 TTL」这个仍然生效的口径，而不是测那条已被删除的写入。
 func TestObservedPeriodDrivesTicketTTL(t *testing.T) {
 	doer := platform.NewMockHTTPDoer(enforcedPolicy())
-	doer.SetResponse(http.StatusOK, "TICKET-OBSERVED")
 	tickets := platform.NewMockTicketStore()
 	clock := platform.NewMockClock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
 	cipher := platform.NewMockCipher("test-key")
@@ -531,18 +533,20 @@ func TestObservedPeriodDrivesTicketTTL(t *testing.T) {
 	svc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, false)
 	svc.BindRenewScheduler(sched)
 
+	// 未收紧时：初始观测窗口是 9 天。
+	if got := svc.TicketTTL(); got != 9*24*time.Hour {
+		t.Fatalf("初始写票窗口应为 9 天，实际 %v", got)
+	}
+
 	// 收紧观测周期后，写票过期时刻应显著早于初始 9 天窗口。
 	for i := 0; i < 8; i++ {
 		sched.RecordFailure(clock.Now())
 	}
-	if _, err := svc.Login(context.Background(), "u-ttl", "1234", "cap-ttl"); err != nil {
-		t.Fatalf("Login: %v", err)
+	got := svc.TicketTTL()
+	if got >= 9*24*time.Hour {
+		t.Fatalf("写票窗口应受观测周期收紧影响，实际仍为 %v（9 天硬编码未打通）", got)
 	}
-	_, expiresAt, err := tickets.Get(nil, "u-ttl")
-	if err != nil {
-		t.Fatalf("票据应落库：%v", err)
-	}
-	if window := expiresAt.Sub(clock.Now()); window >= 9*24*time.Hour {
-		t.Fatalf("写票窗口应受观测周期收紧影响，实际仍为 %v（9 天硬编码未打通）", window)
+	if got < time.Hour {
+		t.Fatalf("写票窗口不得低于下界 1 小时，实际 %v", got)
 	}
 }

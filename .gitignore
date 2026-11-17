@@ -46,3 +46,5 @@ docs/agents/
 .dev-server.pid
 .dev-server.err.log
 .dev-server.exe
+# 本地验收产物（截图/验证码/落盘凭据），不入库
+_artifacts/
