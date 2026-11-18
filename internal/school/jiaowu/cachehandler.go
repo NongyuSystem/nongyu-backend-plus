@@ -208,6 +208,11 @@ func writeCacheError(c *gin.Context, err error) {
 			Code:    "refresh_too_soon",
 			Message: "刷新过于频繁，请稍后再试",
 		})
+	case errors.Is(err, ErrPublicCacheAdminOnly):
+		c.JSON(http.StatusForbidden, errorResponse{
+			Code:    "public_cache_admin_only",
+			Message: "公共服务缓存仅管理员可失效",
+		})
 	case errors.Is(err, ErrCacheUnavailable):
 		c.JSON(http.StatusServiceUnavailable, errorResponse{
 			Code:    "cache_unavailable",
@@ -253,18 +258,21 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 	}
 
 	if mode == AccessVPN {
-		// 校外形态：下发网关票，并**每次**重新预热网关侧教务会话。
-		// 实测公开页会重置那个会话态，只在交票时预热一次不够稳。
-		cookies, casOK := s.webvpnCookiesForClient(ctx, userID)
+		// 公共类（全站共有页）：用管理员维护的取数账号池，不碰学生自己的凭据。
+		// 这样所有学生命中同一份全局缓存，也不会出现「公开页重置了某个学生
+		// 的教务会话」这类按人分叉的问题。
+		if IsPublicDataType(dt) {
+			return s.publicCacheMiss(ctx, resp, dt)
+		}
+
+		// 私有类：下发学生自己的网关票。教务会话在交票时已预热过一次，
+		// 且公共页分流后不再重置该会话，这里保持零出站。
+		cookies := s.webvpnCookiesForClient(ctx, userID)
 		if len(cookies) == 0 {
 			s.audit(ctx, userID, "cache_miss", "vpn_ticket_missing", string(school.TargetWebvpn))
 			return resp // session=unavailable, cookies=[]
 		}
 		resp.Cookies = cookies
-		if !casOK {
-			// 票在但会话没建上：地址与票仍给出（公开页可用），session 明确不可用。
-			return resp
-		}
 		resp.Session = "ok"
 		s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
 		return resp
@@ -283,6 +291,53 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 	resp.Cookies = cookies
 	resp.Session = "ok"
 	s.audit(ctx, userID, "cache_miss", "session_ok", string(school.TargetJiaowu))
+	return resp
+}
+
+// publicCacheMiss 处理公共类（全站共有页）的未命中：凭据全部来自取数账号池，
+// 不碰请求学生的 tgt/网关票，因此所有学生拿到的是同一份凭据、写同一份全局缓存。
+//
+// 池不可用时返回带专用 code 的响应，绝不静默回退到学生自己的凭据——那会让
+// 公共数据按人分叉，也违反「公共服务使用管理员账号」的约定。
+func (s *Service) publicCacheMiss(ctx context.Context, resp cacheMissResponse, dt DataType) cacheMissResponse {
+	// 缺入参的查询类（教室/教师等）：只给 needs + basePath，让客户端自己拼，
+	// 不碰取数账号池——它没有完整地址可取，也不该消耗池账号。
+	if resp.Needs != "" {
+		s.audit(ctx, "", "cache_miss_public", "needs_input", string(dt))
+		return resp
+	}
+	if s.fetchAccounts == nil || s.fetchST == nil {
+		resp.Code = "fetch_account_unavailable"
+		resp.Message = "公共服务取数账号未配置，请联系管理员"
+		s.audit(ctx, "", "cache_miss_public", "no_pool", string(dt))
+		return resp
+	}
+	acct, err := s.fetchAccounts.Pick(ctx)
+	if err != nil {
+		resp.Code = "fetch_account_unavailable"
+		resp.Message = "没有可用的公共服务取数账号，请联系管理员"
+		s.audit(ctx, "", "cache_miss_public", "no_account", string(dt))
+		return resp
+	}
+	// 用池账号的整套 auth cookie 换 st，再用池账号的网关票建网关侧教务会话。
+	st, err := s.fetchST.IssueSTWithCredential(ctx, acct.CookieHeader)
+	if err != nil {
+		_ = s.fetchAccounts.MarkFailure(ctx, acct.ID)
+		resp.Code = "fetch_account_st_failed"
+		resp.Message = "公共服务取数账号换票失败，请联系管理员"
+		s.audit(ctx, "", "cache_miss_public", "st_failed", string(dt))
+		return resp
+	}
+	if err := s.runCASRedirects(ctx, "", acct.VPNTicket, st); err != nil {
+		_ = s.fetchAccounts.MarkFailure(ctx, acct.ID)
+		resp.Code = "fetch_account_cas_failed"
+		resp.Message = "公共服务取数账号建会话失败，请联系管理员"
+		s.audit(ctx, "", "cache_miss_public", "cas_failed", string(dt))
+		return resp
+	}
+	resp.Cookies = []IssuedCookie{{Name: gatewayTicketCookieName, Value: acct.VPNTicket}}
+	resp.Session = "ok"
+	s.audit(ctx, "", "cache_miss_public", "ok", string(dt))
 	return resp
 }
 

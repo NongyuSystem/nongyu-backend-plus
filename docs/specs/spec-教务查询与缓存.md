@@ -359,6 +359,62 @@ cookie 罐里**——它绑在 WebVPN 网关服务端、按 `wengine_vpn_ticket`
 - `?term=` 学期参数与历史学期课表（实测不存在；历史学期走另一页面，属新功能）。
 - Go 后端消费 HTML 夹具、以及 HTML 解析器的纯函数单测（属前端仓）。
 
+## 2026-11-18 定案：公共服务使用取数账号（取代前面几节的客户端模型）
+
+**维护者拍板**：全站共有、不需登录的教务页，统一用一组「取数账号」抓取，
+不让每个学生用自己的凭据各取一份；结果写全局缓存，只有管理员能失效。
+取数账号列表存数据库，只有 `go-admin-tgt`（整套 auth 域 cookie）与
+`wengine_vpn_ticket` 两套凭据，**不对应任何 app 用户、没有学号/角色/业务数据**。
+
+### 分类（`IsPublicDataType`）
+
+| 类别 | dataType | 取数身份 | 缓存键 |
+| --- | --- | --- | --- |
+| 公共 | `notice` / `teachingNotice` / `competition` / `kaike` / `classroomInfo` / `teacherInfo` / `teacherCourse` / `classroomCourse` | 取数账号池 | `<prefix>cache:public:<dataType>`（全局一份） |
+| 私有 | `course` / `score` / `exam` / `progress` / `rank` / `plan` / `personal` | 学生自己的 tgt + 网关票 | `<prefix>cache:<userID>:<dataType>` |
+
+早期版本一律带 userID（#37 N5「不引入全局共享键」）——那条约束针对的是
+「用某个真实用户 ID 当公共键」会串数据；这里用保留字 `public` 作全局命名空间，
+与用户 ID 不冲突。
+
+### 凭据与维护
+
+- 迁移 `0008_fetch_accounts.sql`：`tgt_sealed` / `vpn_ticket_sealed` 均为 AES-GCM 密文（bytea），
+  密钥由 `TICKET_KEY` 派生；列里绝不出现明文。
+- tgt 复用 `TGTManager` 的滚动续期思路（存 `TGTBundle` JSON 密文，`EnsureFresh` 解出整套 cookie 换票）；
+  webvpn 票会话级、无 Max-Age，**由管理员手动更新**。
+- 管理员接口（挂 `adminGroup`：ScopeAdmin + RoleAdmin）：
+  - `GET/POST/PUT/DELETE/PATCH /admin/jiaowu/fetch-accounts`（列表/新增/更新/删除/启停）
+  - `DELETE /admin/jiaowu/public-cache/:dataType`（公共缓存失效）
+  - 所有响应不回显凭据；明文只在新增/更新的请求体里出现一次。
+
+### 链路
+
+- `cache_miss` 公共类 → `publicCacheMiss`：从池 `Pick` 一个账号 → 用整套 auth cookie 换 st
+  （`IssueSTWithCredential`，不进用户级 TGTManager）→ 用池网关票回投编码 caslogin 三跳
+  → 下发**池账号的** `wengine_vpn_ticket`。池不可用时回 `fetch_account_unavailable`，
+  **绝不回退到学生自己的凭据**（那会让公共数据按人分叉）。
+- 缺入参的查询类（教室/教师）：只给 `needs` + `basePath`，不碰池、不出站。
+- `/fetch` 公共类 → `fetchPublicViaWebVPN`：同一套池凭据代取。
+- 私有类维持原链路（学生票 + 交票时预热一次 CAS）。
+- 普通 `DELETE /school/jiaowu/cache/:dataType` 对公共类回 `403 public_cache_admin_only`。
+
+### 对前面几节的影响
+
+- 「客户端什么都没有、全在后端取」「每次 cache_miss 都预热 CAS」「公开页重置会话」
+  这几段是分流前的中间设计，**已被本节取代**：
+  - 会重置网关侧教务会话的公开页（`/web/web/web/index.asp`）现在全走池账号，
+    学生侧链路只剩需登录页，它们之间互不重置（实测 course→score→course 全 200）；
+  - 因此 `webvpnCookiesForClient` 回退为零出站（只取票），CAS 预热只在交票时做一次。
+- `session=client_side` / `webvpn.status` 那版早已删除，不再适用。
+
+### 真实环境验证（2026-11-18）
+
+重启后 0008 迁移自动执行；插入一个取数账号（假 tgt）后：
+- 公共类 `notice` → `fetch_account_st_failed`、`cookies:[]`（明确报错、未回退学生票）
+- 私有类 `course` → 正常 `cache_miss` + 学生票
+- 公共类普通失效 → `403 public_cache_admin_only`
+
 ## Further Notes
 
 **已确认，不要重复验证**：`?term=` 不存在；真实表头文字已坐实（`任课教师` / `最终成绩` / `考场` / `座位` / `加权` / `排名`）。

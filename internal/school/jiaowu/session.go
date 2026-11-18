@@ -41,3 +41,10 @@ type TGTRefresher interface {
 type JiaowuSTIssuer interface {
 	IssueJiaowuST(ctx context.Context, userID string) (string, error)
 }
+
+// FetchAccountSTIssuer 用「取数账号」的整套 auth 域 cookie 换出教务 st。
+// 与 JiaowuSTIssuer 的区别：不按用户保管、不读写 TGTManager，凭据来自池。
+// 错误文本可能带凭据前缀，调用方不得写入日志或 HTTP 响应。
+type FetchAccountSTIssuer interface {
+	IssueSTWithCredential(ctx context.Context, cookieHeader string) (string, error)
+}

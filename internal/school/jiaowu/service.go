@@ -53,6 +53,12 @@ type Service struct {
 	// jiaowuST 用保管 tgt 换教务 st，供 /fetch 建立网关侧教务会话。
 	// 为 nil 时 /fetch 只带网关票，需登录页会拿到登录壳（不静默成功，见 FetchViaWebVPN）。
 	jiaowuST JiaowuSTIssuer
+	// fetchAccounts 是公共类（全站共有页）的取数账号池，由管理员维护。
+	// 为 nil 时公共类 cache_miss 回 fetch_account_unavailable，绝不回退到学生自己
+	// 的凭据（那会让公共数据按人分叉）。
+	fetchAccounts FetchAccountPool
+	// fetchST 用取数账号的整套 cookie 换 st（公共类建网关侧会话用）。
+	fetchST FetchAccountSTIssuer
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -114,6 +120,16 @@ func (s *Service) BindWebVPNTicketStore(store WebVPNTicketStore) {
 // BindJiaowuSTIssuer 接入「用保管 tgt 换教务 st」的能力（校外需登录页取数用）。
 func (s *Service) BindJiaowuSTIssuer(i JiaowuSTIssuer) {
 	s.jiaowuST = i
+}
+
+// BindFetchAccountPool 接入公共类取数账号池（管理员维护）。
+func (s *Service) BindFetchAccountPool(p FetchAccountPool) {
+	s.fetchAccounts = p
+}
+
+// BindFetchAccountSTIssuer 接入「取数账号整套 cookie 换 st」的能力。
+func (s *Service) BindFetchAccountSTIssuer(i FetchAccountSTIssuer) {
+	s.fetchST = i
 }
 
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。

@@ -26,6 +26,7 @@ import (
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/objectstore"
+	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
@@ -573,7 +574,22 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowuSvc.BindAuditStore(auditStore)
+
+	// 公共类取数账号池：只有 tgt + webvpn 票、不对应任何 app 用户的专用凭据，
+	// 由管理员通过管理端维护。配了 DATABASE_URL 走 PG（加密落库），否则走内存。
+	var fetchAccountAdmin jiaowu.FetchAccountAdminStore
+	if pgPool != nil {
+		repo := pgstore.NewFetchAccountPGRepo(pgPool, cfg.TicketKey, clock.Now)
+		jiaowuSvc.BindFetchAccountPool(repo)
+		fetchAccountAdmin = repo
+	} else {
+		repo := pgstore.NewFetchAccountMemoryRepo()
+		jiaowuSvc.BindFetchAccountPool(repo)
+		fetchAccountAdmin = repo
+	}
 	if jwSrc != nil {
+		// 取数账号的 st 用整套 auth cookie 换，不进 TGTManager 的用户级保管。
+		jiaowuSvc.BindFetchAccountSTIssuer(fetchAccountSTBridge{src: jwSrc})
 		// 两种能力共用同一个桥：
 		//   - SessionIssuer：direct 形态下用已保管 tgt 换 ASPSESSIONID（要求能到 jiaowu）
 		//   - TGTRefresher：续期回调走真正的 tgt 续期
@@ -822,6 +838,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
 		post.RegisterAdmin(adminGroup, postSvc)
 		track.RegisterAdmin(adminGroup, trackSvc)
+		// 教务公共服务取数账号 + 公共缓存失效（仅管理员）。
+		jiaowu.RegisterFetchAccountAdmin(adminGroup, fetchAccountAdmin, jiaowuSvc)
 		// 皮肤包 B 端上传 / 列表 / 激活（issue #53）。与管理台同一套
 		// admin 会话 + role 门槛；CreatedBy 取已认证会话的用户 ID 字符串。
 		skin.RegisterAdmin(adminGroup, skinSvc, func(c *gin.Context) (string, bool) {

@@ -267,9 +267,9 @@ func TestWebVPN_RejectsBadShape(t *testing.T) {
 	}
 }
 
-// TestWebVPN_CacheMissPrewarmsEveryTime 每次 vpn 形态的 cache_miss 都要重新
-// 预热教务会话。实测网关侧会话会被公开页重置，只预热一次不够稳。
-func TestWebVPN_CacheMissPrewarmsEveryTime(t *testing.T) {
+// TestWebVPN_CacheMissIsZeroOutbound 公共页分流到取数账号池后，学生侧
+// cache_miss 保持零出站：教务会话在交票时预热一次即可，不再每次 miss 重跑 CAS。
+func TestWebVPN_CacheMissIsZeroOutbound(t *testing.T) {
 	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
 	engine, _, _ := newWebVPNEngine(t, doer)
 	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
@@ -287,16 +287,13 @@ func TestWebVPN_CacheMissPrewarmsEveryTime(t *testing.T) {
 		return n
 	}
 	before := casCount()
-	cacheMissBody(t, engine)
-	after1 := casCount()
-	if after1 <= before {
-		t.Fatalf("第 1 次 cache_miss 未重新预热（before=%d after=%d）", before, after1)
+	if before == 0 {
+		t.Fatal("交票时应已做一次 CAS 预热")
 	}
-	// 再来一次 miss，应再预热一次
 	cacheMissBody(t, engine)
-	after2 := casCount()
-	if after2 <= after1 {
-		t.Fatalf("第 2 次 cache_miss 也应重新预热（after1=%d after2=%d）", after1, after2)
+	cacheMissBody(t, engine)
+	if got := casCount(); got != before {
+		t.Fatalf("cache_miss 不应新增 CAS 出站（before=%d after=%d）", before, got)
 	}
 }
 

@@ -34,6 +34,16 @@ func (b jiaowuSessionBridge) RefreshTGT(ctx context.Context, userID string) (str
 	return b.src.RefreshTGT(ctx, userID)
 }
 
+// fetchAccountSTBridge 让公共类取数账号用「整套 auth cookie」换教务 st。
+// 不经过 TGTManager 的用户级保管——取数账号不对应任何 app 用户。
+type fetchAccountSTBridge struct {
+	src *schoolauth.JiaowuSource
+}
+
+func (b fetchAccountSTBridge) IssueSTWithCredential(ctx context.Context, cookieHeader string) (string, error) {
+	return b.src.IssueSTWithCredential(ctx, cookieHeader)
+}
+
 // ClearCredential 登出时清掉该用户的 tgt（ADR-0001 第 3 条「退出登录即清除」）。
 //
 // userID 是农屿用户 ID 的十进制串；TGTManager 的保管键就是它，与登录成功时

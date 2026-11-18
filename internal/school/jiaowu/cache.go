@@ -66,6 +66,8 @@ var (
 	ErrCacheMiss = errors.New("jiaowu: 缓存未命中")
 	// ErrRefreshTooSoon 表示在刷新间隔内重复请求失效（#34 的 429）。
 	ErrRefreshTooSoon = errors.New("jiaowu: 刷新过于频繁")
+	// ErrPublicCacheAdminOnly 表示公共类缓存只能由管理员通过管理端失效。
+	ErrPublicCacheAdminOnly = errors.New("jiaowu: 公共服务缓存仅管理员可失效")
 )
 
 // SchemaRejectedError 表示回传体形状校验未通过（#41 的 schema_rejected）。
@@ -101,9 +103,18 @@ type CacheSnapshot struct {
 
 // cacheDataKey 返回 dataType 数据在缓存层的键（不含 platform 的全局前缀与 cache: 段）。
 //
-// 最终键为 <prefix>cache:<userID>:<dataType>，即 nongyu:cache:<userID>:<dataType>（#32）。
-// 键里一律带 userID，公开数据也不例外（#37 N5：不引入全局共享键）。
+// 2026-11-18 分流：
+//   - 公共类（IsPublicDataType）：全局键 `public:<dataType>`，所有学生共享一份，
+//     由管理员维护的「取数账号」池抓取；只有管理员能通过管理端失效。
+//   - 私有类：`<userID>:<dataType>`，按学生隔离，用学生自己的凭据抓。
+//
+// 早期版本一律带 userID（#37 N5「不引入全局共享键」）——那条约束针对的是
+// 「用某个真实用户的 ID 当公共键」会串数据；这里用保留字 public 作全局命名空间，
+// 与用户 ID 不冲突，不违背隔离原则。
 func cacheDataKey(userID string, dt DataType) string {
+	if IsPublicDataType(dt) {
+		return "public:" + string(dt)
+	}
 	return userID + ":" + string(dt)
 }
 
@@ -237,9 +248,14 @@ func (s *Service) CacheSubmit(ctx context.Context, userID string, dt DataType, b
 
 // CacheInvalidate 让该用户该类型的缓存失效（#34）。
 //
-// 只删本用户该 dataType 的键：零出站、不级联。同一用户同一类型 60 秒内只允许一次，
-// 用缓存层的 SET NX 做间隔标记——不释放，到期自动放开，正好是「节流」而非「互斥」。
+// 公共类（全站共享键）不允许普通端点失效——只有管理员通过管理端
+// /admin/jiaowu/public-cache/:dataType 能删，避免任一学生清掉全校缓存。
+// 私有类只删本用户该 dataType 的键：零出站、不级联。同一用户同一类型 60 秒内
+// 只允许一次，用缓存层的 SET NX 做间隔标记（节流而非互斥）。
 func (s *Service) CacheInvalidate(ctx context.Context, userID string, dt DataType) error {
+	if IsPublicDataType(dt) {
+		return ErrPublicCacheAdminOnly
+	}
 	if s.cache == nil {
 		return ErrCacheUnavailable
 	}
@@ -262,6 +278,22 @@ func (s *Service) CacheInvalidate(ctx context.Context, userID string, dt DataTyp
 	}
 
 	s.audit(ctx, userID, "cache_invalidate", "ok", string(dt))
+	return nil
+}
+
+// InvalidatePublicCache 删除公共类全站共享键。仅供管理端调用，
+// 不做普通失效的 60 秒节流（管理员主动清理不应被限流）。
+func (s *Service) InvalidatePublicCache(ctx context.Context, dt DataType) error {
+	if !IsPublicDataType(dt) {
+		return fmt.Errorf("jiaowu: %s 不是公共服务类型", dt)
+	}
+	if s.cache == nil {
+		return ErrCacheUnavailable
+	}
+	if err := s.cache.Delete(ctx, cacheDataKey("", dt)); err != nil {
+		return fmt.Errorf("jiaowu: 删除公共缓存失败: %w", err)
+	}
+	s.audit(ctx, "", "public_cache_invalidate", "ok", string(dt))
 	return nil
 }
 

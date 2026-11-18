@@ -512,6 +512,28 @@ func (s *JiaowuSource) IssueSessionCookies(ctx context.Context, userID string) (
 	return out, nil
 }
 
+// IssueSTWithCredential 用一整套 auth 域 cookie 换出教务 st，不涉及用户身份、
+// 不读写 tgt 保管。专供「取数账号池」里的公共账号使用——那些账号不对应 app 用户，
+// 没有 UserID，也不该进 TGTManager 的用户级保管。
+//
+// cookieHeader 必须含 go-admin-tgt（及配套 laravel_session 等），单枚 tgt 在
+// 续期场景会失败。
+// 错误文本可能带凭据前缀，调用方不得把它写入日志或响应。
+func (s *JiaowuSource) IssueSTWithCredential(ctx context.Context, cookieHeader string) (string, error) {
+	if strings.TrimSpace(cookieHeader) == "" {
+		return "", fmt.Errorf("schoolauth: 缺少整套 auth 域 cookie")
+	}
+	tgt := cookieValue(Credential{RawCookie: cookieHeader}, goAdminTgtCookie)
+	st, _, err := s.exchangeTicket(ctx, tgt, cookieHeader)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(st) == "" {
+		return "", fmt.Errorf("schoolauth: 换票未返回 service ticket")
+	}
+	return st, nil
+}
+
 // IssueJiaowuST 用已保管的整套凭据换出一张教务 service ticket。
 //
 // 只换票，不建会话、不抓页。这是给「经 WebVPN 编码域建教务会话」用的：

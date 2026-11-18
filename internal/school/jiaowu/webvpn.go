@@ -44,34 +44,23 @@ const webvpnTicketTTL = 12 * time.Hour
 const webvpnExpiredSentinel = "\x00expired"
 const webvpnExpiredMarkTTL = 30 * time.Minute
 
-// webvpnCookiesForClient 取出网关票、包装成 cache_miss 要下发的 cookie，
-// 并重新预热这张票在网关侧的教务会话。
+// webvpnCookiesForClient 取出网关票，包装成 cache_miss 要下发的 cookie。
 //
-// 为什么每次 miss 都要预热（2026-11-18 实测）：网关侧「已登录教务」状态会被
-// 访问教务公开页/首页（/web/web/web/index.asp，即 notice）**重置**。
-// 实测 course→notice→course：第二个 course 302；notice→course：course 302；
-// course→score→course：全部 200。真实客户端常先刷通知再点课表，所以
-// 「交票时预热一次」不可靠。这里每次下发前都重跑幂等的 CAS 三跳，
-// 无论客户端按什么顺序请求，拿到需登录页地址时会话都是刚建好的。
+// 零出站：教务会话的预热在 **SubmitWebVPNTicket**（交票时）做一次就够——
+// 那个会话绑在网关票的网关服务端状态上、会延续。
 //
-// 代价：校外形态每次 cache_miss 多 3~4 次出站。可接受——只发生在未命中，
-// 且客户端是纯执行器、不调后端接口，没有别的补会话时机。
+// 2026-11-18 按「公共服务用取数账号」分流后，会把网关侧会话重置的公开页
+// （notice 等）已全部走取数账号池，学生侧链路只剩课表/成绩等需登录页，
+// 它们之间互不影响（实测 course→score→course 全部 200），因此不再需要
+// 每次 miss 都重跑 CAS 三跳。
 //
-// 预热失败不阻塞下发地址与票（公开页仍可用），但返回非 ok 让调用方知道。
 // 失效哨兵/本地过期不下发（返回 nil）：弹窗由客户端自己判 302。
-func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) ([]IssuedCookie, bool) {
+func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) []IssuedCookie {
 	ticket, err := s.webvpnTicketOf(ctx, userID)
 	if err != nil {
-		return nil, false
+		return nil
 	}
-	cookies := []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
-	if err := s.establishWebVPNSession(ctx, userID, ticket); err != nil {
-		// 错误文本可能带凭据前缀：只记审计结果，绝不写进响应/日志。
-		s.audit(ctx, userID, "cache_miss", "vpn_cas_failed", string(school.TargetWebvpn))
-		return cookies, false
-	}
-	s.audit(ctx, userID, "cache_miss", "vpn_cas_ready", string(school.TargetWebvpn))
-	return cookies, true
+	return []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
 }
 
 // WebVPNTicketStore 保管客户端交来的网关票（加密后按 userID 存）。
@@ -221,6 +210,11 @@ func (s *Service) webvpnTicketOf(ctx context.Context, userID string) (string, er
 //
 // 失效时顺手清掉这张死票，避免下次继续拿它打学校站。
 func (s *Service) FetchViaWebVPN(ctx context.Context, userID string, dt DataType) (FetchResult, error) {
+	// 公共类：凭据来自取数账号池，与 cache_miss 的 publicCacheMiss 同一套。
+	if IsPublicDataType(dt) {
+		return s.fetchPublicViaWebVPN(ctx, dt)
+	}
+
 	ticket, err := s.webvpnTicketOf(ctx, userID)
 	if err != nil {
 		s.audit(ctx, userID, "fetch_webvpn", "ticket_missing", string(school.TargetWebvpn))
@@ -264,6 +258,39 @@ func (s *Service) FetchViaWebVPN(ctx context.Context, userID string, dt DataType
 	}
 
 	s.audit(ctx, userID, "fetch_webvpn", "ok", string(school.TargetWebvpn))
+	return result, nil
+}
+
+// fetchPublicViaWebVPN 用取数账号池的凭据代取公共页。
+// 与 cache_miss 的 publicCacheMiss 共用同一套换 st / 建会话逻辑。
+func (s *Service) fetchPublicViaWebVPN(ctx context.Context, dt DataType) (FetchResult, error) {
+	if s.fetchAccounts == nil || s.fetchST == nil {
+		return FetchResult{}, ErrFetchAccountUnavailable
+	}
+	recipe := recipeOf(dt, AccessVPN)
+	if recipe.Address == "" {
+		return FetchResult{}, fmt.Errorf("jiaowu: 该公共服务需要用户输入（%s），请用 basePath 自行拼装后直连", recipe.Needs)
+	}
+	acct, err := s.fetchAccounts.Pick(ctx)
+	if err != nil {
+		return FetchResult{}, ErrFetchAccountUnavailable
+	}
+	st, err := s.fetchST.IssueSTWithCredential(ctx, acct.CookieHeader)
+	if err != nil {
+		_ = s.fetchAccounts.MarkFailure(ctx, acct.ID)
+		return FetchResult{}, fmt.Errorf("jiaowu: 公共取数账号换票失败")
+	}
+	if err := s.runCASRedirects(ctx, "", acct.VPNTicket, st); err != nil {
+		_ = s.fetchAccounts.MarkFailure(ctx, acct.ID)
+		return FetchResult{}, fmt.Errorf("jiaowu: 公共取数账号建会话失败")
+	}
+	result, err := s.fetchEncoded(ctx, recipe.Address, acct.VPNTicket)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	if isAuthLoginShell(result.Body) {
+		return FetchResult{}, fmt.Errorf("jiaowu: 公共页返回统一身份认证登录页")
+	}
 	return result, nil
 }
 
@@ -334,7 +361,12 @@ func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket str
 		s.audit(ctx, userID, "webvpn_cas", "st_failed", string(school.TargetWebvpn))
 		return fmt.Errorf("jiaowu: 换教务 st 失败")
 	}
+	return s.runCASRedirects(ctx, userID, ticket, st)
+}
 
+// runCASRedirects 用给定的 st 回投编码 caslogin 并跟随三跳。
+// auditUserID 只用于审计归属（公共类传空串）。
+func (s *Service) runCASRedirects(ctx context.Context, auditUserID, ticket, st string) error {
 	tgt, err := school.Resolve(school.TargetJiaowu)
 	if err != nil {
 		return err
@@ -384,7 +416,7 @@ func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket str
 		if !isRedirectStatus(resp.StatusCode) {
 			// 落在 index1.asp（200）即建立完成。
 			if resp.StatusCode == http.StatusOK {
-				s.audit(ctx, userID, "webvpn_cas", "ok", string(school.TargetWebvpn))
+				s.audit(ctx, auditUserID, "webvpn_cas", "ok", string(school.TargetWebvpn))
 				return nil
 			}
 			return fmt.Errorf("jiaowu: 教务 CAS 回投返回 %d", resp.StatusCode)
@@ -402,7 +434,7 @@ func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket str
 		current = base.ResolveReference(next).String()
 		// SSRF 护栏：只允许留在网关域。
 		if u, e := url.Parse(current); e != nil || !strings.EqualFold(u.Hostname(), "webvpn.sicau.edu.cn") {
-			s.audit(ctx, userID, "webvpn_cas", "redirect_denied", string(school.TargetWebvpn))
+			s.audit(ctx, auditUserID, "webvpn_cas", "redirect_denied", string(school.TargetWebvpn))
 			return fmt.Errorf("jiaowu: CAS 跳转目标不在网关域，拒绝跟随")
 		}
 	}
