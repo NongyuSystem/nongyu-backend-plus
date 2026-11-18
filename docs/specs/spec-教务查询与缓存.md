@@ -275,9 +275,23 @@
 **失效哨兵**：`/fetch` 判死票时写哨兵而非删记录，避免拿死票反复打学校站；
 哨兵不下发成 cookie（无票即 `cookies=[]`、`session=unavailable`），重新交票即覆盖。
 
-**实测边界**：网关票只够过网关（公开页 200）。课表等需登录页还要教务自己的
-CAS 会话（`go-admin-tgt` 换教务 st → 回投编码后的 `caslogin.asp`），这一步由后端
-代取链路完成，不是单纯「带 cookie」能解决的。后端不声称 `cookies` 里的票保证放行。
+**教务会话与 `/fetch`（2026-11-18 补齐）**：网关票只够过网关（公开页 200）。
+课表/成绩/考试等需登录页还要教务自己的 CAS 会话。实测确认这个会话**不在任何
+cookie 罐里**——它绑在 WebVPN 网关服务端、按 `wengine_vpn_ticket` 索引，三跳
+`caslogin.asp → check_cas.asp → note.asp → index1.asp` 跑完累计 `Set-Cookie` 为空，
+客户端与后端都不持有 `ASPSESSIONID`。
+
+`/school/jiaowu/cache/:dataType/fetch` 取数前会先：
+1. 用保管的 `go-admin-tgt`（`POST /identity/login` 存入，必然存在）换教务 st：
+   `GET auth.sicau.edu.cn/api/v1/cas/login?appid=b54a2f27-...` → 解密得 47 字符 st；
+2. 拿 st 回投**编码后的** `/jiaoshi/aspsso/caslogin.asp?appid=..&ticket=<st>`，
+   手动跟随完整三跳，每跳带 `wengine_vpn_ticket`；跳转只留在网关域（SSRF 护栏）；
+3. 再打目标编码页。这一步幂等，重复做只是刷新网关侧状态。
+
+**绝不把登录壳当成功**：教务把「未登录」渲染成 HTTP 200 + 1856 字节
+「川农e认证」SPA 壳（不是 302）。`/fetch` 按内容特征识别它并明确报错，
+不静默透给客户端解析。真实环境实测补完后：
+`notice 64798 / course 32848 / score 50720 / exam 7899` 字节，全部含表格、无登录壳。
 
 为什么后端不自造网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
 该会话为已登录**时才有效。后端用 tgt 走门户 appid 换票并回投网关，只能拿到 16 位游客票

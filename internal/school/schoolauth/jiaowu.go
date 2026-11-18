@@ -512,6 +512,40 @@ func (s *JiaowuSource) IssueSessionCookies(ctx context.Context, userID string) (
 	return out, nil
 }
 
+// IssueJiaowuST 用已保管的整套凭据换出一张教务 service ticket。
+//
+// 只换票，不建会话、不抓页。这是给「经 WebVPN 编码域建教务会话」用的：
+// 网关侧的教务登录态需要把 st 回投到**编码后的** caslogin.asp 三跳来建立，
+// 而本包 establishSession 走的是直连教务域（校外不可达），所以建会话那一步
+// 由 jiaowu 包自己按编码地址完成，这里只负责出 st。
+//
+// tgt 由 POST /identity/login 保管，必然存在；若取不到就是真实故障，
+// 返回可识别错误，不吞掉原因。
+// 错误文本可能带凭据前缀，调用方不得把它写入日志或 HTTP 响应。
+func (s *JiaowuSource) IssueJiaowuST(ctx context.Context, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", fmt.Errorf("schoolauth: 缺少用户身份")
+	}
+	if s.tgt == nil {
+		return "", fmt.Errorf("schoolauth: 未接入 tgt 保管")
+	}
+	tgt, err := s.tgt.EnsureFresh(ctx, userID, Credential{})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(tgt) == "" {
+		return "", fmt.Errorf("schoolauth: 没有可用的 tgt")
+	}
+	st, _, err := s.exchangeTicket(ctx, tgt, "")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(st) == "" {
+		return "", fmt.Errorf("schoolauth: 换票未返回 service ticket")
+	}
+	return st, nil
+}
+
 // PortalAppID 是 WebVPN 门户在统一身份认证平台上的应用标识。
 //
 // 与教务 appid 是两套，**不可混用**（契约清单 §4.1）：门户票只能换出 wengine_vpn_ticket，
@@ -562,7 +596,6 @@ func (s *JiaowuSource) ClearTGT(ctx context.Context, userID string) error {
 	}
 	return s.tgt.Clear(ctx, userID)
 }
-
 
 // parseSessionCookies 把 "name=value; name2=value2" 拆开。
 // 丢掉 go-admin-tgt：那张票不该出现在给客户端的课表请求里。

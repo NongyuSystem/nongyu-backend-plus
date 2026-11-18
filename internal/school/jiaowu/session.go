@@ -30,3 +30,14 @@ type SessionIssuer interface {
 type TGTRefresher interface {
 	RefreshTGT(ctx context.Context, userID string) (string, error)
 }
+
+// JiaowuSTIssuer 用已保管的 go-admin-tgt 换出教务 service ticket。
+//
+// 经 WebVPN 编码域取需登录页时，需要先拿 st 回投编码后的 caslogin.asp
+// 三跳，在网关服务端建立教务登录态（客户端零 cookie，见 FetchViaWebVPN）。
+// tgt 由 POST /identity/login 保管，必然存在；取不到即真实故障。
+//
+// 错误文本可能带凭据前缀，调用方不得写入日志或 HTTP 响应。
+type JiaowuSTIssuer interface {
+	IssueJiaowuST(ctx context.Context, userID string) (string, error)
+}

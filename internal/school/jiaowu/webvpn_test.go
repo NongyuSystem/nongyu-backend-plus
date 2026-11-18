@@ -64,13 +64,18 @@ func (m *memWebVPNStore) Delete(_ context.Context, userID string) error {
 // ── 测试脚手架 ──────────────────────────────────────────────────────────
 
 // scriptedWebVPNDoer 按 URL 返回预设响应，并记录请求（用于断言票是否被带上）。
+//
+// 2026-11-18：/fetch 取数前会先用编码 caslogin.asp 建教务会话。
+// 含 caslogin.asp 的请求一律回 200（表示三跳完成），其余请求才用预设响应，
+// 这样原有「目标页」断言不被 CAS 请求干扰。
 type scriptedWebVPNDoer struct {
-	mu       sync.Mutex
-	status   int
-	body     string
-	location string
-	requests []*http.Request
-	cookies  []string
+	mu        sync.Mutex
+	status    int
+	body      string
+	location  string
+	requests  []*http.Request
+	cookies   []string
+	casStatus int // 非 0 时覆盖 CAS 请求的返回码（供测 CAS 失败分支）
 }
 
 func (d *scriptedWebVPNDoer) Do(_ context.Context, req *http.Request) (*http.Response, error) {
@@ -78,6 +83,20 @@ func (d *scriptedWebVPNDoer) Do(_ context.Context, req *http.Request) (*http.Res
 	defer d.mu.Unlock()
 	d.requests = append(d.requests, req)
 	d.cookies = append(d.cookies, req.Header.Get("Cookie"))
+
+	// CAS 建会话请求：默认直接 200 完成。
+	if strings.Contains(req.URL.Path, "caslogin.asp") {
+		st := http.StatusOK
+		if d.casStatus != 0 {
+			st = d.casStatus
+		}
+		return &http.Response{
+			StatusCode: st,
+			Header:     http.Header{},
+			Body:       ioNopCloserString(""),
+			Request:    req,
+		}, nil
+	}
 
 	status := d.status
 	if status == 0 {
@@ -95,6 +114,20 @@ func (d *scriptedWebVPNDoer) Do(_ context.Context, req *http.Request) (*http.Res
 	}, nil
 }
 
+// targetCookies 只返回「非 CAS」请求的 Cookie（用于断言目标页只带网关票）。
+func (d *scriptedWebVPNDoer) targetCookies() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := []string{}
+	for i, r := range d.requests {
+		if !strings.Contains(r.URL.Path, "caslogin.asp") && i < len(d.cookies) {
+			out = append(out, d.cookies[i])
+		}
+	}
+	return out
+}
+
+// count 返回总请求数（含 CAS 建会话请求）。
 func (d *scriptedWebVPNDoer) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -102,12 +135,11 @@ func (d *scriptedWebVPNDoer) count() int {
 }
 
 func (d *scriptedWebVPNDoer) lastCookie() string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.cookies) == 0 {
+	cks := d.targetCookies()
+	if len(cks) == 0 {
 		return ""
 	}
-	return d.cookies[len(d.cookies)-1]
+	return cks[len(cks)-1]
 }
 
 type nopCloser struct{ *strings.Reader }
@@ -116,6 +148,22 @@ func (nopCloser) Close() error { return nil }
 
 func ioNopCloserString(s string) nopCloser {
 	return nopCloser{strings.NewReader(s)}
+}
+
+// fakeJiaowuSTIssuer 给 /fetch 的 CAS 建会话步骤提供 st。
+type fakeJiaowuSTIssuer struct {
+	st  string
+	err error
+}
+
+func (f *fakeJiaowuSTIssuer) IssueJiaowuST(context.Context, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.st == "" {
+		return "ST-FAKE-FOR-TEST", nil
+	}
+	return f.st, nil
 }
 
 func newWebVPNEngine(t *testing.T, doer *scriptedWebVPNDoer) (*gin.Engine, *Service, *memWebVPNStore) {
@@ -131,6 +179,8 @@ func newWebVPNEngine(t *testing.T, doer *scriptedWebVPNDoer) (*gin.Engine, *Serv
 	)
 	store := newMemWebVPNStore()
 	svc.BindWebVPNTicketStore(store)
+	// /fetch 取数前要先用 st 建网关侧教务会话。
+	svc.BindJiaowuSTIssuer(&fakeJiaowuSTIssuer{})
 	// cache_miss 需要缓存未命中：绑内存缓存 + schema 校验器，走完整 GET 路径。
 	svc.BindCache(newMemCache(func() time.Time { return time.Now() }))
 	validator, err := NewSchemaValidator()
@@ -467,5 +517,71 @@ func TestWebVPN_ResubmitRestoresTicket(t *testing.T) {
 	c, _ := cs[0].(map[string]any)
 	if c["value"] != "a1b2c3d4e5f60718" {
 		t.Fatalf("应带新票，实际 %v", c["value"])
+	}
+}
+
+// ── 缺陷回归：/fetch 必须先建网关侧教务会话 ────────────────────────────
+
+// TestWebVPN_FetchEstablishesJiaowuSession /fetch 取数前要用 st 回投编码 caslogin。
+//
+// 实测（2026-11-18）：只带网关票打课表页会 302 / 登录壳；补 CAS 三跳后
+// 才能拿到 32848 字节真实课表。教务会话绑在网关服务端，客户端零 cookie。
+func TestWebVPN_FetchEstablishesJiaowuSession(t *testing.T) {
+	doer := &scriptedWebVPNDoer{body: "<html>真实课表</html>"}
+	engine, _, _ := newWebVPNEngine(t, doer)
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/school/jiaowu/cache/course/fetch", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("代取应成功，实际 %d body=%s", w.Code, w.Body.String())
+	}
+	// 至少一次请求是编码后的 caslogin.asp，且带了网关票。
+	doer.mu.Lock()
+	defer doer.mu.Unlock()
+	casSeen := false
+	for i, r := range doer.requests {
+		if strings.Contains(r.URL.Path, "caslogin.asp") {
+			casSeen = true
+			if !strings.Contains(doer.cookies[i], "wengine_vpn_ticketwebvpn_sicau_edu_cn=43d5b3947913eab2") {
+				t.Fatalf("CAS 请求必须带网关票，实际 %q", doer.cookies[i])
+			}
+			if !strings.Contains(r.URL.RawQuery, "ticket=") || !strings.Contains(r.URL.RawQuery, "appid=") {
+				t.Fatalf("CAS 请求应带 appid 与 st，实际 query=%s", r.URL.RawQuery)
+			}
+		}
+	}
+	if !casSeen {
+		t.Fatal("未发出 caslogin 建会话请求（需登录页会拿到登录壳）")
+	}
+}
+
+// TestWebVPN_FetchRejectsLoginShell 教务把未登录渲染成 200 登录壳时，必须明确报错，
+// 绝不能当成功页面透给客户端去解析（这正是之前静默失败的根因）。
+func TestWebVPN_FetchRejectsLoginShell(t *testing.T) {
+	doer := &scriptedWebVPNDoer{body: `<html><title>川农e认证 - 统一身份认证</title></html>`}
+	engine, _, _ := newWebVPNEngine(t, doer)
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+
+	code, body := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
+	if code == http.StatusOK {
+		t.Fatalf("登录壳绝不能当成功透传，实际 http=%d body=%v", code, body)
+	}
+}
+
+// TestWebVPN_FetchWithoutSTIssuerIsExplicit 没接入换 st 能力时，明确报错而不是
+// 静默返回登录壳。
+func TestWebVPN_FetchWithoutSTIssuerIsExplicit(t *testing.T) {
+	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
+	engine, svc, _ := newWebVPNEngine(t, doer)
+	svc.BindJiaowuSTIssuer(nil)
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+
+	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
+	if code == http.StatusOK {
+		t.Fatal("未接入换票能力时不应静默成功")
 	}
 }

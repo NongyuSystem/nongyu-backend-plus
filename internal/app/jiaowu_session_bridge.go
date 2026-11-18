@@ -21,6 +21,14 @@ func (b jiaowuSessionBridge) IssueSession(ctx context.Context, userID string) ([
 	return toIssued(raw), nil
 }
 
+// IssueJiaowuST 用保管 tgt 换教务 st，供 /fetch 经 WebVPN 建教务会话。
+//
+// 与 IssueSession 的区别：IssueSession 走直连教务域建会话（要 ASPSESSIONID），
+// 这条只换 st，不建会话——会话由 jiaowu 包按编码地址回投 caslogin 三跳完成。
+func (b jiaowuSessionBridge) IssueJiaowuST(ctx context.Context, userID string) (string, error) {
+	return b.src.IssueJiaowuST(ctx, userID)
+}
+
 // RefreshTGT 让续期回调走真正的 tgt 续期，而不是自己拼假请求再覆盖存储。
 func (b jiaowuSessionBridge) RefreshTGT(ctx context.Context, userID string) (string, error) {
 	return b.src.RefreshTGT(ctx, userID)

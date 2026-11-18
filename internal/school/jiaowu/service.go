@@ -50,6 +50,9 @@ type Service struct {
 	// webvpnTickets 保管客户端交来的 wengine_vpn_ticket（校外代取用）。
 	// 为 nil 时提交/查询端点回 503，校外代取不可用。
 	webvpnTickets WebVPNTicketStore
+	// jiaowuST 用保管 tgt 换教务 st，供 /fetch 建立网关侧教务会话。
+	// 为 nil 时 /fetch 只带网关票，需登录页会拿到登录壳（不静默成功，见 FetchViaWebVPN）。
+	jiaowuST JiaowuSTIssuer
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -106,6 +109,11 @@ func (s *Service) BindTGTRefresher(r TGTRefresher) {
 // BindWebVPNTicketStore 接入网关票保管（校外代取用）。
 func (s *Service) BindWebVPNTicketStore(store WebVPNTicketStore) {
 	s.webvpnTickets = store
+}
+
+// BindJiaowuSTIssuer 接入「用保管 tgt 换教务 st」的能力（校外需登录页取数用）。
+func (s *Service) BindJiaowuSTIssuer(i JiaowuSTIssuer) {
+	s.jiaowuST = i
 }
 
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。

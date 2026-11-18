@@ -577,10 +577,14 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		// 两种能力共用同一个桥：
 		//   - SessionIssuer：direct 形态下用已保管 tgt 换 ASPSESSIONID（要求能到 jiaowu）
 		//   - TGTRefresher：续期回调走真正的 tgt 续期
-		// vpn 形态**不在这里取票**——网关票只能由客户端真实登录产生，后端换不到。
+		//   - JiaowuSTIssuer：vpn 形态下用已保管 tgt 换教务 st，回投编码 caslogin
+		//     建网关侧教务会话（校外取课表等需登录页必需）
+		// vpn 形态的**网关票**仍只能由客户端真实登录产生，后端换不到；
+		// 这里补的是「教务会话」，两者不是一回事。
 		bridge := jiaowuSessionBridge{src: jwSrc}
 		jiaowuSvc.BindSessionIssuer(bridge)
 		jiaowuSvc.BindTGTRefresher(bridge)
+		jiaowuSvc.BindJiaowuSTIssuer(bridge)
 	}
 	jiaowu.RegisterAccel(engine, jiaowuSvc)
 

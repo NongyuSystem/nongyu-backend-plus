@@ -210,11 +210,46 @@ func (s *Service) FetchViaWebVPN(ctx context.Context, userID string, dt DataType
 		return FetchResult{}, fmt.Errorf("jiaowu: 该类型需要用户输入（%s），请用 basePath 自行拼装后直连", recipe.Needs)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, recipe.Address, nil)
+	// 先在网关服务端建立「该票已登录教务」的状态（用保管 tgt 换 st 回投 caslogin）。
+	// 这一步是幂等的：重复做只是刷新网关侧状态，无害。
+	// 教务会话绑在网关票上，客户端零 cookie；建完再打需登录页才不会返回登录壳。
+	if err := s.establishWebVPNSession(ctx, userID, ticket); err != nil {
+		s.audit(ctx, userID, "fetch_webvpn", "cas_failed", string(school.TargetWebvpn))
+		return FetchResult{}, err
+	}
+
+	result, err := s.fetchEncoded(ctx, recipe.Address, ticket)
+	if err != nil {
+		s.audit(ctx, userID, "fetch_webvpn", "outbound_error", string(school.TargetWebvpn))
+		return FetchResult{}, err
+	}
+
+	// 票失效：302 回网关 /login。
+	if isRedirectStatus(result.Status) && isGatewayLoginRedirect(result.Headers.Get("Location")) {
+		s.markWebVPNTicketExpired(ctx, userID)
+		s.audit(ctx, userID, "fetch_webvpn", "ticket_expired", string(school.TargetWebvpn))
+		return FetchResult{}, ErrWebVPNTicketExpired
+	}
+
+	// 教务把「未登录」渲染成 HTTP 200 + 1856 字节 SPA 登录壳，不是 302。
+	// 建会话后仍出现这个壳，说明会话没建上（st 被拒等），必须明确报错，
+	// 绝不能把它当成功页面透给客户端去解析。
+	if isAuthLoginShell(result.Body) {
+		s.audit(ctx, userID, "fetch_webvpn", "jiaowu_login_required", string(school.TargetWebvpn))
+		return FetchResult{}, fmt.Errorf("jiaowu: 教务未建立登录会话（拿到统一身份认证登录页）")
+	}
+
+	s.audit(ctx, userID, "fetch_webvpn", "ok", string(school.TargetWebvpn))
+	return result, nil
+}
+
+// fetchEncoded 用网关票打一个编码地址，返回原始响应（不跟随重定向）。
+func (s *Service) fetchEncoded(ctx context.Context, address, ticket string) (FetchResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return FetchResult{}, err
 	}
-	// 只带网关票。上游的 ASPSESSIONID 由网关自己在服务端补，这里贴反而干扰。
+	// 只带网关票。教务会话在网关服务端，这里贴其它 cookie 反而干扰。
 	req.Header.Set("Cookie", gatewayTicketCookieName+"="+ticket)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
@@ -222,38 +257,123 @@ func (s *Service) FetchViaWebVPN(ctx context.Context, userID string, dt DataType
 
 	resp, err := s.doer.Do(ctx, req)
 	if err != nil {
-		s.audit(ctx, userID, "fetch_webvpn", "outbound_error", string(school.TargetWebvpn))
 		return FetchResult{}, mapOutboundError(err)
 	}
 	if resp == nil {
-		s.audit(ctx, userID, "fetch_webvpn", "nil_response", string(school.TargetWebvpn))
 		return FetchResult{}, errors.New("jiaowu: nil response from outbound doer")
 	}
 	defer resp.Body.Close()
-
-	// 302 回网关登录页 = 票失效。这是唯一可靠的失效信号（票长/内容都不可信）。
-	if isRedirectStatus(resp.StatusCode) {
-		if isGatewayLoginRedirect(resp.Header.Get("Location")) {
-			// 写失效哨兵而非删除：后续 cache_miss 才能报 expired（登录过、票死了），
-			// 而不是 missing（从没登录过）。两者客户端动作不同。
-			s.markWebVPNTicketExpired(ctx, userID)
-			s.audit(ctx, userID, "fetch_webvpn", "ticket_expired", string(school.TargetWebvpn))
-			return FetchResult{}, ErrWebVPNTicketExpired
-		}
-		// 其它 3xx（例如教务内部的跳转闸门）原样回给调用方判断，不当作票失效。
-	}
-
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
 	if err != nil {
-		s.audit(ctx, userID, "fetch_webvpn", "read_error", string(school.TargetWebvpn))
 		return FetchResult{}, err
 	}
-	s.audit(ctx, userID, "fetch_webvpn", "ok", string(school.TargetWebvpn))
 	return FetchResult{Status: resp.StatusCode, Body: body, Headers: resp.Header.Clone()}, nil
+}
+
+// isAuthLoginShell 识别「教务未登录」被渲染成 200 + SPA 登录壳的情况。
+//
+// 实测：未建会话时 /fetch 拿到 1856 字节、title 含「川农e认证」的壳。
+// 按内容特征判，不靠状态码（它是 200）也不靠长度阈值 alone（避免误伤小页面）。
+func isAuthLoginShell(body []byte) bool {
+	return strings.Contains(string(body), "川农e认证") ||
+		strings.Contains(string(body), "统一身份认证")
 }
 
 // maxFetchBytes 是代取响应体的上限（教务最大页实测约 65KB，留足余量）。
 const maxFetchBytes = 8 << 20
+
+// maxJiaowuCASRedirects 是跟随 caslogin 跳转的最大跳数。
+// 真实链路 3 跳（caslogin.asp → check_cas.asp?sign=.. → note.asp → index1.asp），留 2 跳余量。
+const maxJiaowuCASRedirects = 5
+
+// jiaowuCASLoginPath 是教务 CAS 回投路径（编码前的直连路径）。
+const jiaowuCASLoginPath = "/jiaoshi/aspsso/caslogin.asp"
+
+// establishWebVPNSession 在 WebVPN 网关服务端建立「该网关票已登录教务」的状态。
+//
+// 实测（2026-11-18）：经编码域访问教务时，教务会话**不在客户端 cookie 罐里**，
+// 也不在后端——它绑在网关服务端、按 wengine_vpn_ticket 索引。三跳跑完累计的
+// Set-Cookie 为空是正常的，不要按「没拿到 cookie」报错退出。
+//
+// 做法是拿 st 回投**编码后的** caslogin.asp，手动跟随完整跳转链，每跳都带网关票。
+// 之后同一张网关票打课表/成绩等编码页直接通（实测 32848 字节真实课表）。
+//
+// 与 schoolauth.establishSession 的区别：那条走直连教务域（校外不可达）且要
+// 累计 ASPSESSIONID；这条走编码域且不需要任何 cookie。两者不可复用。
+func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket string) error {
+	if s.jiaowuST == nil {
+		return fmt.Errorf("jiaowu: 未接入教务 st 换票能力，无法建立网关侧教务会话")
+	}
+	st, err := s.jiaowuST.IssueJiaowuST(ctx, userID)
+	if err != nil {
+		// 错误文本可能带凭据前缀：只记审计结果，绝不把 err 写进响应/日志。
+		s.audit(ctx, userID, "webvpn_cas", "st_failed", string(school.TargetWebvpn))
+		return fmt.Errorf("jiaowu: 换教务 st 失败")
+	}
+
+	tgt, err := school.Resolve(school.TargetJiaowu)
+	if err != nil {
+		return err
+	}
+	// 先拼完整直连 URL 再 Encode（Encode 对无 path 地址会补 "/"，直接接 path 会双斜杠）。
+	directCAS := tgt.Direct.String() + jiaowuCASLoginPath +
+		"?appid=" + url.QueryEscape(schoolauthJiaowuAppID) + "&ticket=" + url.QueryEscape(st)
+	encoded, err := school.Encode(directCAS)
+	if err != nil {
+		return err
+	}
+
+	current := encoded
+	for hop := 0; hop < maxJiaowuCASRedirects; hop++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, current, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Cookie", gatewayTicketCookieName+"="+ticket)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+		req.Header.Set("Referer", "https://webvpn.sicau.edu.cn/")
+
+		resp, err := s.doer.Do(ctx, req)
+		if err != nil {
+			return mapOutboundError(err)
+		}
+		if resp == nil {
+			return errors.New("jiaowu: nil response from outbound doer")
+		}
+		_ = resp.Body.Close()
+
+		if !isRedirectStatus(resp.StatusCode) {
+			// 落在 index1.asp（200）即建立完成。
+			if resp.StatusCode == http.StatusOK {
+				s.audit(ctx, userID, "webvpn_cas", "ok", string(school.TargetWebvpn))
+				return nil
+			}
+			return fmt.Errorf("jiaowu: 教务 CAS 回投返回 %d", resp.StatusCode)
+		}
+
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return fmt.Errorf("jiaowu: CAS 跳转缺少 Location")
+		}
+		next, err := url.Parse(loc)
+		if err != nil {
+			return fmt.Errorf("jiaowu: CAS 跳转地址非法")
+		}
+		base, _ := url.Parse(current)
+		current = base.ResolveReference(next).String()
+		// SSRF 护栏：只允许留在网关域。
+		if u, e := url.Parse(current); e != nil || !strings.EqualFold(u.Hostname(), "webvpn.sicau.edu.cn") {
+			s.audit(ctx, userID, "webvpn_cas", "redirect_denied", string(school.TargetWebvpn))
+			return fmt.Errorf("jiaowu: CAS 跳转目标不在网关域，拒绝跟随")
+		}
+	}
+	return fmt.Errorf("jiaowu: CAS 跳转次数超过上限")
+}
+
+// schoolauthJiaowuAppID 是教务在统一身份认证平台上的 appid。
+// 与 schoolauth.JiaowuAppID 同值；本包不 import schoolauth，各写一份避免跨包耦合。
+const schoolauthJiaowuAppID = "b54a2f27-f7ba-4b91-bbf0-3b2b12244d14"
 
 // gatewayTicketCookieName 是网关会话票的 cookie 名。
 // 与 schoolauth 包里的同名常量保持一致；本包不 import 它，各写一份避免跨包耦到实现细节。
