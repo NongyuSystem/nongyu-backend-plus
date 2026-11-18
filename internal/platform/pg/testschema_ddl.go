@@ -1,4 +1,4 @@
-package pgx
+package pg
 
 // 测试用 DDL 内嵌副本：与 migrations/ 下的迁移保持同构（原 testschema_ddl.go）。
 //

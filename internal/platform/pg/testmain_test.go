@@ -1,4 +1,4 @@
-package platform_test
+package pg_test
 
 // TestMain 把 DATABASE_URL 指向本包专属 schema，避免与其它包的集成测试互相干扰。
 // 详见 internal/identity/testmain_test.go 的说明。
@@ -8,7 +8,7 @@ package platform_test
 
 import (
 	"context"
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 	"os"
 	"testing"
 	"time"
@@ -18,7 +18,7 @@ func TestMain(m *testing.M) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if isolated, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/internal/platform"); err == nil {
+		if isolated, err := pg.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/internal/platform"); err == nil {
 			_ = os.Setenv("DATABASE_URL", isolated)
 		}
 		cancel()

@@ -1,4 +1,4 @@
-package platform
+package cache
 
 // 熔断器：Redis 持续不可用时，避免每个请求都去等连接超时。
 //

@@ -1,4 +1,4 @@
-package platform_test
+package pg_test
 
 // 身份域仓储的集成测试：真连 Postgres。
 // 未配置 DATABASE_URL 时跳过，保证 go test ./... 不依赖环境。
@@ -9,6 +9,7 @@ package platform_test
 import (
 	"context"
 	"fmt"
+	"nongyu-backend-plus/internal/platform/pg"
 	"os"
 	"testing"
 	"time"
@@ -18,15 +19,15 @@ import (
 	"nongyu-backend-plus/internal/platform"
 )
 
-func newIdentityStore(t *testing.T) *platform.PGIdentityStore {
+func newIdentityStore(t *testing.T) *pg.PGIdentityStore {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
 	}
-	s, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	s, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsn})
 	if err != nil {
-		t.Fatalf("NewPGIdentityStore: %v", err)
+		t.Fatalf("pg.NewPGIdentityStore: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -42,7 +43,7 @@ func newIdentityStore(t *testing.T) *platform.PGIdentityStore {
 	return s
 }
 
-func cleanupTestUsers(t *testing.T, s *platform.PGIdentityStore) {
+func cleanupTestUsers(t *testing.T, s *pg.PGIdentityStore) {
 	t.Helper()
 	ctx := context.Background()
 	// 用固定前缀的学号定位测试用户，逐条删除（sessions/login_methods/profiles 有级联）。

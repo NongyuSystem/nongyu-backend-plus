@@ -1,6 +1,8 @@
-package platform
+package cache
 
 import (
+	redisx "nongyu-backend-plus/internal/platform/redis"
+
 	"context"
 	"os"
 	"testing"
@@ -21,7 +23,7 @@ func TestRedisCache_TryAcquire(t *testing.T) {
 
 	ctx := context.Background()
 	cache, err := NewRedisCache(
-		RedisOptions{
+		redisx.RedisOptions{
 			Addr:     addr,
 			Password: os.Getenv("REDIS_TEST_PASSWORD"),
 			// 用独立 DB 5 隔离，避免误删开发数据。

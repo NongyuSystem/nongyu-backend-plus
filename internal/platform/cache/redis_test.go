@@ -1,4 +1,4 @@
-package platform_test
+package cache_test
 
 // RedisTicketStore 的集成测试：契约必须与 MockTicketStore 完全一致。
 // 未配置 REDIS_ADDR 或连不上时跳过，保证 `go test ./...` 不依赖本机环境。
@@ -10,6 +10,7 @@ package platform_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/platform/cache"
 	"os"
 	"testing"
 	"time"
@@ -17,18 +18,18 @@ import (
 	"nongyu-backend-plus/internal/platform"
 )
 
-// newCache 按测试配置构造一个带抖动 TTL、空值缓存、降级与回灌的真实 RedisCache。
-func newCache(t *testing.T) *platform.RedisCache {
+// newCache 按测试配置构造一个带抖动 TTL、空值缓存、降级与回灌的真实 cache.RedisCache。
+func newCache(t *testing.T) *cache.RedisCache {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("未设置 REDIS_ADDR，跳过 Redis 集成测试")
 	}
-	c, err := platform.NewRedisCache(platform.RedisOptions{
+	c, err := cache.NewRedisCache(platform.RedisOptions{
 		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		Prefix:   "nongyu-cache-test:",
-	}, platform.CacheOptions{
+	}, cache.CacheOptions{
 		DefaultTTL:      time.Minute,
 		JitterRatio:     0.2, // 雪崩防护：TTL 抖动 ±20%
 		NotFoundTTL:     10 * time.Second,
@@ -37,7 +38,7 @@ func newCache(t *testing.T) *platform.RedisCache {
 		FlushRatePerSec: 50,
 	})
 	if err != nil {
-		t.Fatalf("NewRedisCache: %v", err)
+		t.Fatalf("cache.NewRedisCache: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -48,18 +49,18 @@ func newCache(t *testing.T) *platform.RedisCache {
 }
 
 // newLockBackend 返回一把 Redis 客户端的薄封装，供幂等锁使用。
-func newLockBackend(t *testing.T) platform.LockBackend {
+func newLockBackend(t *testing.T) cache.LockBackend {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("未设置 REDIS_ADDR，跳过 Redis 集成测试")
 	}
-	client, err := platform.NewRedisClient(platform.RedisOptions{
+	client, err := cache.NewRedisClient(platform.RedisOptions{
 		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 	})
 	if err != nil {
-		t.Fatalf("NewRedisClient: %v", err)
+		t.Fatalf("cache.NewRedisClient: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

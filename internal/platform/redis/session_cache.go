@@ -1,4 +1,4 @@
-package platform
+package redis
 
 // 会话的 Redis 副本（原 session_cache.go，此前被并进 cache.go）。
 //
@@ -13,6 +13,8 @@ package platform
 // 因此吊销是写入带 RevokedAt 的记录，而不是删除。
 
 import (
+	"nongyu-backend-plus/internal/platform/model"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,7 +72,7 @@ type sessionJSON struct {
 }
 
 // PutSession 写入/刷新会话缓存。TTL 与会话过期一致（过期即自然消失）。
-func (c *RedisSessionCache) PutSession(ctx context.Context, s Session) error {
+func (c *RedisSessionCache) PutSession(ctx context.Context, s model.Session) error {
 	rec := sessionJSON{
 		ID:        s.ID,
 		UserID:    s.UserID,
@@ -94,7 +96,7 @@ func (c *RedisSessionCache) PutSession(ctx context.Context, s Session) error {
 }
 
 // CachedSession 读会话缓存。未命中返回 (nil, nil)——调用方应回落到 PG。
-func (c *RedisSessionCache) CachedSession(ctx context.Context, id string) (*Session, error) {
+func (c *RedisSessionCache) CachedSession(ctx context.Context, id string) (*model.Session, error) {
 	raw, err := c.client.Get(ctx, c.key(id)).Bytes()
 	if err == redis.Nil {
 		return nil, nil
@@ -106,10 +108,10 @@ func (c *RedisSessionCache) CachedSession(ctx context.Context, id string) (*Sess
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return nil, err
 	}
-	s := &Session{
+	s := &model.Session{
 		ID:        rec.ID,
 		UserID:    rec.UserID,
-		Scope:     SessionScope(rec.Scope),
+		Scope:     model.SessionScope(rec.Scope),
 		DeviceID:  rec.DeviceID,
 		ExpiresAt: time.Unix(rec.ExpiresAt, 0),
 		CreatedAt: time.Unix(rec.CreatedAt, 0),

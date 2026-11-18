@@ -1,4 +1,4 @@
-package redisconn
+package redis
 
 // RedisOptions 是连接 Redis 的通用参数（原属 platform 根包）。
 //

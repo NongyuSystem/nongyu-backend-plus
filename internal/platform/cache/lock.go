@@ -1,4 +1,4 @@
-package platform
+package cache
 
 // 幂等锁：用于「同一个业务动作只允许执行一次」的场景（重复下单、重复提交、重复回调）。
 //

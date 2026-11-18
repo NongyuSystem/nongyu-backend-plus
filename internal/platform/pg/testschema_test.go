@@ -1,12 +1,12 @@
-package platform_test
+package pg_test
 
-// 测试隔离机制：TestSchemaName / WithSearchPath / EnsureTestSchema 的验收。
+// 测试隔离机制：pg.TestSchemaName / pg.WithSearchPath / pg.EnsureTestSchema 的验收。
 // 前两条是纯函数，任何环境都跑；第三条真连 Postgres 建 schema，未配置
 // DATABASE_URL 时跳过。
 
 import (
 	"context"
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 	"os"
 	"strings"
 	"testing"
@@ -16,8 +16,8 @@ import (
 )
 
 func TestTestSchemaName_DeterministicAndValid(t *testing.T) {
-	a := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity")
-	b := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity")
+	a := pg.TestSchemaName("nongyu-backend-plus/internal/identity")
+	b := pg.TestSchemaName("nongyu-backend-plus/internal/identity")
 	if a != b {
 		t.Fatalf("同包名应得到同名 schema：%q vs %q", a, b)
 	}
@@ -32,16 +32,16 @@ func TestTestSchemaName_DeterministicAndValid(t *testing.T) {
 	}
 
 	// 不同包必须得到不同 schema——这是隔离的前提。
-	other := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity/flow")
+	other := pg.TestSchemaName("nongyu-backend-plus/internal/identity/flow")
 	if other == a {
 		t.Fatalf("不同包应得到不同 schema：%q", a)
 	}
 }
 
 func TestWithSearchPath(t *testing.T) {
-	got, err := pkgx.WithSearchPath("postgres://u:p@h:5432/db?sslmode=disable", "t_x")
+	got, err := pg.WithSearchPath("postgres://u:p@h:5432/db?sslmode=disable", "t_x")
 	if err != nil {
-		t.Fatalf("WithSearchPath: %v", err)
+		t.Fatalf("pg.WithSearchPath: %v", err)
 	}
 	if !strings.Contains(got, "search_path=t_x") && !strings.Contains(got, "search_path=t%5Fx") {
 		t.Fatalf("应带上 search_path，实际 %q", got)
@@ -60,24 +60,24 @@ func TestEnsureTestSchema_IsolatesData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	dsnA, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/a")
+	dsnA, err := pg.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/a")
 	if err != nil {
-		t.Fatalf("EnsureTestSchema(a): %v", err)
+		t.Fatalf("pg.EnsureTestSchema(a): %v", err)
 	}
-	dsnB, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/b")
+	dsnB, err := pg.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/b")
 	if err != nil {
-		t.Fatalf("EnsureTestSchema(b): %v", err)
+		t.Fatalf("pg.EnsureTestSchema(b): %v", err)
 	}
 	if dsnA == dsnB {
 		t.Fatal("两个包的 DSN 必须不同（隔离的前提）")
 	}
 
-	storeA, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsnA})
+	storeA, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsnA})
 	if err != nil {
 		t.Fatalf("storeA: %v", err)
 	}
 	defer storeA.Close()
-	storeB, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsnB})
+	storeB, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsnB})
 	if err != nil {
 		t.Fatalf("storeB: %v", err)
 	}

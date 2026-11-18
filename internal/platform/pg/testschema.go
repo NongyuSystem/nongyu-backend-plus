@@ -1,4 +1,4 @@
-package pgx
+package pg
 
 // 集成测试的**数据库隔离**能力：按测试包派生独立 schema，避免并行测试互相踩数据。
 //
@@ -7,8 +7,6 @@ package pgx
 // 之所以先按原文件名拆出来，是为了让「哪些代码只给测试用」在目录里一眼可辨。
 
 import (
-	"nongyu-backend-plus/internal/platform"
-
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -76,7 +74,7 @@ func WithSearchPath(dsn, schema string) (string, error) {
 // 调用方应在测试包初始化时执行一次，用完不必删除（下次运行复用，
 // 但每个包的测试自己负责清掉自己的行）。
 func EnsureTestSchema(ctx context.Context, dsn, pkgPath string) (string, error) {
-	admin, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	admin, err := NewPGIdentityStore(PGOptions{DSN: dsn})
 	if err != nil {
 		return "", err
 	}

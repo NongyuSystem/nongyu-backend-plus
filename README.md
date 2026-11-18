@@ -29,9 +29,14 @@ nongyu-backend-plus/
 │   ├── config/            # 环境变量读取与校验（见 .env.example，37 变量）
 │   ├── server/            # Gin 适配层：路由、中间件、/healthz、/status
 │   ├── architecture/      # import 方向守卫测试（防止分层再次倒置）
-│   ├── platform/          # 最底层通用能力，零业务依赖
-│   │   ├── cache/ httpx/ pgx/ mail/ objstore/ platformtest/ redisconn/ pgutil/
-│   │   └── （根）         # 契约接口、哨兵错误、AES 加密、时钟
+│   ├── platform/          # 最底层通用能力，零业务域依赖
+│   │   ├── model/         # 零依赖叶子包：共享值类型（User/Session/TicketRef）+ 哨兵错误
+│   │   ├── pg/            # Postgres：迁移、测试 schema、身份仓储、DDL 工具、学工档案落库
+│   │   ├── redis/         # Redis：票据存储、会话热副本、连接选项
+│   │   ├── cache/         # 通用缓存：穿透/雪崩/击穿/降级 + 熔断 + 幂等锁
+│   │   ├── mail/          # 邮件投递、验证码存储、审计落库
+│   │   ├── objectstore/   # 对象存储（MinIO）实现
+│   │   └── （根）         # 契约接口、类型别名转发、AES/时钟/HTTPDoer/Mock 替身
 │   └── <业务域>/          # content/{post,announcement}・message・track・identity・school
 │       └── store/         # 该域的 Postgres / 内存仓储实现（域内固定分层）
 ├── migrations/            # schema 变更（单向有序；启动时幂等执行）

@@ -1,4 +1,4 @@
-package platform
+package cache
 
 // 通用缓存层：把「穿透 / 雪崩 / 击穿 / 降级回灌」四类缓存工程问题收在一个实现里，
 // 业务域只调 GetOrLoad，不需要各自再写一遍。
@@ -16,6 +16,8 @@ package platform
 // 熔断打开后本层降级到内存 fallback；lock 走的是 LockBackend 接口，与本层无耦合。
 
 import (
+	redisx "nongyu-backend-plus/internal/platform/redis"
+
 	"context"
 	"errors"
 	"fmt"
@@ -33,7 +35,7 @@ type RedisClient struct {
 }
 
 // NewRedisClient 构造薄封装客户端。
-func NewRedisClient(opts RedisOptions) (*RedisClient, error) {
+func NewRedisClient(opts redisx.RedisOptions) (*RedisClient, error) {
 	if opts.Addr == "" {
 		return nil, fmt.Errorf("platform: RedisClient 需要 Addr")
 	}
@@ -136,7 +138,7 @@ type sfCall struct {
 }
 
 // NewRedisCache 构造缓存层。
-func NewRedisCache(opts RedisOptions, copts CacheOptions) (*RedisCache, error) {
+func NewRedisCache(opts redisx.RedisOptions, copts CacheOptions) (*RedisCache, error) {
 	if opts.Addr == "" {
 		return nil, fmt.Errorf("platform: RedisCache 需要 Addr")
 	}

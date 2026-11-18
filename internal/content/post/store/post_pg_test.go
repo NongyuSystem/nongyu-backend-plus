@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/content/post"
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 )
 
 // pgTestBaseTime / pgTestClock 原本与 track_pg_test.go 同处 pgstore 包时共享；
@@ -75,12 +75,12 @@ func newPostTrackPool(t *testing.T) *pgxpool.Pool {
 
 	// 在隔离 schema 上跑权威迁移（migrations/*.sql），不手写 DDL：
 	// 表结构与生产同源，测试才能发现「仓储假设了列不存在」这类问题。
-	migDSN, err := pkgx.WithSearchPath(base, schema)
+	migDSN, err := pg.WithSearchPath(base, schema)
 	if err != nil {
 		admin.Close()
 		t.Fatalf("拼迁移 DSN：%v", err)
 	}
-	if err := pkgx.Migrate(ctx, migDSN); err != nil {
+	if err := pg.Migrate(ctx, migDSN); err != nil {
 		admin.Close()
 		t.Fatalf("在 schema %s 上执行迁移：%v", schema, err)
 	}

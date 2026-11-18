@@ -19,7 +19,7 @@ import (
 // 需要动什么」一眼可见——事实上这正是本文件存在的意义，
 // 它是整条持久化切换路径上**唯一**需要改的地方。
 //
-// 前置条件由调用方保证：`pkgx.Migrate` 已执行完（表与索引已建好），
+// 前置条件由调用方保证：`pg.Migrate` 已执行完（表与索引已建好），
 // 且 pool 已 Ping 通过。这里不做存在性探测——那些是装配层早先步骤的职责，
 // 在这里重复只会让失败原因变模糊。
 func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error) {

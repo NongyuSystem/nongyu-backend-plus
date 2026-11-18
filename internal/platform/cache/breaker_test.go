@@ -1,10 +1,11 @@
-package platform_test
+package cache_test
 
 // 熔断与快速失败：Redis 持续不可用时，不应让每个请求都去等连接超时，
 // 而应在连续失败若干次后直接降级，并定期半开探测恢复。
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/platform/cache"
 	"os"
 	"testing"
 	"time"
@@ -13,17 +14,17 @@ import (
 )
 
 // newRealCacheForBreaker 用真实 Redis 构造一个带熔断的缓存，未配置 REDIS_ADDR 时跳过。
-func newRealCacheForBreaker(t *testing.T) (*platform.RedisCache, string) {
+func newRealCacheForBreaker(t *testing.T) (*cache.RedisCache, string) {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("未设置 REDIS_ADDR，跳过 Redis 集成测试")
 	}
-	c, err := platform.NewRedisCache(platform.RedisOptions{
+	c, err := cache.NewRedisCache(platform.RedisOptions{
 		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		Prefix:   "nongyu-breaker-test:",
-	}, platform.CacheOptions{
+	}, cache.CacheOptions{
 		DefaultTTL:       time.Minute,
 		JitterRatio:      0.2,
 		NotFoundTTL:      10 * time.Second,
@@ -34,7 +35,7 @@ func newRealCacheForBreaker(t *testing.T) (*platform.RedisCache, string) {
 		BreakerCooldown:  time.Second,
 	})
 	if err != nil {
-		t.Fatalf("NewRedisCache: %v", err)
+		t.Fatalf("cache.NewRedisCache: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -46,10 +47,10 @@ func newRealCacheForBreaker(t *testing.T) (*platform.RedisCache, string) {
 
 func TestCacheCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 	// 指向不可达端口，制造持续故障。
-	c, err := platform.NewRedisCache(platform.RedisOptions{
+	c, err := cache.NewRedisCache(platform.RedisOptions{
 		Addr:   "127.0.0.1:1",
 		Prefix: "nongyu-cb-test:",
-	}, platform.CacheOptions{
+	}, cache.CacheOptions{
 		DefaultTTL:       time.Minute,
 		JitterRatio:      0.2,
 		NotFoundTTL:      10 * time.Second,
@@ -60,7 +61,7 @@ func TestCacheCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 		BreakerCooldown:  2 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("NewRedisCache: %v", err)
+		t.Fatalf("cache.NewRedisCache: %v", err)
 	}
 	ctx := context.Background()
 
@@ -68,7 +69,7 @@ func TestCacheCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_ = c.Set(ctx, "cb-key", []byte("v"), 0)
 	}
-	if state := c.BreakerState(); state != platform.BreakerOpen {
+	if state := c.BreakerState(); state != cache.BreakerOpen {
 		t.Fatalf("连续失败后熔断器应打开，实际 %v", state)
 	}
 
@@ -94,13 +95,13 @@ func TestCacheCircuitBreaker_ClosesAfterRecovery(t *testing.T) {
 	ctx := context.Background()
 	_ = addr
 
-	if state := c.BreakerState(); state != platform.BreakerClosed {
+	if state := c.BreakerState(); state != cache.BreakerClosed {
 		t.Fatalf("初始应为关闭，实际 %v", state)
 	}
 	if err := c.Set(ctx, "cb-recover", []byte("v"), 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if state := c.BreakerState(); state != platform.BreakerClosed {
+	if state := c.BreakerState(); state != cache.BreakerClosed {
 		t.Fatalf("成功后应保持关闭，实际 %v", state)
 	}
 	_ = c.Delete(ctx, "cb-recover")

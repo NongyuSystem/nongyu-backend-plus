@@ -1,4 +1,4 @@
-package platform
+package pg
 
 // 学工系统（xsgz）完整档案的 Postgres 落库实现：把一份学生档案一次事务写进 4 张表。
 //

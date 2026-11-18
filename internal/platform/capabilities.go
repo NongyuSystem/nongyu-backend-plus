@@ -8,10 +8,12 @@ package platform
 // 业务域只依赖这些接口；换实现（内存 → 数据库 / 真实 HTTP / 真实时钟）时业务域零改动。
 
 import (
+	"nongyu-backend-plus/internal/platform/model"
+
 	"context"
 	"errors"
 	"net/http"
-	"nongyu-backend-plus/internal/platform/redisconn"
+	redisx "nongyu-backend-plus/internal/platform/redis"
 	"time"
 )
 
@@ -29,13 +31,6 @@ type TicketStore interface {
 	// 零值过期时刻的记录不参与候选（无明确过期即无法判定「即将过期」）。
 	// limit <= 0 时返回空列表。
 	ListExpiringSoon(ctx context.Context, before time.Time, limit int) ([]TicketRef, error)
-}
-
-// TicketRef 是 ListExpiringSoon 的返回元素：只带定位与排序所需的最小信息，
-// 不把 sealed 内容暴露给调度/扫描侧。
-type TicketRef struct {
-	UserID    string
-	ExpiresAt time.Time
 }
 
 // Cipher 表达「把明文字节封成不透明字节、再还原」的对称加解密能力。
@@ -78,5 +73,8 @@ type Clock interface {
 // RedisOptions 保留在 platform 根包，指向 redisconn 的同一类型。
 //
 // 这样既有调用方（platform.NewRedisCache(opts RedisOptions, ...) 等）零改动，
-// 而子包可以直接 import redisconn 而不必反向依赖 platform 根包。
-type RedisOptions = redisconn.RedisOptions
+// 而子包可以直接 import redis 而不必反向依赖 platform 根包。
+type RedisOptions = redisx.RedisOptions
+
+// TicketRef 转发到 model（哨兵/共享值类型下沉后，根只留别名）。
+type TicketRef = model.TicketRef

@@ -1,4 +1,4 @@
-package platform_test
+package cache_test
 
 // 通用缓存层的验收测试：穿透 / 雪崩 / 击穿 / 降级回灌。
 // 需要真实 Redis 的用例在未配置 REDIS_ADDR 时跳过。
@@ -9,6 +9,7 @@ package platform_test
 import (
 	"context"
 	"errors"
+	"nongyu-backend-plus/internal/platform/cache"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -128,10 +129,10 @@ func TestCacheBreakdown_SingleFlight(t *testing.T) {
 
 func TestCacheFallback_ToMemoryAndBackfill(t *testing.T) {
 	// 指向一个不存在的端口，制造 Redis 不可用。
-	dead, err := platform.NewRedisCache(platform.RedisOptions{
+	dead, err := cache.NewRedisCache(platform.RedisOptions{
 		Addr:   "127.0.0.1:1",
 		Prefix: "nongyu-cache-dead:",
-	}, platform.CacheOptions{
+	}, cache.CacheOptions{
 		DefaultTTL:      time.Minute,
 		JitterRatio:     0.2,
 		NotFoundTTL:     10 * time.Second,
@@ -140,7 +141,7 @@ func TestCacheFallback_ToMemoryAndBackfill(t *testing.T) {
 		FlushRatePerSec: 1000,
 	})
 	if err != nil {
-		t.Fatalf("NewRedisCache: %v", err)
+		t.Fatalf("cache.NewRedisCache: %v", err)
 	}
 	ctx := context.Background()
 
@@ -161,7 +162,7 @@ func TestCacheFallback_ToMemoryAndBackfill(t *testing.T) {
 // ── ⑤幂等锁：同一 key 同时只允许一个持有者 ──
 
 func TestIdempotentLock_MutualExclusion(t *testing.T) {
-	lock := platform.NewIdempotentLock(newLockBackend(t), "nongyu-lock-test:")
+	lock := cache.NewIdempotentLock(newLockBackend(t), "nongyu-lock-test:")
 	ctx := context.Background()
 	key := "order-123"
 	_ = lock.Unlock(ctx, key)
@@ -210,7 +211,7 @@ func TestCacheTransaction_Atomic(t *testing.T) {
 	}
 
 	// 事务里第二步故意报错 → 第一步的写入必须不生效。
-	err := c.Transaction(ctx, func(tx platform.CacheTx) error {
+	err := c.Transaction(ctx, func(tx cache.CacheTx) error {
 		if err := tx.Set(ctx, k1, []byte("changed"), 0); err != nil {
 			return err
 		}
@@ -231,7 +232,7 @@ func TestCacheTransaction_Atomic(t *testing.T) {
 	}
 
 	// 成功事务应全部生效。
-	if err := c.Transaction(ctx, func(tx platform.CacheTx) error {
+	if err := c.Transaction(ctx, func(tx cache.CacheTx) error {
 		if err := tx.Set(ctx, k1, []byte("2"), 0); err != nil {
 			return err
 		}

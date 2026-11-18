@@ -17,7 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 )
 
 // schemaSeq 保证同一次运行里的 schema 名互不重复。
@@ -63,12 +63,12 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 
 	// ② 在该 schema 上跑迁移。Migrate 自带连接池，search_path 由 DSN 透传，
 	//    因此 migrations 里的 CREATE TABLE 只会落进本测试的 schema。
-	isolated, err := pkgx.WithSearchPath(base, schema)
+	isolated, err := pg.WithSearchPath(base, schema)
 	if err != nil {
 		admin.Close()
 		t.Fatalf("拼隔离 DSN 失败：%v", err)
 	}
-	if err := pkgx.Migrate(ctx, isolated); err != nil {
+	if err := pg.Migrate(ctx, isolated); err != nil {
 		admin.Close()
 		t.Fatalf("迁移失败：%v", err)
 	}

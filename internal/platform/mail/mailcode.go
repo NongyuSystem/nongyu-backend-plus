@@ -19,7 +19,7 @@ import (
 	"math/big"
 	"time"
 
-	"nongyu-backend-plus/internal/platform/redisconn"
+	redisx "nongyu-backend-plus/internal/platform/redis"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -36,7 +36,7 @@ type RedisMailCodeStore struct {
 }
 
 // NewRedisMailCodeStore 构造验证码存储。
-func NewRedisMailCodeStore(opts redisconn.RedisOptions) (*RedisMailCodeStore, error) {
+func NewRedisMailCodeStore(opts redisx.RedisOptions) (*RedisMailCodeStore, error) {
 	if opts.Addr == "" {
 		return nil, fmt.Errorf("platform: RedisMailCodeStore 需要 Addr")
 	}

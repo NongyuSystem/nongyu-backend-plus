@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"nongyu-backend-plus/internal/platform/pgutil"
+	"nongyu-backend-plus/internal/platform/pg"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -68,7 +68,7 @@ func (r *AnnouncementPGRepo) Create(ctx context.Context, a *announcement.Announc
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
 		RETURNING id, created_at, updated_at`,
 		a.Title, a.Body, string(a.Status),
-		pgutil.TimePtrToPG(a.PublishedAt), pgutil.TimePtrToPG(a.EffectiveFrom), pgutil.TimePtrToPG(a.ExpiresAt),
+		pg.TimePtrToPG(a.PublishedAt), pg.TimePtrToPG(a.EffectiveFrom), pg.TimePtrToPG(a.ExpiresAt),
 		a.Pinned, a.PublishRevision, string(a.Audience.Scope), intRoles(a.Audience.Roles),
 		a.Audience.College, a.Audience.Grade, now,
 	).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
@@ -92,8 +92,8 @@ func (r *AnnouncementPGRepo) Update(ctx context.Context, a *announcement.Announc
 			publish_revision = $9, audience_scope = $10, audience_roles = $11,
 			audience_college = $12, audience_grade = $13, updated_at = $14
 		 WHERE id = $1 AND deleted_at IS NULL`,
-		a.ID, a.Title, a.Body, string(a.Status), pgutil.TimePtrToPG(a.PublishedAt),
-		pgutil.TimePtrToPG(a.EffectiveFrom), pgutil.TimePtrToPG(a.ExpiresAt), a.Pinned,
+		a.ID, a.Title, a.Body, string(a.Status), pg.TimePtrToPG(a.PublishedAt),
+		pg.TimePtrToPG(a.EffectiveFrom), pg.TimePtrToPG(a.ExpiresAt), a.Pinned,
 		a.PublishRevision, string(a.Audience.Scope), intRoles(a.Audience.Roles),
 		a.Audience.College, a.Audience.Grade, r.nowFn())
 	if err != nil {
@@ -166,7 +166,7 @@ func (r *AnnouncementPGRepo) list(ctx context.Context, after announcement.PageCu
 		pubExpr = "COALESCE(published_at, '-infinity'::timestamptz)"
 	}
 
-	b := &pgutil.Args{}
+	b := &pg.Args{}
 	sql := `SELECT ` + announcementColumns + ` FROM announcements WHERE deleted_at IS NULL`
 	if publishedOnly {
 		sql += ` AND status = 'published'`
@@ -240,7 +240,7 @@ func (r *AnnouncementPGRepo) MarkDeleted(ctx context.Context, id int64, at time.
 //
 // 可空时间列一律经 pgtype.Timestamptz 中转：直接扫进 **time.Time 依赖
 // pgx 的指针解引用包装，显式中转后行为确定、读取处也不必关心 NULL。
-func scanAnnouncement(row pgutil.RowScanner) (*announcement.Announcement, error) {
+func scanAnnouncement(row pg.RowScanner) (*announcement.Announcement, error) {
 	var (
 		a         announcement.Announcement
 		status    string
@@ -262,10 +262,10 @@ func scanAnnouncement(row pgutil.RowScanner) (*announcement.Announcement, error)
 		return nil, err
 	}
 	a.Status = announcement.Status(status)
-	a.PublishedAt = pgutil.TimePtr(published)
-	a.EffectiveFrom = pgutil.TimePtr(effective)
-	a.ExpiresAt = pgutil.TimePtr(expires)
-	a.DeletedAt = pgutil.TimePtr(deleted)
+	a.PublishedAt = pg.TimePtr(published)
+	a.EffectiveFrom = pg.TimePtr(effective)
+	a.ExpiresAt = pg.TimePtr(expires)
+	a.DeletedAt = pg.TimePtr(deleted)
 	a.Audience.Scope = announcement.AudienceScope(scope)
 	a.Audience.Roles = rolesFromInt32(roles)
 	return &a, nil

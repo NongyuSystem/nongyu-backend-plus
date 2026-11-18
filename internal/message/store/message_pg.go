@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"nongyu-backend-plus/internal/platform/pgutil"
+	"nongyu-backend-plus/internal/platform/pg"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -136,7 +136,7 @@ func (r *MessagePGRepo) FindByID(ctx context.Context, id int64) (*message.Messag
 // 行值比较 (created_at, id) < ($t, $i) 与 AfterCursor 的分支判断等价：
 // 时间不等时比时间（更早的排在后面即「之后」），相等时比 id（更小的在之后）。
 func (r *MessagePGRepo) List(ctx context.Context, f message.ListFilter, after message.PageCursor, limit int) ([]*message.Message, error) {
-	b := &pgutil.Args{}
+	b := &pg.Args{}
 	sql := `SELECT ` + messageColumns + ` FROM messages WHERE ` + filterClause(b, f, true)
 	if !after.Zero() {
 		sql += ` AND (created_at, id) < (` + b.Add(after.CreatedAt) + `, ` + b.Add(after.ID) + `)`
@@ -168,7 +168,7 @@ func (r *MessagePGRepo) List(ctx context.Context, f message.ListFilter, after me
 // 与内存实现一致：UnreadOnly 开关**不参与**计数（计数本身就只数未读行），
 // 但 kind 过滤仍生效——这正是三者共用同一个 ListFilter 的意义。
 func (r *MessagePGRepo) UnreadCount(ctx context.Context, f message.ListFilter) (int, error) {
-	b := &pgutil.Args{}
+	b := &pg.Args{}
 	where := `recipient_id = ` + b.Add(f.RecipientID) +
 		` AND deleted_at IS NULL AND read_at IS NULL`
 	if f.Kind != "" {
@@ -208,7 +208,7 @@ func (r *MessagePGRepo) MarkRead(ctx context.Context, id int64, at time.Time) er
 // 只作用于「该收件人 + 未软删 + 未读 + 命中 kind」的行；UnreadOnly 开关不改变
 // 结果集（目标本来就是未读行），仅为与列表/未读数共用 ListFilter。
 func (r *MessagePGRepo) MarkAllRead(ctx context.Context, f message.ListFilter, at time.Time) (int64, error) {
-	b := &pgutil.Args{}
+	b := &pg.Args{}
 	// unreadOnly 传 false：目标本身限定 read_at IS NULL，让开关不参与是刻意的
 	// （传 true 会多一个恒真谓词，语义不变但更难看出「开关在此不生效」）。
 	where := filterClause(b, f, false) + ` AND read_at IS NULL`
@@ -247,7 +247,7 @@ func (r *MessagePGRepo) MarkDeleted(ctx context.Context, id int64, at time.Time)
 //
 // withUnread 控制是否翻「仅未读」那一条：MarkAllRead 的目标集本身就只含未读行，
 // 传 false 让 SQL 更短更好读（语义与传 true 结果相同）。
-func filterClause(b *pgutil.Args, f message.ListFilter, withUnread bool) string {
+func filterClause(b *pg.Args, f message.ListFilter, withUnread bool) string {
 	out := `recipient_id = ` + b.Add(f.RecipientID)
 	out += ` AND deleted_at IS NULL`
 	if f.Kind != "" {
@@ -277,7 +277,7 @@ func (r *MessagePGRepo) assertExists(ctx context.Context, id int64) error {
 // 可空列（sender_id / read_at / deleted_at）经 pgtype 中转，避免依赖 pgx 对
 // **T 的指针包装行为；sender_id 在领域里是「0 表示无发送者」（通知恒为 0），
 // 故 NULL 与 0 在此归一。
-func scanMessage(row pgutil.RowScanner) (*message.Message, error) {
+func scanMessage(row pg.RowScanner) (*message.Message, error) {
 	var (
 		m        message.Message
 		kind     string
@@ -296,8 +296,8 @@ func scanMessage(row pgutil.RowScanner) (*message.Message, error) {
 	if senderID.Valid {
 		m.SenderID = senderID.Int64
 	}
-	m.ReadAt = pgutil.TimePtr(readAt)
-	m.DeletedAt = pgutil.TimePtr(deleted)
+	m.ReadAt = pg.TimePtr(readAt)
+	m.DeletedAt = pg.TimePtr(deleted)
 	return &m, nil
 }
 

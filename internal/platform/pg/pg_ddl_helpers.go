@@ -1,8 +1,7 @@
-package platform
+package pg
 
 import (
 	"context"
-	"strings"
 )
 
 // PGIdentityStore 的 DDL 执行辅助（原属 testschema_ddl.go，搬迁时因
@@ -44,11 +43,4 @@ func (s *PGIdentityStore) ExecDDLInSchema(ctx context.Context, schema string, st
 func (s *PGIdentityStore) DeleteUser(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
 	return err
-}
-
-// quoteIdent 把标识符转成安全的双引号形式。
-// pgx 子包有一份同构实现（那边也要拼 schema 名），两处都只需这一个纯函数，
-// 为它引入跨包依赖不值得。
-func quoteIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }

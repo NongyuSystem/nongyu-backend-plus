@@ -1,4 +1,4 @@
-package platform_test
+package cache_test
 
 // IncrBy / IncrGet 的真实 Redis 集成测试。
 //
@@ -9,6 +9,7 @@ package platform_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/platform/cache"
 	"os"
 	"strconv"
 	"testing"
@@ -17,7 +18,7 @@ import (
 	"nongyu-backend-plus/internal/platform"
 )
 
-func newTestRedisCache(t *testing.T) *platform.RedisCache {
+func newTestRedisCache(t *testing.T) *cache.RedisCache {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
@@ -26,14 +27,14 @@ func newTestRedisCache(t *testing.T) *platform.RedisCache {
 	// 每次运行用唯一的 prefix：同一 Redis 上重复跑测试时，
 	// 上一次遗留的计数器键会让「第 1 次自增应返回 1」这类断言失败。
 	prefix := "incrtest:" + t.Name() + ":" + strconv.FormatInt(time.Now().UnixNano(), 36) + ":"
-	c, err := platform.NewRedisCache(platform.RedisOptions{
+	c, err := cache.NewRedisCache(platform.RedisOptions{
 		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       envIntOrZero("REDIS_DB"),
 		Prefix:   prefix,
-	}, platform.CacheOptions{DefaultTTL: time.Minute})
+	}, cache.CacheOptions{DefaultTTL: time.Minute})
 	if err != nil {
-		t.Fatalf("构造 RedisCache 失败：%v", err)
+		t.Fatalf("构造 cache.RedisCache 失败：%v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c

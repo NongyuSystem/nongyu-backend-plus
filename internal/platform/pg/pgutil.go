@@ -5,7 +5,7 @@
 // 文件里，或者挤在 platform/pgstore 这个反向依赖业务域的错误位置。
 //
 // 本包只依赖 pgx 与标准库，**不 import 任何业务域**，因此任何层都能安全引用。
-package pgutil
+package pg
 
 import (
 	"strconv"

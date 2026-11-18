@@ -1,16 +1,15 @@
-// 缓存存储契约的验收缝：证明平台层之外的消费方可以只依赖 platform.CacheStore，
+// 缓存存储契约的验收缝：证明平台层之外的消费方可以只依赖 cache.CacheStore，
 // 完全不 import 教务域（jiaowu）——二课域日后按同一份契约接入（issue #72）。
-package platform_test
+package cache_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/platform/cache"
 	"testing"
 	"time"
-
-	"nongyu-backend-plus/internal/platform"
 )
 
-// contractFake 是 platform.CacheStore 的最小进程内实现。
+// contractFake 是 cache.CacheStore 的最小进程内实现。
 // 它只 import platform 与标准库，用来证明这份契约不牵连任何业务域。
 type contractFake struct {
 	data   map[string][]byte
@@ -49,8 +48,8 @@ func (f *contractFake) TryAcquire(_ context.Context, key string, _ time.Duration
 // 编译期断言：平台层的具体实现与外部 fake 都满足同一份契约；
 // 这些断言所在的包完全没有 import jiaowu。
 var (
-	_ platform.CacheStore = (*platform.RedisCache)(nil)
-	_ platform.CacheStore = (*contractFake)(nil)
+	_ cache.CacheStore = (*cache.RedisCache)(nil)
+	_ cache.CacheStore = (*contractFake)(nil)
 )
 
 // TestCacheStore_IndependentContract 锁住「契约可独立依赖」这条缝：
@@ -58,7 +57,7 @@ var (
 // 注入任意实现，并通过接口跑通全部四个方法。
 func TestCacheStore_IndependentContract(t *testing.T) {
 	ctx := context.Background()
-	var store platform.CacheStore = newContractFake()
+	var store cache.CacheStore = newContractFake()
 
 	if err := store.Set(ctx, "k", []byte("v"), time.Minute); err != nil {
 		t.Fatalf("Set: %v", err)

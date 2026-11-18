@@ -1,4 +1,4 @@
-package platform
+package redis
 
 // RedisTicketStore 是 TicketStore 的外置持久实现：进程重启不丢票、支持多副本共享。
 // （原 redis.go，此前被并进 cache.go。）
@@ -14,6 +14,8 @@ package platform
 // 因此不复用 RedisCache 的降级/熔断逻辑——票据读不到就是读不到，不能拿内存兜底。
 
 import (
+	"nongyu-backend-plus/internal/platform/model"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -103,11 +105,11 @@ func (s *RedisTicketStore) Put(ctx context.Context, userID string, sealed []byte
 	return err
 }
 
-// Get 读取一条记录；不存在时返回 ErrNotFound。
+// Get 读取一条记录；不存在时返回 model.ErrNotFound。
 func (s *RedisTicketStore) Get(ctx context.Context, userID string) ([]byte, time.Time, error) {
 	raw, err := s.client.Get(ctx, s.recordKey(userID)).Bytes()
 	if err == redis.Nil {
-		return nil, time.Time{}, ErrNotFound
+		return nil, time.Time{}, model.ErrNotFound
 	}
 	if err != nil {
 		return nil, time.Time{}, err
@@ -134,7 +136,7 @@ func (s *RedisTicketStore) Delete(ctx context.Context, userID string) error {
 
 // ListExpiringSoon 用有序集合按 score 取「过期时刻早于 before」的候选，升序、至多 limit 条。
 // 顺手清理「索引里有、记录已不存在」的悬垂成员，避免候选越积越多。
-func (s *RedisTicketStore) ListExpiringSoon(ctx context.Context, before time.Time, limit int) ([]TicketRef, error) {
+func (s *RedisTicketStore) ListExpiringSoon(ctx context.Context, before time.Time, limit int) ([]model.TicketRef, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -148,7 +150,7 @@ func (s *RedisTicketStore) ListExpiringSoon(ctx context.Context, before time.Tim
 		return nil, err
 	}
 
-	refs := make([]TicketRef, 0, limit)
+	refs := make([]model.TicketRef, 0, limit)
 	for _, id := range ids {
 		if len(refs) >= limit {
 			break
@@ -163,7 +165,7 @@ func (s *RedisTicketStore) ListExpiringSoon(ctx context.Context, before time.Tim
 			_ = s.client.ZRem(ctx, s.expiryKey(), id).Err()
 			continue
 		}
-		refs = append(refs, TicketRef{
+		refs = append(refs, model.TicketRef{
 			UserID:    id,
 			ExpiresAt: time.Unix(int64(score), 0),
 		})

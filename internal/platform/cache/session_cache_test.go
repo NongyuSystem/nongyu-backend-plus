@@ -1,4 +1,4 @@
-package platform_test
+package cache_test
 
 // 会话的 Redis 副本：PG 是权威，Redis 用于热路径读取与快速吊销。
 // 未配置 REDIS_ADDR 时跳过。

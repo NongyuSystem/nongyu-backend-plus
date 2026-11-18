@@ -21,7 +21,7 @@ import (
 
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/objectstore"
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 	"nongyu-backend-plus/internal/skin"
 )
 
@@ -55,13 +55,13 @@ func newSkinPGPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("建 schema %s：%v", schema, err)
 	}
 
-	migDSN, err := pkgx.WithSearchPath(base, schema)
+	migDSN, err := pg.WithSearchPath(base, schema)
 	if err != nil {
 		admin.Close()
 		t.Fatalf("拼迁移 DSN：%v", err)
 	}
 	// 在隔离 schema 上跑权威迁移（含本域的 0007_skins.sql），不手写 DDL。
-	if err := pkgx.Migrate(ctx, migDSN); err != nil {
+	if err := pg.Migrate(ctx, migDSN); err != nil {
 		admin.Close()
 		t.Fatalf("在 schema %s 上执行迁移：%v", schema, err)
 	}

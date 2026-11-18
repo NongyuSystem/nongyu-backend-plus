@@ -16,7 +16,7 @@ import (
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/objectstore"
-	pkgx "nongyu-backend-plus/internal/platform/pgx"
+	"nongyu-backend-plus/internal/platform/pg"
 )
 
 // infraDeps 是装配第一阶段产出的外部能力集合。
@@ -77,7 +77,7 @@ func migrateDatabase(cfg config.Config) error {
 	}
 	migCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := pkgx.Migrate(migCtx, cfg.DatabaseURL); err != nil {
+	if err := pg.Migrate(migCtx, cfg.DatabaseURL); err != nil {
 		return fmt.Errorf("启动迁移失败：%w", err)
 	}
 	return nil
