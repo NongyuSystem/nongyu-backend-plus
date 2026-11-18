@@ -6,10 +6,11 @@
 //   - 每个测试可以从空表开始，不必靠「清理行」维持干净状态。
 //
 // 未设置 DATABASE_URL 时全部 t.Skip：纯单测环境（CI 无 PG）不依赖数据库。
-package pgstore_test
+package store_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/content/post/store"
 	"os"
 	"strings"
 	"sync"
@@ -19,9 +20,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/content/post"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
+
+// pgTestBaseTime / pgTestClock 原本与 track_pg_test.go 同处 pgstore 包时共享；
+// 按域拆成独立 store/ 包后，本包自带一份。
+var pgTestBaseTime = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+func pgTestClock(t time.Time) func() time.Time {
+	return func() time.Time { return t }
+}
 
 // pgTestSchemaPrefix 是测试 schema 的公共前缀，便于一次性清理。
 const pgTestSchemaPrefix = "t_pgstore_"
@@ -127,7 +135,7 @@ func pgTestQuoteIdent(s string) string {
 //   - FindByID 仍能取到已软删行（归属判定需要）。
 func TestPostPGRepo_SoftDeleteAndListFilter(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	// 三个板块组合：反馈 2 条、留言 1 条。
@@ -194,7 +202,7 @@ func TestPostPGRepo_SoftDeleteAndListFilter(t *testing.T) {
 // 必须靠 (published_at, id) 行值比较兜底。
 func TestPostPGRepo_CursorNoDuplicate(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	const total = 7
@@ -243,7 +251,7 @@ func TestPostPGRepo_CursorNoDuplicate(t *testing.T) {
 // 实测 5 次全部抓到 23505。
 func TestPostPGRepo_AddReactionConcurrentSingleRow(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	const targetID = int64(4242)
@@ -309,7 +317,7 @@ func TestPostPGRepo_AddReactionConcurrentSingleRow(t *testing.T) {
 // TestPostPGRepo_Reaction_CRUDAndCounts 验收反应的基本语义与两类计数。
 func TestPostPGRepo_Reaction_CRUDAndCounts(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	const targetID = int64(1001)
@@ -383,7 +391,7 @@ func TestPostPGRepo_Reaction_CRUDAndCounts(t *testing.T) {
 // TestPostPGRepo_RepliesOrdering 验收留言按 publishedAt 升序、同刻按 id 升序。
 func TestPostPGRepo_RepliesOrdering(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	p := mustPgPost(t, repo, post.BoardCourtyard, "有留言的帖子", 9)
@@ -449,7 +457,7 @@ func TestPostPGRepo_RepliesOrdering(t *testing.T) {
 // TestPostPGRepo_AttachmentsRoundTrip 验收 TEXT[] 往返（含空数组）。
 func TestPostPGRepo_AttachmentsRoundTrip(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	p := &post.Post{
@@ -485,7 +493,7 @@ func TestPostPGRepo_AttachmentsRoundTrip(t *testing.T) {
 // TestPostPGRepo_Update 验收 Update 只改可写字段、保留 publishedAt/authorID。
 func TestPostPGRepo_Update(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
+	repo := store.NewPostPGRepo(pool, pgTestClock(pgTestBaseTime))
 	ctx := context.Background()
 
 	p := mustPgPost(t, repo, post.BoardFeedback, "原标题", 11)
@@ -522,4 +530,36 @@ func TestPostPGRepo_Update(t *testing.T) {
 	if got.EditedAt == nil || !got.EditedAt.Equal(editedAt) {
 		t.Fatalf("editedAt 应为 %v，实际 %v", editedAt, got.EditedAt)
 	}
+}
+
+// ── 按域拆分后补入的共享 helper ──────────────────────────────
+// mustPgPost 造一条帖子并断言成功。publishedAt 用基准时刻。
+func mustPgPost(t *testing.T, repo *store.PostPGRepo, board post.Board, title string, authorID int64) *post.Post {
+	t.Helper()
+	return mustPgPostAt(t, repo, board, title, authorID, pgTestBaseTime)
+}
+
+// mustPgPostAt 造一条指定 publishedAt 的帖子。
+func mustPgPostAt(t *testing.T, repo *store.PostPGRepo, board post.Board, title string, authorID int64, publishedAt time.Time) *post.Post {
+	t.Helper()
+	p := &post.Post{
+		Board: board, Title: title, Body: "正文：" + title,
+		AuthorID: authorID, PublishedAt: publishedAt,
+	}
+	if err := repo.Create(context.Background(), p); err != nil {
+		t.Fatalf("Create(%q): %v", title, err)
+	}
+	if p.ID == 0 {
+		t.Fatalf("Create(%q) 未回填 ID", title)
+	}
+	return p
+}
+
+// pgPostIDs 提取 ID 列表，只为让失败信息可读。
+func pgPostIDs(ps []*post.Post) []int64 {
+	out := make([]int64, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.ID)
+	}
+	return out
 }

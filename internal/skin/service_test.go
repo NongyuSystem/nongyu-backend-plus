@@ -7,13 +7,13 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	skinstore "nongyu-backend-plus/internal/skin/store"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/skin"
 )
 
@@ -26,7 +26,7 @@ func newTestService(t *testing.T) (*skin.Service, *platform.MemoryObjectStore) {
 	t.Helper()
 	store := platform.NewMemoryObjectStore()
 	svc := skin.New(skin.Options{
-		Repo:        pgstore.NewSkinMemoryRepo(func() time.Time { return time.Unix(1700000000, 0).UTC() }),
+		Repo:        skinstore.NewSkinMemoryRepo(func() time.Time { return time.Unix(1700000000, 0).UTC() }),
 		ObjectStore: store,
 		Clock:       fixedClock{t: time.Unix(1700000000, 0).UTC()},
 	})

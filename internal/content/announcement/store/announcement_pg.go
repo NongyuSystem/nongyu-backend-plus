@@ -1,9 +1,9 @@
-package pgstore
+package store
 
 import (
 	"context"
 	"errors"
-	"strconv"
+	"nongyu-backend-plus/internal/platform/pgutil"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -68,7 +68,7 @@ func (r *AnnouncementPGRepo) Create(ctx context.Context, a *announcement.Announc
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
 		RETURNING id, created_at, updated_at`,
 		a.Title, a.Body, string(a.Status),
-		timePtrToPG(a.PublishedAt), timePtrToPG(a.EffectiveFrom), timePtrToPG(a.ExpiresAt),
+		pgutil.TimePtrToPG(a.PublishedAt), pgutil.TimePtrToPG(a.EffectiveFrom), pgutil.TimePtrToPG(a.ExpiresAt),
 		a.Pinned, a.PublishRevision, string(a.Audience.Scope), intRoles(a.Audience.Roles),
 		a.Audience.College, a.Audience.Grade, now,
 	).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
@@ -92,8 +92,8 @@ func (r *AnnouncementPGRepo) Update(ctx context.Context, a *announcement.Announc
 			publish_revision = $9, audience_scope = $10, audience_roles = $11,
 			audience_college = $12, audience_grade = $13, updated_at = $14
 		 WHERE id = $1 AND deleted_at IS NULL`,
-		a.ID, a.Title, a.Body, string(a.Status), timePtrToPG(a.PublishedAt),
-		timePtrToPG(a.EffectiveFrom), timePtrToPG(a.ExpiresAt), a.Pinned,
+		a.ID, a.Title, a.Body, string(a.Status), pgutil.TimePtrToPG(a.PublishedAt),
+		pgutil.TimePtrToPG(a.EffectiveFrom), pgutil.TimePtrToPG(a.ExpiresAt), a.Pinned,
 		a.PublishRevision, string(a.Audience.Scope), intRoles(a.Audience.Roles),
 		a.Audience.College, a.Audience.Grade, r.nowFn())
 	if err != nil {
@@ -166,7 +166,7 @@ func (r *AnnouncementPGRepo) list(ctx context.Context, after announcement.PageCu
 		pubExpr = "COALESCE(published_at, '-infinity'::timestamptz)"
 	}
 
-	b := &pgArgs{}
+	b := &pgutil.Args{}
 	sql := `SELECT ` + announcementColumns + ` FROM announcements WHERE deleted_at IS NULL`
 	if publishedOnly {
 		sql += ` AND status = 'published'`
@@ -179,17 +179,17 @@ func (r *AnnouncementPGRepo) list(ctx context.Context, after announcement.PageCu
 			cursorAt = nil
 		}
 		sql += ` AND (pinned, ` + pubExpr + `, id) < (` +
-			b.add(after.Pinned) + `, COALESCE(` + b.add(cursorAt) + `::timestamptz, '-infinity'::timestamptz), ` +
-			b.add(after.ID) + `)`
+			b.Add(after.Pinned) + `, COALESCE(` + b.Add(cursorAt) + `::timestamptz, '-infinity'::timestamptz), ` +
+			b.Add(after.ID) + `)`
 	}
 	// 排序表达式必须与游标比较里的表达式一致，否则翻页边界会错位。
 	sql += ` ORDER BY pinned DESC, ` + pubExpr + ` DESC, id DESC`
 	// limit <= 0 表示不限条数（与内存实现的 `if limit > 0 && ...` 同义）。
 	if limit > 0 {
-		sql += ` LIMIT ` + b.add(limit)
+		sql += ` LIMIT ` + b.Add(limit)
 	}
 
-	rows, err := r.pool.Query(ctx, sql, b.args...)
+	rows, err := r.pool.Query(ctx, sql, b.All()...)
 	if err != nil {
 		return nil, err
 	}
@@ -236,19 +236,11 @@ func (r *AnnouncementPGRepo) MarkDeleted(ctx context.Context, id int64, at time.
 
 // ── 扫描与类型映射 ────────────────────────────────────────────────
 
-// rowScanner 是 pgx.Row 与 pgx.Rows 的公共 Scan 签名。
-//
-// 抽出来是为了让「单行 FindByID」与「多行 list」共用同一份扫描逻辑——
-// 列清单与 Scan 参数一旦分两处写，加列时必然漏改一处。
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
 // scanAnnouncement 把一行扫成领域结构体。
 //
 // 可空时间列一律经 pgtype.Timestamptz 中转：直接扫进 **time.Time 依赖
 // pgx 的指针解引用包装，显式中转后行为确定、读取处也不必关心 NULL。
-func scanAnnouncement(row rowScanner) (*announcement.Announcement, error) {
+func scanAnnouncement(row pgutil.RowScanner) (*announcement.Announcement, error) {
 	var (
 		a         announcement.Announcement
 		status    string
@@ -270,10 +262,10 @@ func scanAnnouncement(row rowScanner) (*announcement.Announcement, error) {
 		return nil, err
 	}
 	a.Status = announcement.Status(status)
-	a.PublishedAt = pgTimePtr(published)
-	a.EffectiveFrom = pgTimePtr(effective)
-	a.ExpiresAt = pgTimePtr(expires)
-	a.DeletedAt = pgTimePtr(deleted)
+	a.PublishedAt = pgutil.TimePtr(published)
+	a.EffectiveFrom = pgutil.TimePtr(effective)
+	a.ExpiresAt = pgutil.TimePtr(expires)
+	a.DeletedAt = pgutil.TimePtr(deleted)
 	a.Audience.Scope = announcement.AudienceScope(scope)
 	a.Audience.Roles = rolesFromInt32(roles)
 	return &a, nil
@@ -307,41 +299,7 @@ func rolesFromInt32(roles []int32) []int {
 	return out
 }
 
-// timePtrToPG 把可空时间转成 pgx 可编码的 timestamptz（nil → NULL）。
-func timePtrToPG(t *time.Time) pgtype.Timestamptz {
-	if t == nil {
-		return pgtype.Timestamptz{}
-	}
-	return pgtype.Timestamptz{Time: *t, Valid: true}
-}
-
-// pgTimePtr 把扫描到的 timestamptz 转成可空时间（NULL → nil）。
-//
-// 每次返回新指针：调用方可能改它，不能让多个字段共享同一块内存。
-func pgTimePtr(t pgtype.Timestamptz) *time.Time {
-	if !t.Valid {
-		return nil
-	}
-	v := t.Time
-	return &v
-}
-
 // ── 参数拼装 ──────────────────────────────────────────────────────
-
-// pgArgs 是「按顺序追加参数并返回 $n 占位符」的小工具。
-//
-// 为什么不手工数 $1/$2：公告列表的可选条件（游标、limit）会让占位符编号
-// 随分支漂移，手写极易出现「加了 WHERE 忘了把 LIMIT 的编号 +1」，而那种
-// 错误在只有一条数据时不会暴露。**任何值都不拼进 SQL 文本**，只拼占位符。
-type pgArgs struct {
-	args []any
-}
-
-// add 追加一个参数并返回它的占位符（从 $1 起）。
-func (b *pgArgs) add(v any) string {
-	b.args = append(b.args, v)
-	return "$" + strconv.Itoa(len(b.args))
-}
 
 // 编译期确认：PG 实现满足领域接口（接口漂移在编译期暴露，而不是运行时）。
 var _ announcement.Repo = (*AnnouncementPGRepo)(nil)

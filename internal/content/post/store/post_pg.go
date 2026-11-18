@@ -1,4 +1,4 @@
-package pgstore
+package store
 
 // 帖子域的 PostgreSQL 仓储。
 //

@@ -1,4 +1,4 @@
-package pgstore
+package store
 
 // 埋点域的 PostgreSQL 仓储。
 //

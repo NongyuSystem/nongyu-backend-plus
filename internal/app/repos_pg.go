@@ -5,7 +5,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"nongyu-backend-plus/internal/platform/pgstore"
+	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
+	poststore "nongyu-backend-plus/internal/content/post/store"
+	messagestore "nongyu-backend-plus/internal/message/store"
+	skinstore "nongyu-backend-plus/internal/skin/store"
+	trackstore "nongyu-backend-plus/internal/track/store"
 )
 
 // newPGRepoBundle 构造四个域的 PostgreSQL 仓储。
@@ -25,11 +29,11 @@ func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, erro
 		return repoBundle{}, errNilPool
 	}
 	return repoBundle{
-		Announcements: pgstore.NewAnnouncementPGRepo(pool, now),
-		Posts:         pgstore.NewPostPGRepo(pool, now),
-		Messages:      pgstore.NewMessagePGRepo(pool, now),
-		Track:         pgstore.NewTrackPGRepo(pool),
-		Skins:         pgstore.NewSkinPGRepo(pool, now),
+		Announcements: announcementstore.NewAnnouncementPGRepo(pool, now),
+		Posts:         poststore.NewPostPGRepo(pool, now),
+		Messages:      messagestore.NewMessagePGRepo(pool, now),
+		Track:         trackstore.NewTrackPGRepo(pool),
+		Skins:         skinstore.NewSkinPGRepo(pool, now),
 		Mode:          storeModePostgres,
 	}, nil
 }

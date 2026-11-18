@@ -1,9 +1,10 @@
-package pgstore_test
+package store_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"nongyu-backend-plus/internal/message/store"
 	"testing"
 	"time"
 
@@ -11,19 +12,18 @@ import (
 
 	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/message"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // newMessageRepo 返回一个已迁移好、指向独立 schema 的 PG 消息仓储，
 // 以及同一个 schema 的连接池（「库里到底几行」这类独立证据要用它，
 // 因为仓储自身的接口不提供「按幂等键数行数」的能力——那不该进领域接口）。
-func newMessageRepo(t *testing.T) (*pgstore.MessagePGRepo, *pgxpool.Pool) {
+func newMessageRepo(t *testing.T) (*store.MessagePGRepo, *pgxpool.Pool) {
 	t.Helper()
 	pool := newPGTestPool(t)
 	if pool == nil {
 		return nil, nil // 已 Skip
 	}
-	return pgstore.NewMessagePGRepo(pool, fixedNow), pool
+	return store.NewMessagePGRepo(pool, fixedNow), pool
 }
 
 // msgKey 造一个通知幂等键（服务层算好传入的那种）。
@@ -646,5 +646,27 @@ func TestMessagePGRepo_ErrorIsDomainError(t *testing.T) {
 	}
 	if _, ok := apperr.CodeOf(err); !ok {
 		t.Fatalf("应是带错误码的领域错误，实际 %T: %v", err, err)
+	}
+}
+
+// ── 按域拆分后补入的共享 helper ──────────────────────────────
+// countRows 跑一条 count 查询（用于「表里到底几行」这类独立证据）。
+func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var n int
+	if err := pool.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
+		t.Fatalf("count 查询失败（%s）：%v", sql, err)
+	}
+	return n
+}
+
+// sortSlice 是通用排序辅助（原与 announcement_pg_test.go 同属 pgstore 包时共享）。
+func sortSlice[T any](list []T, less func(a, b T) bool) {
+	for i := 1; i < len(list); i++ {
+		for j := i; j > 0 && less(list[j], list[j-1]); j-- {
+			list[j], list[j-1] = list[j-1], list[j]
+		}
 	}
 }

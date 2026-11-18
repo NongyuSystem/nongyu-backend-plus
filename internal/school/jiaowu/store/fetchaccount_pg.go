@@ -1,4 +1,4 @@
-package pgstore
+package store
 
 // 教务取数账号池的 PostgreSQL 实现。
 //

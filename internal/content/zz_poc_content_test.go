@@ -19,6 +19,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/content/post/store"
 	"strconv"
 	"testing"
 	"time"
@@ -27,7 +28,6 @@ import (
 
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -58,7 +58,7 @@ func (s *captureStore) Delete(ctx context.Context, key string) error {
 
 func newPocEnv(t *testing.T) (*gin.Engine, *captureStore) {
 	t.Helper()
-	repo := pgstore.NewPostMemoryRepo(func() time.Time { return pocNow })
+	repo := store.NewPostMemoryRepo(func() time.Time { return pocNow })
 	store := &captureStore{
 		MemoryObjectStore: platform.NewMemoryObjectStore(),
 		deleted:           make(chan string, 16),

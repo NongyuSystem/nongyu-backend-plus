@@ -2,13 +2,13 @@ package announcement_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/content/announcement/store"
 	"sync"
 	"testing"
 	"time"
 
 	"nongyu-backend-plus/internal/content/announcement"
 	"nongyu-backend-plus/internal/platform/mail"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // fakeAudit 是实现 mail.AuditStore 的测试替身，只记录 action。
@@ -54,7 +54,7 @@ func TestAdminActions_AreAudited(t *testing.T) {
 	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	audit := &fakeAudit{}
 	svc := announcement.New(announcement.Options{
-		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return now }),
+		Repo:  store.NewAnnouncementMemoryRepo(func() time.Time { return now }),
 		Clock: fixedClockAt{now: now},
 		Audit: audit,
 	})
@@ -123,7 +123,7 @@ func TestAdminActions_AreAudited(t *testing.T) {
 func TestAudit_NilStoreDoesNotPanic(t *testing.T) {
 	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	svc := announcement.New(announcement.Options{
-		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return now }),
+		Repo:  store.NewAnnouncementMemoryRepo(func() time.Time { return now }),
 		Clock: fixedClockAt{now: now},
 		// Audit 留空
 	})
@@ -150,7 +150,7 @@ func TestUpdate_WritesBackUpdatedAt(t *testing.T) {
 
 	// 用可推进时钟：先 t0 建，再 later 改，才能看出回写有没有生效。
 	now := t0
-	repo := pgstore.NewAnnouncementMemoryRepo(func() time.Time { return now })
+	repo := store.NewAnnouncementMemoryRepo(func() time.Time { return now })
 	svc := announcement.New(announcement.Options{
 		Repo:  repo,
 		Clock: clockFunc(func() time.Time { return now }),
@@ -189,7 +189,7 @@ func (f clockFunc) Now() time.Time { return f() }
 func TestAdminGet_SeesDraftAndDeleted(t *testing.T) {
 	t0 := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	svc := announcement.New(announcement.Options{
-		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
+		Repo:  store.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
 		Clock: fixedClockAt{now: t0},
 	})
 	ctx := context.Background()
@@ -236,7 +236,7 @@ func TestAdminGet_SeesDraftAndDeleted(t *testing.T) {
 func TestSoftDeleted_CannotBeEditedOrRepublished(t *testing.T) {
 	t0 := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	svc := announcement.New(announcement.Options{
-		Repo:  pgstore.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
+		Repo:  store.NewAnnouncementMemoryRepo(func() time.Time { return t0 }),
 		Clock: fixedClockAt{now: t0},
 	})
 	ctx := context.Background()

@@ -33,6 +33,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/content/post/store"
 	"strconv"
 	"testing"
 	"time"
@@ -41,7 +42,6 @@ import (
 
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 var logicNow = time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
@@ -56,7 +56,7 @@ func logicEnv(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	repo := pgstore.NewPostMemoryRepo(func() time.Time { return logicNow })
+	repo := store.NewPostMemoryRepo(func() time.Time { return logicNow })
 	store := platform.NewMemoryObjectStore()
 	svc := post.New(post.Options{Repo: repo, Clock: logicClock{}, ObjectStore: store})
 

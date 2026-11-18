@@ -6,17 +6,22 @@
 // **命名约定**：所有本文件导出到包内的辅助函数都带 pgTest/PgTest 前缀。
 // 外部测试包是「同包不同文件共享符号」的，父代理也在往这个包加测试文件；
 // 叫 testBaseTime、contains 这类通用名，迟早会和别人撞成 redeclared。
-package pgstore_test
+package store_test
 
 import (
 	"context"
+	poststore "nongyu-backend-plus/internal/content/post/store"
+	trackstore "nongyu-backend-plus/internal/track/store"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"nongyu-backend-plus/internal/content/post"
-	"nongyu-backend-plus/internal/platform/pgstore"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 	"nongyu-backend-plus/internal/track"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // pgTestBaseTime 是所有测试的固定基准时刻。
@@ -31,13 +36,13 @@ func pgTestClock(t time.Time) func() time.Time {
 }
 
 // mustPgPost 造一条帖子并断言成功。publishedAt 用基准时刻。
-func mustPgPost(t *testing.T, repo *pgstore.PostPGRepo, board post.Board, title string, authorID int64) *post.Post {
+func mustPgPost(t *testing.T, repo *poststore.PostPGRepo, board post.Board, title string, authorID int64) *post.Post {
 	t.Helper()
 	return mustPgPostAt(t, repo, board, title, authorID, pgTestBaseTime)
 }
 
 // mustPgPostAt 造一条指定 publishedAt 的帖子。
-func mustPgPostAt(t *testing.T, repo *pgstore.PostPGRepo, board post.Board, title string, authorID int64, publishedAt time.Time) *post.Post {
+func mustPgPostAt(t *testing.T, repo *poststore.PostPGRepo, board post.Board, title string, authorID int64, publishedAt time.Time) *post.Post {
 	t.Helper()
 	p := &post.Post{
 		Board: board, Title: title, Body: "正文：" + title,
@@ -74,7 +79,7 @@ func pgPostIDs(ps []*post.Post) []int64 {
 // 而这是「先查再插」实现最容易漏的场景。
 func TestTrackPGRepo_BatchInsertIdempotent(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewTrackPGRepo(pool)
+	repo := trackstore.NewTrackPGRepo(pool)
 	ctx := context.Background()
 
 	newEvent := func(id string) track.Event {
@@ -144,7 +149,7 @@ func TestTrackPGRepo_BatchInsertIdempotent(t *testing.T) {
 // TestTrackPGRepo_PropsRoundTrip 验收 props JSONB 往返、nil props 落 NULL。
 func TestTrackPGRepo_PropsRoundTrip(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewTrackPGRepo(pool)
+	repo := trackstore.NewTrackPGRepo(pool)
 	ctx := context.Background()
 
 	_, _, err := repo.BatchInsert(ctx, []track.Event{
@@ -192,7 +197,7 @@ func TestTrackPGRepo_PropsRoundTrip(t *testing.T) {
 // 边界是闭区间 [from, to]，落在 from 与 to 上的必须被计入。
 func TestTrackPGRepo_CountByTypeWindow(t *testing.T) {
 	pool := newPostTrackPool(t)
-	repo := pgstore.NewTrackPGRepo(pool)
+	repo := trackstore.NewTrackPGRepo(pool)
 	ctx := context.Background()
 
 	from := pgTestBaseTime
@@ -247,4 +252,100 @@ func pgTestEvent(id string, typ track.EventType, receivedAt time.Time) track.Eve
 		EventID: id, EventType: typ, EventName: "n",
 		Platform: track.PlatformAndroid, UserID: 1, ReceivedAt: receivedAt,
 	}
+}
+
+// ── 按域拆分后补入的共享 helper ──────────────────────────────
+
+// pgTestSchemaPrefix 是测试 schema 的统一前缀。
+const pgTestSchemaPrefix = "t_pgstore_"
+
+// newPostTrackPool 建一个指向**独立 schema** 的连接池，并在其中执行全部迁移建表。
+//
+// schema 名由测试名派生：同一个包反复跑、或两个测试并行跑，
+// 都不会互相看到对方的行。测试结束 DROP SCHEMA CASCADE。
+//
+// 名字带 PostTrack 前缀而不是通用的 newPGTestPool：外部测试包里
+// announcement_pg_test.go 已有一个同签名的 newPGTestPool（它只建公告/消息域需要的东西），
+// 两个同包同签名的函数会直接 redeclared。各自按域命名，互不干扰。
+func newPostTrackPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+
+	base := os.Getenv("DATABASE_URL")
+	if base == "" {
+		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 管理连接：不带 search_path，用来建/删 schema。
+	admin, err := pgxpool.New(ctx, base)
+	if err != nil {
+		t.Skipf("Postgres 不可达，跳过：%v", err)
+	}
+	if err := admin.Ping(ctx); err != nil {
+		admin.Close()
+		t.Skipf("Postgres 不可达，跳过：%v", err)
+	}
+
+	schema := pgTestSchemaPrefix + pgTestSchemaName(t.Name())
+	if _, err := admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgTestQuoteIdent(schema)+" CASCADE"); err != nil {
+		admin.Close()
+		t.Fatalf("清理旧 schema %s：%v", schema, err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgTestQuoteIdent(schema)); err != nil {
+		admin.Close()
+		t.Fatalf("建 schema %s：%v", schema, err)
+	}
+
+	// 在隔离 schema 上跑权威迁移（migrations/*.sql），不手写 DDL：
+	// 表结构与生产同源，测试才能发现「仓储假设了列不存在」这类问题。
+	migDSN, err := pkgx.WithSearchPath(base, schema)
+	if err != nil {
+		admin.Close()
+		t.Fatalf("拼迁移 DSN：%v", err)
+	}
+	if err := pkgx.Migrate(ctx, migDSN); err != nil {
+		admin.Close()
+		t.Fatalf("在 schema %s 上执行迁移：%v", schema, err)
+	}
+
+	pool, err := pgxpool.New(ctx, migDSN)
+	if err != nil {
+		admin.Close()
+		t.Fatalf("建测试连接池：%v", err)
+	}
+
+	t.Cleanup(func() {
+		pool.Close()
+		c, cc := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cc()
+		_, _ = admin.Exec(c, "DROP SCHEMA IF EXISTS "+pgTestQuoteIdent(schema)+" CASCADE")
+		admin.Close()
+	})
+	return pool
+}
+
+// pgTestSchemaName 把测试名转成合法的 schema 名（原与 post_pg_test.go 同属 pgstore 包时共享）。
+func pgTestSchemaName(name string) string {
+	lower := strings.ToLower(name)
+	var b strings.Builder
+	for _, r := range lower {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	ss := b.String()
+	if len(ss) > 40 {
+		ss = ss[:40]
+	}
+	return ss
+}
+
+// pgTestQuoteIdent 给标识符加双引号（原与 post_pg_test.go 同属 pgstore 包时共享）。
+func pgTestQuoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }

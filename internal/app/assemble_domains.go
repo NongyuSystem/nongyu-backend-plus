@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	jiaowustore "nongyu-backend-plus/internal/school/jiaowu/store"
 	"time"
 
 	"nongyu-backend-plus/internal/app/notify"
@@ -27,7 +28,6 @@ import (
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/mail"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/secondclass"
@@ -69,11 +69,11 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	// 由管理员通过管理端维护。配了 DATABASE_URL 走 PG（加密落库），否则走内存。
 	var fetchAccountAdmin jiaowu.FetchAccountAdminStore
 	if pgPool != nil {
-		repo := pgstore.NewFetchAccountPGRepo(pgPool, cfg.TicketKey, clock.Now)
+		repo := jiaowustore.NewFetchAccountPGRepo(pgPool, cfg.TicketKey, clock.Now)
 		jiaowuSvc.BindFetchAccountPool(repo)
 		fetchAccountAdmin = repo
 	} else {
-		repo := pgstore.NewFetchAccountMemoryRepo()
+		repo := jiaowustore.NewFetchAccountMemoryRepo()
 		jiaowuSvc.BindFetchAccountPool(repo)
 		fetchAccountAdmin = repo
 	}

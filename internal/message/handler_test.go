@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/message/store"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,6 @@ import (
 	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // 这一层是 **HTTP 集成测**：httptest 打真实路由，仓储用内存实现，
@@ -105,7 +105,7 @@ func (l *fakeLimiter) snapshot() (int, string) {
 type testEnv struct {
 	r     *gin.Engine
 	svc   *message.Service
-	repo  *pgstore.MessageMemoryRepo
+	repo  *store.MessageMemoryRepo
 	users *userSet
 	lim   *fakeLimiter
 }
@@ -127,7 +127,7 @@ func newTestServer(t *testing.T, clk platform.Clock) *testEnv {
 	if clk == nil {
 		clk = fixedClock{}
 	}
-	repo := pgstore.NewMessageMemoryRepo(func() time.Time { return fixedNow })
+	repo := store.NewMessageMemoryRepo(func() time.Time { return fixedNow })
 	users := &userSet{m: map[int64]bool{}}
 	lim := &fakeLimiter{allow: true}
 	svc := message.New(message.Options{

@@ -1,4 +1,4 @@
-package pgstore_test
+package store_test
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // Audience 往返 / 幂等重删等一大串前置步骤，一旦失败要先排除是别处污染。
 // 这条只保留 Create → MarkDeleted → FindByID 三步，是能抓到该 bug 的最小闭环。
 //
-// 根因（2026-11-13）：AnnouncementPGRepo.FindByID 的 SQL 只按 id 查，漏了
+// 根因（2026-11-13）：store.AnnouncementPGRepo.FindByID 的 SQL 只按 id 查，漏了
 // `AND deleted_at IS NULL`，而同文件的 list() / Update / MarkDeleted 都带了。
 // 软删行仍在表里，于是 FindByID 返回实体而非 NotFound。
 func TestAnnouncementPGRepo_SoftDeletedFindByIDReturnsNotFound(t *testing.T) {

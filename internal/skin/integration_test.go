@@ -11,6 +11,7 @@ package skin_test
 import (
 	"context"
 	"errors"
+	skinstore "nongyu-backend-plus/internal/skin/store"
 	"os"
 	"strings"
 	"testing"
@@ -20,7 +21,6 @@ import (
 
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/objectstore"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	pkgx "nongyu-backend-plus/internal/platform/pgx"
 	"nongyu-backend-plus/internal/skin"
 )
@@ -148,7 +148,7 @@ func TestIntegration_RealMinioAndPostgres_FullRoundTrip(t *testing.T) {
 	raw := packWith(t, manifest, zipFile{name: "icons/home.png", body: []byte("e2e-png-payload")})
 
 	svc := skin.New(skin.Options{
-		Repo:        pgstore.NewSkinPGRepo(pool, time.Now),
+		Repo:        skinstore.NewSkinPGRepo(pool, time.Now),
 		ObjectStore: store,
 	})
 
@@ -200,7 +200,7 @@ func TestIntegration_RealMinioAndPostgres_FullRoundTrip(t *testing.T) {
 	}
 
 	// 6) Repo 层直接核对 PG 落库
-	repo := pgstore.NewSkinPGRepo(pool, time.Now)
+	repo := skinstore.NewSkinPGRepo(pool, time.Now)
 	p2, err := repo.GetByRef(ctx, packID, "1.0.0")
 	if err != nil {
 		t.Fatalf("PG GetByRef 失败：%v", err)

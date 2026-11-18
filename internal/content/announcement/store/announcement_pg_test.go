@@ -13,11 +13,12 @@
 // 为什么不用「跑完 TRUNCATE」：测试包可能并行、也可能与本仓其它包的 PG
 // 集成测试并发跑，共享 schema 下 TRUNCATE 会互删数据（本仓 platform 包已
 // 踩过「单独跑通过、连跑失败」）。独立 schema 把污染可能性归零。
-package pgstore_test
+package store_test
 
 import (
 	"context"
 	"fmt"
+	"nongyu-backend-plus/internal/content/announcement/store"
 	"os"
 	"sort"
 	"strings"
@@ -28,7 +29,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
 
@@ -132,13 +132,13 @@ func quoteTestIdent(s string) string {
 // 以及同一个 schema 的连接池（断言「库里到底几行」这类独立证据时要用）。
 //
 // now 用固定时刻：断言 created_at/updated_at 时需要可预测的值。
-func newAnnouncementRepo(t *testing.T) (*pgstore.AnnouncementPGRepo, *pgxpool.Pool) {
+func newAnnouncementRepo(t *testing.T) (*store.AnnouncementPGRepo, *pgxpool.Pool) {
 	t.Helper()
 	pool := newPGTestPool(t)
 	if pool == nil {
 		return nil, nil // 已 Skip
 	}
-	return pgstore.NewAnnouncementPGRepo(pool, fixedNow), pool
+	return store.NewAnnouncementPGRepo(pool, fixedNow), pool
 }
 
 // fixedNow 是被注入的「当前时刻」，固定值让断言不依赖真实时间。

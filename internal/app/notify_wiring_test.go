@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	poststore "nongyu-backend-plus/internal/content/post/store"
+	messagestore "nongyu-backend-plus/internal/message/store"
 	"testing"
 	"time"
 
@@ -9,7 +11,6 @@ import (
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // 本文件锁住「通知派生真的接上了」这件事。
@@ -22,11 +23,11 @@ type nopClock struct{ now time.Time }
 
 func (c nopClock) Now() time.Time { return c.now }
 
-func newNotifyEnv(t *testing.T) (*post.Service, *message.Service, *notify.Notifier, *pgstore.MessageMemoryRepo) {
+func newNotifyEnv(t *testing.T) (*post.Service, *message.Service, *notify.Notifier, *messagestore.MessageMemoryRepo) {
 	t.Helper()
 	clock := nopClock{now: time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)}
 
-	msgRepo := pgstore.NewMessageMemoryRepo(clock.Now)
+	msgRepo := messagestore.NewMessageMemoryRepo(clock.Now)
 	msgSvc := message.New(message.Options{
 		Repo:  msgRepo,
 		Clock: clock,
@@ -40,7 +41,7 @@ func newNotifyEnv(t *testing.T) (*post.Service, *message.Service, *notify.Notifi
 	})
 
 	postSvc := post.New(post.Options{
-		Repo:  pgstore.NewPostMemoryRepo(clock.Now),
+		Repo:  poststore.NewPostMemoryRepo(clock.Now),
 		Clock: clock,
 	})
 	postSvc.SetNotifyHook(postNotifyAdapter{posts: postSvc, notify: notifier}.Handle)
@@ -184,7 +185,7 @@ func TestNotify_CommentLikeNotifiesReplyAuthor(t *testing.T) {
 // TestNotify_DisabledHookIsSafe 保证未装钩子时不 panic。
 func TestNotify_DisabledHookIsSafe(t *testing.T) {
 	clock := nopClock{now: time.Now()}
-	svc := post.New(post.Options{Repo: pgstore.NewPostMemoryRepo(clock.Now), Clock: clock})
+	svc := post.New(post.Options{Repo: poststore.NewPostMemoryRepo(clock.Now), Clock: clock})
 	ctx := context.Background()
 	// 没有 SetNotifyHook：发帖与回复都应正常，不 panic
 	p, err := svc.Create(ctx, 7, post.CreateInput{Board: "feedback", Title: "t", Body: "b"})

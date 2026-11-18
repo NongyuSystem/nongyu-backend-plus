@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/content/announcement/store"
 	"strconv"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 // 这一层是 HTTP 集成测：httptest 打真实路由，仓储用内存实现。
@@ -43,7 +43,7 @@ func testViewer(c *gin.Context) announcement.Viewer {
 // newTestServer 构造「读者侧 + 管理端（无中间件）」的测试路由。
 func newTestServer(t *testing.T) (*gin.Engine, *announcement.Service) {
 	t.Helper()
-	repo := pgstore.NewAnnouncementMemoryRepo(func() time.Time { return parseTime("2026-11-12T00:00:00Z") })
+	repo := store.NewAnnouncementMemoryRepo(func() time.Time { return parseTime("2026-11-12T00:00:00Z") })
 	svc := announcement.New(announcement.Options{Repo: repo, Clock: fixedClock{now: parseTime("2026-11-12T00:00:00Z")}})
 
 	r := gin.New()

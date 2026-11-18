@@ -315,7 +315,7 @@ func identityDDLStatements() []string {
 		// 逐列照 migrations/0008_fetch_accounts.sql 的定义与顺序。
 		//
 		// 本表曾长期缺失（2026-11 结构整改前）：DDL 一致性守卫只比对「两边都有的表」，
-		// 所以漏掉整张表时守卫依然是绿的，但任何走 pgstore.FetchAccountPGRepo 的
+		// 所以漏掉整张表时守卫依然是绿的，但任何走 FetchAccountPGRepo 的
 		// 集成测试都会因为 relation 不存在而失败。守卫已补「表名集合必须相等」的断言。
 		`CREATE TABLE IF NOT EXISTS jiaowu_fetch_accounts (
 			id                BIGSERIAL   PRIMARY KEY,

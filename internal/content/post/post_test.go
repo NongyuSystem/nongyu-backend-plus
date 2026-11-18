@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/content/post/store"
 	"strconv"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ import (
 
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -107,9 +107,9 @@ func TestParseEnums(t *testing.T) {
 
 type fakeStore = platform.MemoryObjectStore
 
-func newEnv(t *testing.T) (*gin.Engine, *post.Service, *pgstore.PostMemoryRepo, *fakeStore) {
+func newEnv(t *testing.T) (*gin.Engine, *post.Service, *store.PostMemoryRepo, *fakeStore) {
 	t.Helper()
-	repo := pgstore.NewPostMemoryRepo(func() time.Time { return t0 })
+	repo := store.NewPostMemoryRepo(func() time.Time { return t0 })
 	store := platform.NewMemoryObjectStore()
 	svc := post.New(post.Options{
 		Repo: repo, Clock: fixedClock{now: t0}, ObjectStore: store,
@@ -233,7 +233,7 @@ func TestEdit_WithinWindowThenLocked(t *testing.T) {
 
 func TestEdit_RejectsAfterWindow(t *testing.T) {
 	// 用可推进的时钟验证 24h 边界
-	repo := pgstore.NewPostMemoryRepo(func() time.Time { return t0 })
+	repo := store.NewPostMemoryRepo(func() time.Time { return t0 })
 	now := t0
 	svc := post.New(post.Options{
 		Repo:  repo,

@@ -6,7 +6,7 @@
 //
 // 命名：本包按存储后端命名（pg 前缀），而不是按域命名。这样将来接 Redis /
 // 对象存储的实现也各有其包，业务域始终只见接口。
-package pgstore
+package store
 
 import (
 	"context"

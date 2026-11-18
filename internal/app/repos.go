@@ -11,9 +11,14 @@ import (
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
+
+	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
+	poststore "nongyu-backend-plus/internal/content/post/store"
+	messagestore "nongyu-backend-plus/internal/message/store"
+	skinstore "nongyu-backend-plus/internal/skin/store"
+	trackstore "nongyu-backend-plus/internal/track/store"
 )
 
 // 本文件是「存储实现选择」的唯一决策点。
@@ -26,6 +31,9 @@ import (
 // 一条硬约束：**PG 与内存是二选一，不允许混用**。
 // 混用会产生极难排查的现象——帖子落了库、留言留在内存，重启后
 // 「帖子还在但回复没了」。所以这里按 storeMode 一次决定全部五个域。
+//
+// 各域的仓储实现已搬到 `<域>/store/` 子包（2026-11 结构整改）。
+// 它们都叫 store，故此处按域名起别名——这也是「域内固定分层」的直观体现。
 
 // storeMode 是运行期的存储模式。
 type storeMode string
@@ -60,11 +68,11 @@ type repoBundle struct {
 func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error) {
 	if pool == nil {
 		return repoBundle{
-			Announcements: pgstore.NewAnnouncementMemoryRepo(now),
-			Posts:         pgstore.NewPostMemoryRepo(now),
-			Messages:      pgstore.NewMessageMemoryRepo(now),
-			Track:         pgstore.NewTrackMemoryRepo(),
-			Skins:         pgstore.NewSkinMemoryRepo(now),
+			Announcements: announcementstore.NewAnnouncementMemoryRepo(now),
+			Posts:         poststore.NewPostMemoryRepo(now),
+			Messages:      messagestore.NewMessageMemoryRepo(now),
+			Track:         trackstore.NewTrackMemoryRepo(),
+			Skins:         skinstore.NewSkinMemoryRepo(now),
 			Mode:          storeModeMemory,
 		}, nil
 	}
@@ -101,10 +109,10 @@ func openPGPool(ctx context.Context, cfgDSN string) (*pgxpool.Pool, error) {
 
 // 编译期确认：内存实现确实满足各域接口（防止接口漂移后工厂悄悄返回错类型）。
 var (
-	_ announcement.Repo = (*pgstore.AnnouncementMemoryRepo)(nil)
-	_ post.Repo         = (*pgstore.PostMemoryRepo)(nil)
-	_ message.Repo      = (*pgstore.MessageMemoryRepo)(nil)
-	_ track.Repo        = (*pgstore.TrackMemoryRepo)(nil)
-	_ skin.Repo         = (*pgstore.SkinMemoryRepo)(nil)
+	_ announcement.Repo = (*announcementstore.AnnouncementMemoryRepo)(nil)
+	_ post.Repo         = (*poststore.PostMemoryRepo)(nil)
+	_ message.Repo      = (*messagestore.MessageMemoryRepo)(nil)
+	_ track.Repo        = (*trackstore.TrackMemoryRepo)(nil)
+	_ skin.Repo         = (*skinstore.SkinMemoryRepo)(nil)
 	_                   = platform.MemoryObjectStore{}
 )

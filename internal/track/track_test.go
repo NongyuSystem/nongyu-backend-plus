@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/track/store"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/track"
 )
 
@@ -155,9 +155,9 @@ func TestSanitize_RejectsUnknownEnum(t *testing.T) {
 
 // ---------- HTTP 集成 ----------
 
-func newEnv(t *testing.T) (*gin.Engine, *track.Service, *pgstore.TrackMemoryRepo) {
+func newEnv(t *testing.T) (*gin.Engine, *track.Service, *store.TrackMemoryRepo) {
 	t.Helper()
-	repo := pgstore.NewTrackMemoryRepo()
+	repo := store.NewTrackMemoryRepo()
 	svc := track.New(track.Options{
 		Repo:  repo,
 		Clock: fixedClock{now: t0},
@@ -333,7 +333,7 @@ func TestSummary_OnlyCountsByType(t *testing.T) {
 }
 
 func TestBuffer_FlushIsIdempotent(t *testing.T) {
-	repo := pgstore.NewTrackMemoryRepo()
+	repo := store.NewTrackMemoryRepo()
 	b := track.NewBuffer(repo, track.BufferOptions{Capacity: 8, BatchSize: 2, FlushPeriod: time.Hour})
 	ctx := context.Background()
 	_ = ctx
