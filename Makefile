@@ -1,4 +1,4 @@
-.PHONY: help build run test test-pg test-track vet tidy fmt fmt-check check clean dev-start dev-stop probe
+.PHONY: help build run test test-pg test-track test-arch vet tidy fmt fmt-check check clean dev-start dev-stop probe
 
 # 默认目标：打印可用命令（比直接跑 build 更友好）。
 .DEFAULT_GOAL := help
@@ -52,9 +52,11 @@ test:
 # 只跑 PostgreSQL 集成测试。
 #
 # 需要真实库；用例按 schema 隔离，可与其它包的 PG 测试并行。
+# 仓储实现已按域拆进各域的 store/ 子包（原 platform/pgstore 已删除），
+# 用 -run PG 过滤即可跨包命中。
 test-pg:
 	@test -n "$$DATABASE_URL" || (echo "需要设置 DATABASE_URL"; exit 1)
-	go test ./internal/platform/pgstore/ -run PG -count=1 -v
+	go test ./internal/.../store/ ./internal/platform/... -run PG -count=1 -v
 
 # 只跑本 effort 新增四域的测试（改这几块时的快速反馈）。
 test-track:

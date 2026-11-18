@@ -4,7 +4,9 @@
 
 ## 状态
 
-骨架阶段。仅提供可编译、可启动、可优雅关停的最小工程结构 + `GET /healthz`，**不含任何业务逻辑、不连接数据库**。
+已承载身份、内容、消息、埋点、皮肤、教务、二课、校内状态等多个业务域，
+各域自带 handler / service / 仓储接口；`migrations/` 下的 SQL 是建表形状的**唯一权威源**。
+`GET /healthz` 只报进程存活，依赖状态看 `GET /status`。
 
 ## 技术选型
 
@@ -12,9 +14,9 @@
 | --- | --- |
 | 语言 | Go 1.26 |
 | HTTP 框架 | Gin |
-| 架构 | **模块化单体**（一个仓库 / 一个 module / 一个进程，内部按业务能力强分包） |
+| 架构 | **模块化单体**（一个仓库 / 一个 module / 一个进程，内部按业务域分包 + 域内 `store/` 分层） |
 | 配置 | 环境变量（见 `.env.example`） |
-| 存储 | 骨架期用 `internal/platform.MockStore`；数据库层就绪后替换实现，业务域零改动 |
+| 存储 | 按 `DATABASE_URL` / `REDIS_ADDR` 等配置切换：配了走 Postgres / Redis 实现，未配退化为进程内存（**显式告警**，不静默降级）；切换点集中在 `internal/app/repos.go` |
 
 ## 目录结构
 
@@ -22,12 +24,18 @@
 nongyu-backend-plus/
 ├── cmd/server/            # 唯一入口：装配 + 启动 + 优雅关停
 ├── internal/
-│   ├── app/               # 装配层：依赖注入只在这里；notify/ 是跨域编排单元
+│   ├── app/               # 装配层（composition root）：依赖注入只在这里
+│   │   └── notify/        # 跨域编排单元（通知派生）
 │   ├── config/            # 环境变量读取与校验（见 .env.example，37 变量）
 │   ├── server/            # Gin 适配层：路由、中间件、/healthz、/status
-│   ├── platform/          # 外部能力接缝；真实实现放 pgstore/、objectstore/
+│   ├── architecture/      # import 方向守卫测试（防止分层再次倒置）
+│   ├── platform/          # 最底层通用能力，零业务依赖
+│   │   ├── cache/ httpx/ pgx/ mail/ objstore/ platformtest/ redisconn/ pgutil/
+│   │   └── （根）         # 契约接口、哨兵错误、AES 加密、时钟
 │   └── <业务域>/          # content/{post,announcement}・message・track・identity・school
+│       └── store/         # 该域的 Postgres / 内存仓储实现（域内固定分层）
 ├── migrations/            # schema 变更（单向有序；启动时幂等执行）
+│   └── migrations.go      # //go:embed *.sql，权威 DDL 的唯一来源
 ├── deploy/                # 部署示例（Dockerfile / systemd / compose）
 ├── docs/
 │   ├── specs/             # 规格文档（SDD：PRD → Spec → 编码）
@@ -39,12 +47,19 @@ nongyu-backend-plus/
 └── README.md
 ```
 
+> 目录分层判据（2026-11 结构整改后）：
+> - **域根**：实体 + 仓储接口 + 业务规则，不含 SQL、不含 `gin`；
+> - **`<域>/store/`**：该域的 Postgres / 内存实现，可 import 域根，域根不能反向 import 它；
+> - **`app/`**：只做「构造具体实现 → 注入接口」的接线，不写业务判断。
+
 ## 架构约束（长期不可破）
 
 1. **业务域之间不互相 import**，协作统一走 `internal/app` 装配层编排。
 2. **业务域只依赖 `internal/platform` 定义的接口**，不直接 import 数据库驱动、S3 SDK 等具体实现。
 3. **进程无状态**：状态全部外置（DB / 缓存 / 对象存储），以便水平扩副本。
-4. `internal/<业务域>` 内部自带 handler / service / repo 接口；存储实现放 `internal/platform` 或其子包。
+4. `internal/<业务域>` 内部自带 handler / service / repo 接口；**存储实现放该域的 `store/` 子包**，
+   不得放在 `internal/platform` 下——platform 是最底层，不能反向依赖业务域。
+   （历史上曾放 `platform/pgstore`，已按域拆走；`internal/architecture/` 有守卫测试锁住这条。）
 5. 不提前建 `pkg/utils`、`common` 这类垃圾场包；确有跨项目复用需求时再开 `pkg/`。
 
 ## 本地运行
