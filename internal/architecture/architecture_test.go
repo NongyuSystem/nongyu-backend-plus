@@ -150,3 +150,40 @@ func TestOnlyAppImportsApp(t *testing.T) {
 		return nil
 	})
 }
+
+// TestNoImportsOfRemovedPackages 守住「已删除的包不许在代码里复活」。
+//
+// 2026-11 结构整改删掉了 internal/platform/pgstore（按域拆进各域 store/）、
+// internal/platform/pgx、pgutil、redisconn（合并进 platform/pg 与 platform/redis）。
+// 只要有人把旧 import 写回去（复制粘贴老代码最常见），这里立刻变红，
+// 而不是等到编译期报一个看不懂的 "package not in std"。
+func TestNoImportsOfRemovedPackages(t *testing.T) {
+	root := repoRoot(t)
+	removed := []string{
+		"nongyu-backend-plus/internal/platform/pgstore",
+		"nongyu-backend-plus/internal/platform/pgx",
+		"nongyu-backend-plus/internal/platform/pgutil",
+		"nongyu-backend-plus/internal/platform/redisconn",
+	}
+	for _, base := range []string{"internal", "cmd"} {
+		_ = filepath.Walk(filepath.Join(root, base), func(dir string, info os.FileInfo, err error) error {
+			if err != nil || !info.IsDir() {
+				return nil
+			}
+			rel, _ := filepath.Rel(root, dir)
+			relSlash := filepath.ToSlash(rel)
+			for file, imps := range prodImports(t, dir) {
+				for _, imp := range imps {
+					for _, r := range removed {
+						if imp == r || strings.HasPrefix(imp, r+"/") {
+							t.Errorf("引用了已删除的包：%s/%s -> %s\n"+
+								"整改后仓储实现在各域 store/ 子包，pg/redis 能力在 internal/platform/{pg,redis}",
+								relSlash, file, imp)
+						}
+					}
+				}
+			}
+			return nil
+		})
+	}
+}

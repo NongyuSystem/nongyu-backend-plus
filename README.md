@@ -99,7 +99,10 @@ make clean   # 清理产物
 ## 开发流程（SDD）
 
 本仓库遵循规格驱动开发：**PRD → Spec → 技术方案（按需）→ 实施计划 → 编码 → 人工 Review**。
-骨架期只有 README 作为依据；业务接口开发前须先补 PRD 与 `docs/specs/` 下的规格，禁止无规格直接写业务代码。`docs/specs/` 下按 effort 分文件；本仓当前并行承载多个 effort，各自有 PRD。
+新增业务接口前须先补 PRD 与 `docs/specs/` 下的规格，禁止无规格直接写业务代码。`docs/specs/` 下按 effort 分文件；本仓当前并行承载多个 effort，各自有 PRD。
+
+结构调整（重构、拆包、改分层）不需要新规格，但**必须**：改动同一次提交里同步注释与 README 目录说明，
+且 `internal/architecture/` 的三条 import 方向守卫必须保持绿。
 
 ## 与旧农屿的关系
 
