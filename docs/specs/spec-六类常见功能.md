@@ -179,6 +179,9 @@
 - **管理台不设域**：`/admin/*` 是路由前缀 + `AdminOnly` 中间件；管理端点写在各域自己的 handler 里。
 - 每个域自带 `handler.go` / `service.go` / `repo.go`（**repo 是接口**）；PG 实现放 `platform/pgstore/`。这与仓库既有做法一致。
 
+> ⚠️ 2026-11 结构整改已更替此条：仓储实现不再放 `platform/pgstore`，改为各业务域内的 `store/` 子包
+> （如 `content/post/store/`、`message/store/`）。见 [决策-结构整改最终报告](./决策-结构整改最终报告.md)。
+
 ### platform 接缝增量（**只 1 个**）
 
 新增 `ObjectStore`，方法集最小化为四个：
