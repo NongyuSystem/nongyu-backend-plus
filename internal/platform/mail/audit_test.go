@@ -1,4 +1,4 @@
-package platform_test
+package mail_test
 
 // 审计存储的集成测试：需要 DATABASE_URL（或 PG* 环境变量），未配置时跳过。
 
@@ -8,23 +8,23 @@ import (
 	"testing"
 	"time"
 
-	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 )
 
-func newAuditStore(t *testing.T) *platform.PGAuditStore {
+func newAuditStore(t *testing.T) *mail.PGAuditStore {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
 	}
-	store, err := platform.NewPGAuditStore(platform.PGOptions{
+	store, err := mail.NewPGAuditStore(mail.AuditOptions{
 		DSN:         dsn,
 		BufferSize:  64,
 		BatchSize:   16,
 		FlushPeriod: 200 * time.Millisecond,
 	})
 	if err != nil {
-		t.Fatalf("NewPGAuditStore: %v", err)
+		t.Fatalf("mail.NewPGAuditStore: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -40,7 +40,7 @@ func TestPGAuditStore_AppendAndFlush(t *testing.T) {
 	ctx := context.Background()
 
 	reqID := "test-req-" + time.Now().Format("20060102150405.000000")
-	entries := []platform.AuditEntry{
+	entries := []mail.AuditEntry{
 		{RequestID: reqID, UserID: "alice", Action: "login", Target: "auth", Result: "ok", OccurredAt: time.Now()},
 		{RequestID: reqID, UserID: "alice", Action: "address", Target: "jiaowu", Result: "ok", OccurredAt: time.Now()},
 		{RequestID: reqID, UserID: "bob", Action: "fetch", Target: "jiaowu", Result: "target_denied", OccurredAt: time.Now()},
@@ -55,9 +55,9 @@ func TestPGAuditStore_AppendAndFlush(t *testing.T) {
 	}
 
 	// 用同一个 DSN 反查落库结果（验证写入真的发生，而不是只看返回值）。
-	got, err := platform.QueryAuditByRequestID(ctx, os.Getenv("DATABASE_URL"), reqID)
+	got, err := mail.QueryAuditByRequestID(ctx, os.Getenv("DATABASE_URL"), reqID)
 	if err != nil {
-		t.Fatalf("QueryAuditByRequestID: %v", err)
+		t.Fatalf("mail.QueryAuditByRequestID: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("应落库 3 条，实际 %d 条：%+v", len(got), got)
@@ -75,8 +75,8 @@ func TestPGAuditStore_AppendAndFlush(t *testing.T) {
 
 // 审计字段必须与约定完全一致：只有标识性字段，绝无票据/验证码/响应体。
 func TestAuditEntryHasNoSensitiveFields(t *testing.T) {
-	// 这条测试是「规格守卫」：给 AuditEntry 加敏感字段时它会编译失败或断言失败。
-	e := platform.AuditEntry{
+	// 这条测试是「规格守卫」：给 mail.AuditEntry 加敏感字段时它会编译失败或断言失败。
+	e := mail.AuditEntry{
 		RequestID:  "r1",
 		UserID:     "u1",
 		Action:     "login",

@@ -19,8 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/content/post"
-	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/pgstore"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
 
 // pgTestSchemaPrefix 是测试 schema 的公共前缀，便于一次性清理。
@@ -67,12 +67,12 @@ func newPostTrackPool(t *testing.T) *pgxpool.Pool {
 
 	// 在隔离 schema 上跑权威迁移（migrations/*.sql），不手写 DDL：
 	// 表结构与生产同源，测试才能发现「仓储假设了列不存在」这类问题。
-	migDSN, err := platform.WithSearchPath(base, schema)
+	migDSN, err := pkgx.WithSearchPath(base, schema)
 	if err != nil {
 		admin.Close()
 		t.Fatalf("拼迁移 DSN：%v", err)
 	}
-	if err := platform.Migrate(ctx, migDSN); err != nil {
+	if err := pkgx.Migrate(ctx, migDSN); err != nil {
 		admin.Close()
 		t.Fatalf("在 schema %s 上执行迁移：%v", schema, err)
 	}

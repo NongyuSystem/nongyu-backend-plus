@@ -18,7 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
@@ -29,7 +29,7 @@ type failingAuditStore struct {
 	err   error
 }
 
-func (f *failingAuditStore) Append(_ context.Context, _ platform.AuditEntry) error {
+func (f *failingAuditStore) Append(_ context.Context, _ mail.AuditEntry) error {
 	f.calls++
 	return f.err
 }
@@ -39,7 +39,7 @@ func (f *failingAuditStore) Close() error                { return nil }
 
 // newCacheServerWithAudit 装配一个注入指定 AuditStore 的读三端点引擎。
 // 与 scaffold 的 newCacheTestServer 同形，只多一个审计依赖注入口。
-func newCacheServerWithAudit(t *testing.T, userID string, audit platform.AuditStore) *gin.Engine {
+func newCacheServerWithAudit(t *testing.T, userID string, audit mail.AuditStore) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	clock := newFakeClock()
@@ -166,7 +166,7 @@ func TestAudit_AllWriteRecipeEndpointsEmitSpecNameWithoutSecrets(t *testing.T) {
 func TestAudit_AuditEntryHasExactlySixIdentifierFields(t *testing.T) {
 	// 规格 §3.4：「只记 AuditEntry 六字段，不加字段」。期望值来自规格，
 	// 不从实现里推导，防止有人给审计条目加字段（尤其是为二课加值字段）。
-	typ := reflect.TypeOf(platform.AuditEntry{})
+	typ := reflect.TypeOf(mail.AuditEntry{})
 	want := []string{"RequestID", "UserID", "Action", "Target", "Result", "OccurredAt"}
 	if typ.NumField() != len(want) {
 		t.Fatalf("AuditEntry 应恰好 6 个标识性字段，实际 %d", typ.NumField())
@@ -177,7 +177,7 @@ func TestAudit_AuditEntryHasExactlySixIdentifierFields(t *testing.T) {
 		}
 	}
 	// 行为化守卫：序列化后恰好六个 key，没有为二课塞进任何额外字段。
-	b, err := json.Marshal(platform.AuditEntry{})
+	b, err := json.Marshal(mail.AuditEntry{})
 	if err != nil {
 		t.Fatalf("序列化 AuditEntry 失败: %v", err)
 	}

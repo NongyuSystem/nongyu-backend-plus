@@ -14,7 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
@@ -129,13 +129,13 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// recordingAuditStore 实现 platform.AuditStore 四方法（审计是旁路，只记录、不影响业务）。
+// recordingAuditStore 实现 mail.AuditStore 四方法（审计是旁路，只记录、不影响业务）。
 type recordingAuditStore struct {
 	mu      sync.Mutex
-	entries []platform.AuditEntry
+	entries []mail.AuditEntry
 }
 
-func (a *recordingAuditStore) Append(_ context.Context, e platform.AuditEntry) error {
+func (a *recordingAuditStore) Append(_ context.Context, e mail.AuditEntry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.entries = append(a.entries, e)

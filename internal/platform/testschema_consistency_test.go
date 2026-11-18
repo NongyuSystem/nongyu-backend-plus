@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 	"os"
 	"regexp"
 	"sort"
@@ -30,8 +31,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"nongyu-backend-plus/internal/platform"
 )
 
 // parseAndStripSearchPath 去掉 DSN 里的 search_path，得到「原始库级 DSN」。
@@ -156,7 +155,7 @@ func TestTestSchemaDDL_MatchesMigrationsStructurally(t *testing.T) {
 		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cc()
 		_, _ = pool.Exec(c, "DROP SCHEMA IF EXISTS "+migSchema+" CASCADE")
-		_, _ = pool.Exec(c, "DROP SCHEMA IF EXISTS "+platform.TestSchemaName("nongyu-backend-plus/testpkg/ddlcompare")+" CASCADE")
+		_, _ = pool.Exec(c, "DROP SCHEMA IF EXISTS "+pkgx.TestSchemaName("nongyu-backend-plus/testpkg/ddlcompare")+" CASCADE")
 	})
 
 	sep := "?"
@@ -164,17 +163,17 @@ func TestTestSchemaDDL_MatchesMigrationsStructurally(t *testing.T) {
 		sep = "&"
 	}
 	migDSN := root + sep + "search_path=" + migSchema
-	if err := platform.Migrate(ctx, migDSN); err != nil {
+	if err := pkgx.Migrate(ctx, migDSN); err != nil {
 		t.Fatalf("在比对 schema 上执行权威迁移失败：%v", err)
 	}
 	// 测试隔离机制：EnsureTestSchema 派生自己的 schema 名，这里用固定包名，
 	// 但它会自己 CREATE SCHEMA；为可比，先删掉它即将用的那个名字再调。
 	pkgPath := "nongyu-backend-plus/testpkg/ddlcompare"
-	derived := platform.TestSchemaName(pkgPath)
+	derived := pkgx.TestSchemaName(pkgPath)
 	if _, err := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+derived+" CASCADE"); err != nil {
 		t.Fatalf("清理派生 schema：%v", err)
 	}
-	testDSN, err := platform.EnsureTestSchema(ctx, root, pkgPath)
+	testDSN, err := pkgx.EnsureTestSchema(ctx, root, pkgPath)
 	if err != nil {
 		t.Fatalf("EnsureTestSchema（手写测试 DDL）失败：%v", err)
 	}

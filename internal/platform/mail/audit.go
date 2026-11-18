@@ -1,4 +1,4 @@
-package platform
+package mail
 
 // AuditEntry 是一条审计流水。
 // （原 audit.go，此前被脚本并进 mail.go。）

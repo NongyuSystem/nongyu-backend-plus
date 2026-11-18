@@ -7,6 +7,7 @@ import (
 
 	"nongyu-backend-plus/internal/content"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 )
 
 // 分页与字段上限。
@@ -33,7 +34,7 @@ type Options struct {
 	// 为什么审计是可选注入而不是必填：公告的**读者侧**只需要 Repo+Clock，
 	// 强制装配层提供 AuditStore 会让「没有 Postgres 的本地开发」无法起服务。
 	// 但管理动作一旦有了 AuditStore 就必须留痕——这是 #46 Q3 的要求。
-	Audit platform.AuditStore
+	Audit mail.AuditStore
 	// AuditRequestID 从 gin.Context 取请求追踪号，供审计关联。
 	// 由 handler 层在调用前注入到 context 里（避免 service 依赖 gin）。
 	AuditUserID func(ctx context.Context) string
@@ -49,7 +50,7 @@ type Service struct {
 
 	repo  Repo
 	clock platform.Clock
-	audit platform.AuditStore
+	audit mail.AuditStore
 	// userIDFromCtx 取当前操作者，供审计记录。可为 nil。
 	userIDFromCtx func(ctx context.Context) string
 }
@@ -97,7 +98,7 @@ func (s *Service) recordAudit(ctx context.Context, action string, id int64, resu
 	if uid == "" && s.userIDFromCtx != nil {
 		uid = s.userIDFromCtx(ctx)
 	}
-	_ = s.audit.Append(ctx, platform.AuditEntry{
+	_ = s.audit.Append(ctx, mail.AuditEntry{
 		RequestID:  info.requestID,
 		UserID:     uid,
 		Action:     action,

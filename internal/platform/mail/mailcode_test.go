@@ -1,4 +1,4 @@
-package platform_test
+package mail_test
 
 // 邮箱验证码存储：Redis 实现，TTL 兼冷却锁。
 // 决策依据：docs/tech/架构落点-身份仓.md 第六节。
@@ -10,15 +10,16 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 )
 
-func newMailCodeStore(t *testing.T) *platform.RedisMailCodeStore {
+func newMailCodeStore(t *testing.T) *mail.RedisMailCodeStore {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("未设置 REDIS_ADDR，跳过 Redis 集成测试")
 	}
-	s, err := platform.NewRedisMailCodeStore(platform.RedisOptions{
+	s, err := mail.NewRedisMailCodeStore(platform.RedisOptions{
 		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		Prefix:   "nongyu-mailcode-test:",

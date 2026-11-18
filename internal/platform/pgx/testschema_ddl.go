@@ -1,4 +1,4 @@
-package platform
+package pgx
 
 // 测试用 DDL 内嵌副本：与 migrations/ 下的迁移保持同构（原 testschema_ddl.go）。
 //
@@ -6,52 +6,9 @@ package platform
 // 读文件容易因路径失败而把「测试没跑」伪装成「测试通过」。
 // 这里内嵌一份，并在测试里断言它与迁移文件同构。
 //
-// 本文件同时承载 PGIdentityStore 的两个 DDL 执行辅助 + 测试清理用的 DeleteUser。
-// 这些方法只服务测试隔离，业务代码不应调用。
+// 只含 DDL 字面量。PGIdentityStore 上的 ExecDDL / ExecDDLInSchema / DeleteUser
+// 因为 Go 不允许为其它包类型定义方法，留在 internal/platform/pg_ddl_helpers.go。
 //
-// TODO(结构整改·P1-a)：本文件即报告里说的「第四份手写 DDL 漂移源」——
-// 函数名叫 identityDDLStatements，实际装了 5 个域 17 张表，且已漏掉
-// migrations/0008_fetch_accounts.sql 的 jiaowu_fetch_accounts 表。
-// 后续 commit 的处置：整个函数删除，改为执行 migrations.Files()，
-// 并把测试基建搬进独立包。见 _artifacts/structure-audit-core.md §7。
-
-import "context"
-
-// ExecDDL 执行一条 DDL（调用方负责拼好标识符）。
-func (s *PGIdentityStore) ExecDDL(ctx context.Context, stmt string) error {
-	_, err := s.pool.Exec(ctx, stmt)
-	return err
-}
-
-// ExecDDLInSchema 在指定 schema 下执行一组 DDL。
-//
-// 通过临时设置连接的 search_path 实现；同一个连接内执行，避免影响池里其它连接。
-func (s *PGIdentityStore) ExecDDLInSchema(ctx context.Context, schema string, stmts []string) error {
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
-		return err
-	}
-	for _, stmt := range stmts {
-		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// DeleteUser 按主键删除用户（CASCADE 带走画像、登录方式与会话）。
-//
-// 仅供**测试清理**使用：生产代码里没有「物理删除用户」这条业务，
-// 用户下线应该用 SetStatus(UserDisabled)。
-func (s *PGIdentityStore) DeleteUser(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
-	return err
-}
 
 // identityDDLStatements 返回测试 schema 需要的全部建表语句（幂等）。
 // 与 migrations/ 下的迁移保持一致：0001 审计表 + 0002 身份域四表。

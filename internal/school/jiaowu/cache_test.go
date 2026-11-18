@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
@@ -597,10 +598,10 @@ func TestCache_SuccessFieldIsAuditOnly(t *testing.T) {
 // recordingAuditStore 记录所有审计条目，用来断言 Action/Result 的口径。
 type recordingAuditStore struct {
 	mu      sync.Mutex
-	entries []platform.AuditEntry
+	entries []mail.AuditEntry
 }
 
-func (r *recordingAuditStore) Append(_ context.Context, e platform.AuditEntry) error {
+func (r *recordingAuditStore) Append(_ context.Context, e mail.AuditEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries = append(r.entries, e)

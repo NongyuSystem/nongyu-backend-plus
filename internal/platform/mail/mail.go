@@ -1,4 +1,4 @@
-package platform
+package mail
 
 // 邮件发送能力。
 //

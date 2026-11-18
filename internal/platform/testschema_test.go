@@ -6,6 +6,7 @@ package platform_test
 
 import (
 	"context"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 	"os"
 	"strings"
 	"testing"
@@ -15,8 +16,8 @@ import (
 )
 
 func TestTestSchemaName_DeterministicAndValid(t *testing.T) {
-	a := platform.TestSchemaName("nongyu-backend-plus/internal/identity")
-	b := platform.TestSchemaName("nongyu-backend-plus/internal/identity")
+	a := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity")
+	b := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity")
 	if a != b {
 		t.Fatalf("同包名应得到同名 schema：%q vs %q", a, b)
 	}
@@ -31,14 +32,14 @@ func TestTestSchemaName_DeterministicAndValid(t *testing.T) {
 	}
 
 	// 不同包必须得到不同 schema——这是隔离的前提。
-	other := platform.TestSchemaName("nongyu-backend-plus/internal/identity/flow")
+	other := pkgx.TestSchemaName("nongyu-backend-plus/internal/identity/flow")
 	if other == a {
 		t.Fatalf("不同包应得到不同 schema：%q", a)
 	}
 }
 
 func TestWithSearchPath(t *testing.T) {
-	got, err := platform.WithSearchPath("postgres://u:p@h:5432/db?sslmode=disable", "t_x")
+	got, err := pkgx.WithSearchPath("postgres://u:p@h:5432/db?sslmode=disable", "t_x")
 	if err != nil {
 		t.Fatalf("WithSearchPath: %v", err)
 	}
@@ -59,11 +60,11 @@ func TestEnsureTestSchema_IsolatesData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	dsnA, err := platform.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/a")
+	dsnA, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/a")
 	if err != nil {
 		t.Fatalf("EnsureTestSchema(a): %v", err)
 	}
-	dsnB, err := platform.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/b")
+	dsnB, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/testpkg/b")
 	if err != nil {
 		t.Fatalf("EnsureTestSchema(b): %v", err)
 	}

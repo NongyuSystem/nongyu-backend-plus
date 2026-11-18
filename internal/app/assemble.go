@@ -22,6 +22,7 @@ import (
 
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 )
 
 // New 完成全部装配，返回可直接 Run 的 App。
@@ -151,7 +152,7 @@ func validateAuthConfig(cfg config.Config, logger *slog.Logger) error {
 //   - store   = 身份/审计的持久后端：配了 DATABASE_URL 是 postgres，否则 none；
 //   - tickets = 票据后端：配了 REDIS_ADDR 是 redis（外置持久），否则 memory（重启即丢）；
 //   - 其余字段同样取自真实装配变量，而非常量。
-func logAssembled(cfg config.Config, logger *slog.Logger, infra infraDeps, id identityDeps, pgAudit *platform.PGAuditStore) {
+func logAssembled(cfg config.Config, logger *slog.Logger, infra infraDeps, id identityDeps, pgAudit *mail.PGAuditStore) {
 	storeBackend := "none"
 	if cfg.DatabaseURL != "" {
 		storeBackend = "postgres"
@@ -171,12 +172,12 @@ func logAssembled(cfg config.Config, logger *slog.Logger, infra infraDeps, id id
 }
 
 // buildAuditStore 构造审计持久层；未配库时返回 nil（审计只写 slog）。
-func buildAuditStore(cfg config.Config, logger *slog.Logger) (platform.AuditStore, *platform.PGAuditStore, error) {
+func buildAuditStore(cfg config.Config, logger *slog.Logger) (mail.AuditStore, *mail.PGAuditStore, error) {
 	if cfg.DatabaseURL == "" {
 		logger.Warn("审计持久层未启用：审计只写 stdout", "hint", "配置 DATABASE_URL 以落库到 Postgres")
 		return nil, nil, nil
 	}
-	st, err := platform.NewPGAuditStore(platform.PGOptions{
+	st, err := mail.NewPGAuditStore(mail.AuditOptions{
 		DSN:         cfg.DatabaseURL,
 		BufferSize:  2048,
 		BatchSize:   64,

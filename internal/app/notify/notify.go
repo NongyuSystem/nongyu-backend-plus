@@ -63,7 +63,7 @@ type SinkFunc func(ctx context.Context, ev Event) error
 // Emit 实现 Sink。
 func (f SinkFunc) Emit(ctx context.Context, ev Event) error { return f(ctx, ev) }
 
-// AuditFunc 是审计记录的注入口（避免编排层 import platform.AuditStore）。
+// AuditFunc 是审计记录的注入口（避免编排层 import mail.AuditStore）。
 //
 // action 取 notification.emit / notification.dropped；target 是
 // "<sourceDomain>:<sourceObjectID>"。只记标识性字段，不记正文/收件人。

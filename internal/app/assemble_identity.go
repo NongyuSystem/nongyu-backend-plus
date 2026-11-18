@@ -21,6 +21,7 @@ import (
 	identitysession "nongyu-backend-plus/internal/identity/session"
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school/schoolauth"
 )
 
@@ -42,7 +43,7 @@ type identityDeps struct {
 // 未配置 DATABASE_URL 时：身份域整体不可用（没有持久化就无法承载用户与会话），
 // 但**不报错**——本地开发仍要能起服务跑公开端点。此时返回的 store 为 nil，
 // 调用方据此跳过依赖身份域的路由。
-func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack, repos repoBundle, logger *slog.Logger, auditStore platform.AuditStore) (identityDeps, error) {
+func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack, repos repoBundle, logger *slog.Logger, auditStore mail.AuditStore) (identityDeps, error) {
 	var d identityDeps
 
 	// 学校认证适配器：把「客户端交上来的 go-admin-tgt」换成学校身份。
@@ -229,10 +230,10 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 //
 // 邮件投递：配了 SMTP_HOST 就用真实发信，否则回落到日志实现（仅本地调试）。
 // 邮箱验证码存储需要 Redis；没有 Redis 时该登录方式不可用。
-func buildMailDeps(cfg config.Config, logger *slog.Logger) (platform.Mailer, *platform.RedisMailCodeStore, error) {
-	var mailer platform.Mailer
+func buildMailDeps(cfg config.Config, logger *slog.Logger) (mail.Mailer, *mail.RedisMailCodeStore, error) {
+	var mailer mail.Mailer
 	if cfg.SMTPHost != "" {
-		smtpMailer, err := platform.NewSMTPMailer(platform.MailOptions{
+		smtpMailer, err := mail.NewSMTPMailer(mail.MailOptions{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 			From: cfg.SMTPFrom, Insecure: cfg.SMTPInsecure,
@@ -243,13 +244,13 @@ func buildMailDeps(cfg config.Config, logger *slog.Logger) (platform.Mailer, *pl
 		mailer = smtpMailer
 		logger.Info("邮件验证码使用 SMTP 发信", "host", cfg.SMTPHost, "port", cfg.SMTPPort)
 	} else {
-		mailer = &platform.LogMailer{Logger: logger}
+		mailer = &mail.LogMailer{Logger: logger}
 		logger.Warn("未配置 SMTP_HOST：验证码只写日志，仅限本地开发")
 	}
 
-	var mailCodes *platform.RedisMailCodeStore
+	var mailCodes *mail.RedisMailCodeStore
 	if cfg.RedisAddr != "" {
-		if mc, err := platform.NewRedisMailCodeStore(platform.RedisOptions{
+		if mc, err := mail.NewRedisMailCodeStore(platform.RedisOptions{
 			Addr:     cfg.RedisAddr,
 			Password: cfg.RedisPassword,
 			DB:       cfg.RedisDB,

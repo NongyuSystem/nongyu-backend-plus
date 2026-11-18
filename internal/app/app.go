@@ -40,6 +40,7 @@ import (
 	"nongyu-backend-plus/internal/config"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school/schoolauth"
 	"nongyu-backend-plus/internal/track"
 
@@ -90,7 +91,7 @@ type App struct {
 	flushDone   <-chan struct{}
 	closeStore  func() error
 	cache       *platform.RedisCache
-	pgAudit     *platform.PGAuditStore
+	pgAudit     *mail.PGAuditStore
 	// 身份域资源（未配置 DATABASE_URL 时为 nil）
 	identityStore *platform.PGIdentityStore
 	sessionCache  *platform.RedisSessionCache

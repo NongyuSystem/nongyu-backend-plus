@@ -2,7 +2,7 @@ package platform_test
 
 // issue #23 / Spec 验收第 3 条（迁移可执行且幂等）的验收测试。
 //
-// seam：公共能力 platform.Migrate(ctx, dsn)。测试只通过这个入口驱动「迁移」这一
+// seam：公共能力 pkgx.Migrate(ctx, dsn)。测试只通过这个入口驱动「迁移」这一
 // 外部能力，不读取 migrations/ 文件、不调用内部函数——实现换成版本表也能存活。
 //
 // 期望值来自独立事实源：migrations/ 下两份 SQL 里的**表名字面量**（0001 audit_log /
@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/platform"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
 
 // migrationTables 是 migrations/*.sql 里声明的全部表名（独立事实源：SQL 字面量）。
@@ -151,7 +152,7 @@ func TestMigrate_BuildsTablesOnEmptySchema(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := platform.Migrate(ctx, dsn); err != nil {
+	if err := pkgx.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("空库首次 Migrate 应成功：%v", err)
 	}
 
@@ -173,7 +174,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := platform.Migrate(ctx, dsn); err != nil {
+	if err := pkgx.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("首次 Migrate：%v", err)
 	}
 
@@ -203,7 +204,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 	_ = store.Close()
 
 	// 第二次执行：不报错。
-	if err := platform.Migrate(ctx, dsn); err != nil {
+	if err := pkgx.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("第二次 Migrate 应幂等不报错：%v", err)
 	}
 

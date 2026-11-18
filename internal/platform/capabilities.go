@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"nongyu-backend-plus/internal/platform/redisconn"
 	"time"
 )
 
@@ -73,3 +74,9 @@ var (
 type Clock interface {
 	Now() time.Time
 }
+
+// RedisOptions 保留在 platform 根包，指向 redisconn 的同一类型。
+//
+// 这样既有调用方（platform.NewRedisCache(opts RedisOptions, ...) 等）零改动，
+// 而子包可以直接 import redisconn 而不必反向依赖 platform 根包。
+type RedisOptions = redisconn.RedisOptions

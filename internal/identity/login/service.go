@@ -22,6 +22,7 @@ import (
 	"nongyu-backend-plus/internal/identity"
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 )
 
 // SchoolAuthenticator 让学校确认「这个学号是真的」。
@@ -191,12 +192,12 @@ type Service struct {
 	profiles    platform.ProfileRepo
 	methods     platform.LoginMethodRepo
 	school      SchoolAuthenticator
-	mailCodes   *platform.RedisMailCodeStore
+	mailCodes   *mail.RedisMailCodeStore
 	passwordBox Secrets // 密码镜像密钥
 	idcardBox   Secrets // 身份证密钥（与密码密钥独立）
 	clock       platform.Clock
 	userSvc     *identityuser.Service
-	mailer      platform.Mailer
+	mailer      mail.Mailer
 	initials    PinyinInitializer
 	// tgtSaver 可选：登录成功后把学校会话凭据按用户保管，供后续免密取学籍。
 	tgtSaver TGTSaver
@@ -213,7 +214,7 @@ type Options struct {
 	Profiles  platform.ProfileRepo
 	Methods   platform.LoginMethodRepo
 	School    SchoolAuthenticator
-	MailCodes *platform.RedisMailCodeStore
+	MailCodes *mail.RedisMailCodeStore
 	// PasswordBox 与 IDCardBox 必须是**两把不同密钥**（ADR-0002 第 2 条二修）。
 	PasswordBox Secrets
 	// IDCardBox 是身份证的加密能力；必须与 PasswordBox 用不同密钥。
@@ -221,7 +222,7 @@ type Options struct {
 	Clock       platform.Clock
 	UserService *identityuser.Service
 	// Mailer 投递邮箱验证码；SMTP 实现在配置齐全后注入。
-	Mailer platform.Mailer
+	Mailer mail.Mailer
 	// Initials 计算姓名拼音首字母；nil 时用 DefaultInitializer（仅支持拉丁字母）。
 	Initials PinyinInitializer
 	// TGTSaver 可选：登录成功后保管学校会话凭据（tgt）。
@@ -542,12 +543,12 @@ func (s *Service) SendMailCode(ctx context.Context, email string) error {
 		return identity.NewError(identity.CodeTooManyAttempts, "验证码仍在有效期内，请稍后再试")
 	}
 
-	code, err := platform.GenerateMailCode(6)
+	code, err := mail.GenerateMailCode(6)
 	if err != nil {
 		return identity.WrapError(identity.CodeInternal, "生成验证码失败", err)
 	}
 	if err := s.mailCodes.Issue(ctx, email, code, mailCodeTTL); err != nil {
-		if platform.IsCooldown(err) {
+		if mail.IsCooldown(err) {
 			return identity.NewError(identity.CodeTooManyAttempts, "验证码仍在有效期内，请稍后再试")
 		}
 		return identity.WrapError(identity.CodeInternal, "写入验证码失败", err)

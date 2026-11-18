@@ -1,4 +1,4 @@
-package platform
+package mail
 
 // 邮箱验证码存储（Redis）。
 // （原 mailcode.go，此前被脚本并进 mail.go。）
@@ -19,6 +19,8 @@ import (
 	"math/big"
 	"time"
 
+	"nongyu-backend-plus/internal/platform/redisconn"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -34,7 +36,7 @@ type RedisMailCodeStore struct {
 }
 
 // NewRedisMailCodeStore 构造验证码存储。
-func NewRedisMailCodeStore(opts RedisOptions) (*RedisMailCodeStore, error) {
+func NewRedisMailCodeStore(opts redisconn.RedisOptions) (*RedisMailCodeStore, error) {
 	if opts.Addr == "" {
 		return nil, fmt.Errorf("platform: RedisMailCodeStore 需要 Addr")
 	}

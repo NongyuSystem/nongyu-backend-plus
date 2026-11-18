@@ -26,6 +26,7 @@ import (
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/platform/pgstore"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
@@ -48,7 +49,7 @@ type domainDeps struct {
 }
 
 // buildDomains 构造并注册全部业务域路由。
-func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id identityDeps, repos repoBundle, pgPool *pgxpool.Pool, logger *slog.Logger, auditStore platform.AuditStore, pgAudit *platform.PGAuditStore) (domainDeps, error) {
+func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id identityDeps, repos repoBundle, pgPool *pgxpool.Pool, logger *slog.Logger, auditStore mail.AuditStore, pgAudit *mail.PGAuditStore) (domainDeps, error) {
 	var d domainDeps
 	engine := httpStack.engine
 	clock := infra.clock

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
@@ -35,7 +36,7 @@ type Service struct {
 	accelEnabled bool
 	scheduler    *RenewScheduler
 	// audit_store 是可选的审计持久化通道；为 nil 时只写 slog。
-	audit_store platform.AuditStore
+	audit_store mail.AuditStore
 	// cache 是回传数据的缓存层，可选依赖：为 nil 时缓存端点回 503。
 	// 由 BindCache 注入，只依赖 CacheStore 接口，不绑 *platform.RedisCache。
 	cache CacheStore
@@ -98,7 +99,7 @@ func NewWithAccel(doer platform.HTTPDoer, tickets platform.TicketStore, cipher p
 }
 
 // BindAuditStore 接入审计持久化通道（PG）。未接入时审计只写 slog。
-func (s *Service) BindAuditStore(store platform.AuditStore) {
+func (s *Service) BindAuditStore(store mail.AuditStore) {
 	s.audit_store = store
 }
 
@@ -403,7 +404,7 @@ func (s *Service) audit(ctx context.Context, userID, action, result, target stri
 			reqID = v
 		}
 	}
-	_ = s.audit_store.Append(ctx, platform.AuditEntry{
+	_ = s.audit_store.Append(ctx, mail.AuditEntry{
 		RequestID:  reqID,
 		UserID:     userID,
 		Action:     action,

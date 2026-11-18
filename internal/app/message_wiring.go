@@ -8,6 +8,7 @@ import (
 	"nongyu-backend-plus/internal/app/notify"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/server"
 )
 
@@ -79,12 +80,12 @@ func (s notifySink) Emit(ctx context.Context, ev notify.Event) error {
 //
 // 只记标识性字段（action + target），绝不写消息正文与收件人——这是
 // ADR-0001 的红线，也是 #48 Q6 的明确要求。
-func notifyAudit(store platform.AuditStore, clock platform.Clock) notify.AuditFunc {
+func notifyAudit(store mail.AuditStore, clock platform.Clock) notify.AuditFunc {
 	if store == nil {
 		return nil
 	}
 	return func(ctx context.Context, action, target string) {
-		_ = store.Append(ctx, platform.AuditEntry{
+		_ = store.Append(ctx, mail.AuditEntry{
 			Action:     action,
 			Target:     target,
 			Result:     "ok",

@@ -8,14 +8,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
 // newRecipeTestServer 装配「只挂 RegisterRecipe」的 gin 引擎，独立验证写类端点行为。
 // 不注入 cache/schema（配方是纯静态数据，Redis 没配也应可用——规格 §4.6 / §8.2）。
 // userID 非空时用最薄中间件塞身份；传空串模拟未认证。
-func newRecipeTestServer(t *testing.T, userID string, audit platform.AuditStore) *gin.Engine {
+func newRecipeTestServer(t *testing.T, userID string, audit mail.AuditStore) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	svc := New(Options{Audit: audit})

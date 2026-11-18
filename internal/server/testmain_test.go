@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"nongyu-backend-plus/internal/platform"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
 
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if isolated, err := platform.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/internal/server"); err == nil {
+		if isolated, err := pkgx.EnsureTestSchema(ctx, dsn, "nongyu-backend-plus/internal/server"); err == nil {
 			_ = os.Setenv("DATABASE_URL", isolated)
 		}
 		cancel()

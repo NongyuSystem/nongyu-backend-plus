@@ -7,7 +7,7 @@
 // 数据库隔离策略（**每个测试一个独立 schema**）：
 //   - 未设置 DATABASE_URL → 全部 t.Skip（CI 与纯单测环境不需要 Postgres）；
 //   - 设置了 → 为每个测试建 `t_pgstore_xxx` schema，在该 schema 上跑
-//     platform.Migrate 建表，连接池用带 search_path 的 DSN；
+//     pkgx.Migrate 建表，连接池用带 search_path 的 DSN；
 //   - 测试结束 DROP SCHEMA ... CASCADE。
 //
 // 为什么不用「跑完 TRUNCATE」：测试包可能并行、也可能与本仓其它包的 PG
@@ -28,8 +28,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/pgstore"
+	pkgx "nongyu-backend-plus/internal/platform/pgx"
 )
 
 // schemaSeq 保证同一次运行里的 schema 名互不重复。
@@ -75,12 +75,12 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 
 	// ② 在该 schema 上跑迁移。Migrate 自带连接池，search_path 由 DSN 透传，
 	//    因此 migrations 里的 CREATE TABLE 只会落进本测试的 schema。
-	isolated, err := platform.WithSearchPath(base, schema)
+	isolated, err := pkgx.WithSearchPath(base, schema)
 	if err != nil {
 		admin.Close()
 		t.Fatalf("拼隔离 DSN 失败：%v", err)
 	}
-	if err := platform.Migrate(ctx, isolated); err != nil {
+	if err := pkgx.Migrate(ctx, isolated); err != nil {
 		admin.Close()
 		t.Fatalf("迁移失败：%v", err)
 	}

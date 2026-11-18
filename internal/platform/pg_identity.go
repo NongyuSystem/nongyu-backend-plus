@@ -21,6 +21,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// PGOptions 是 Postgres 连接配置（身份仓储与测试基建共用）。
+type PGOptions struct {
+	// DSN 形如 postgres://user:pass@host:port/db?sslmode=disable
+	DSN string
+}
+
 // PGIdentityStore 是身份域四类仓储的 Postgres 实现（UserRepo / ProfileRepo /
 // LoginMethodRepo / SessionStore 都在这一类型上，装配层按接口注入）。
 //

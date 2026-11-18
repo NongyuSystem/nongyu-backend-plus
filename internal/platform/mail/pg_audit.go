@@ -1,4 +1,4 @@
-package platform
+package mail
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 // 与 PGIdentityStore 同处 platform 的 Postgres 适配层，但两者没有共享状态，
 // 因此拆成独立文件：改审计批量策略不该让身份仓储的 diff 变大。
 
-// PGOptions 是 Postgres 审计存储的配置。
-type PGOptions struct {
+// AuditOptions 是 Postgres 审计存储的配置。
+type AuditOptions struct {
 	// DSN 形如 postgres://user:pass@host:port/db?sslmode=disable
 	DSN string
 	// BufferSize 是异步缓冲容量；满后丢弃新记录（审计宁可丢也不能挡住业务）。
@@ -35,7 +35,7 @@ type PGOptions struct {
 //   - 后台按 FlushPeriod 批量 INSERT，一次提交多条，减少往返。
 type PGAuditStore struct {
 	pool  *pgxpool.Pool
-	opts  PGOptions
+	opts  AuditOptions
 	ch    chan AuditEntry
 	drops atomic.Int64
 
@@ -46,7 +46,7 @@ type PGAuditStore struct {
 }
 
 // NewPGAuditStore 构造审计存储并启动后台批写协程。
-func NewPGAuditStore(opts PGOptions) (*PGAuditStore, error) {
+func NewPGAuditStore(opts AuditOptions) (*PGAuditStore, error) {
 	if opts.DSN == "" {
 		return nil, fmt.Errorf("platform: PGAuditStore 需要 DSN")
 	}

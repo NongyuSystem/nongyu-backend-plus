@@ -28,14 +28,6 @@ type RedisTicketStore struct {
 	prefix string
 }
 
-// RedisOptions 是 Redis 票据存储的连接与命名空间配置。
-type RedisOptions struct {
-	Addr     string // 形如 127.0.0.1:6379
-	Password string
-	DB       int
-	Prefix   string // 键名前缀，便于多环境隔离；空值用默认 "nongyu:"
-}
-
 type redisTicketRecord struct {
 	Sealed    []byte `json:"sealed"`
 	ExpiresAt int64  `json:"expiresAt"` // Unix 秒；0 表示会话级（无明确过期）

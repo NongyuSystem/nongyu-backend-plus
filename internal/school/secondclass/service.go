@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/school"
 )
 
@@ -21,7 +22,7 @@ type Service struct {
 	schema     *SchemaValidator
 	clock      platform.Clock
 	logger     *slog.Logger
-	auditStore platform.AuditStore
+	auditStore mail.AuditStore
 }
 
 // Options 是构造 Service 的可选依赖。装配层只填自己有的能力；
@@ -31,7 +32,7 @@ type Options struct {
 	Schema *SchemaValidator
 	Clock  platform.Clock
 	Logger *slog.Logger
-	Audit  platform.AuditStore
+	Audit  mail.AuditStore
 }
 
 // New 构造 Service。logger / clock 为 nil 时补安全默认值（不写文件、真实时钟）。
@@ -55,9 +56,9 @@ func New(opts Options) *Service {
 
 // BindCache / BindSchemaValidator 供装配层在编译 schema 成功后补注入，
 // 形状与教务一致（可选依赖降级 gate 由 app 层负责，本包只认是否就绪）。
-func (s *Service) BindCache(store platform.CacheStore)      { s.cache = store }
-func (s *Service) BindSchemaValidator(v *SchemaValidator)   { s.schema = v }
-func (s *Service) BindAuditStore(store platform.AuditStore) { s.auditStore = store }
+func (s *Service) BindCache(store platform.CacheStore)    { s.cache = store }
+func (s *Service) BindSchemaValidator(v *SchemaValidator) { s.schema = v }
+func (s *Service) BindAuditStore(store mail.AuditStore)   { s.auditStore = store }
 
 // audit 只写结构化字段，绝不把票据/密文/GPS/二维码/二课响应体放进任何字段
 // （规格 §3.4 / §3.6、ADR-0001 第 4 条）。审计是旁路：写库失败被吞、不影响业务。
@@ -86,7 +87,7 @@ func (s *Service) audit(ctx context.Context, userID, action, result, target stri
 			reqID = v
 		}
 	}
-	_ = s.auditStore.Append(ctx, platform.AuditEntry{
+	_ = s.auditStore.Append(ctx, mail.AuditEntry{
 		RequestID:  reqID,
 		UserID:     userID,
 		Action:     action,

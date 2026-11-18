@@ -7,18 +7,18 @@ import (
 	"time"
 
 	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/platform/mail"
 	"nongyu-backend-plus/internal/platform/pgstore"
 )
 
-// fakeAudit 是实现 platform.AuditStore 的测试替身，只记录 action。
+// fakeAudit 是实现 mail.AuditStore 的测试替身，只记录 action。
 type fakeAudit struct {
 	mu      sync.Mutex
 	actions []string
 	targets []string
 }
 
-func (f *fakeAudit) Append(_ context.Context, e platform.AuditEntry) error {
+func (f *fakeAudit) Append(_ context.Context, e mail.AuditEntry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.actions = append(f.actions, e.Action)
