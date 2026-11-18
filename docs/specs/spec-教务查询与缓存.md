@@ -258,6 +258,25 @@
 `session=client_side` 表示**票由客户端自备**，不是失败：`vpn` 形态后端完全不出站、不下发任何票，
 客户端用自己的 WebView 会话（`wengine_vpn_ticket`）去访问编码地址。
 
+### 2026-11-18 修：vpn 形态额外带回「本地票状态」
+
+`session=client_side` 本身**不区分**「用户还没登录网关」和「已登录且票正常」——
+这会让客户端「只在票无效才弹窗」没有信号源。现在 `cache_miss` 在 vpn 形态额外返回
+`webvpn` 对象，`code` 与 `/school/jiaowu/cache/:dataType/fetch` 同码，客户端一套判断即可：
+
+| webvpn.status | webvpn.code | 含义 | 客户端动作 |
+| --- | --- | --- | --- |
+| `ready` | 无 | 本地保管着未被判死的票 | 不弹窗，正常取数 |
+| `missing` | `webvpn_ticket_missing` | 没交过票 | 去登录网关并提交 |
+| `expired` | `webvpn_ticket_expired` | 票被判死或本地过期 | **重新登录网关**后重交 |
+| `unmanaged` | 无 | 后端未启用票保管 | 客户端自己按 WebView 会话处理 |
+
+**诚实边界**：`cache_miss` 是零出站操作，无法验证网关侧是否仍认这张票。`ready` 只表示
+「本地有一张未被判死的票」，不是「网关保证放行」。真正判死仍靠 `/fetch` 的 302
+（或客户端自己请求时遇到的 302），判死后写**失效哨兵**而非删记录——这样后续
+`cache_miss` 能报 `expired`（登录过、票死了），而不是 `missing`（从没登录过），
+两者引导动作不同。哨兵在重新交票时被覆盖，或 30 分钟后自然回落。
+
 为什么后端不下发网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
 该会话为已登录**时才有效。后端用 tgt 走门户 appid 换票并回投网关，只能拿到 16 位游客票
 （回投链停在 `/wui/#/` 的 fragment 上，fragment 不进 HTTP，剩余会话绑定全在门户 SPA 里），

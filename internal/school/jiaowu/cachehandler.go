@@ -54,6 +54,15 @@ type cacheEnvelope struct {
 //   - 校外（vpn）：WebVPN 编码地址，**cookies 恒为空**——网关票只能由客户端自己登录网关产生，
 //     后端换不到（见 sessionStateClientSide 说明）。
 //
+// 校外形态额外带回 WebVPN 字段：把「本地票状态」明确告诉客户端。
+// 原来只回 session=client_side，客户端分不清「还没登录网关」和「已登录票正常」，
+// 也就无法按你的要求「只在票无效/需要登录时弹窗」。现在 code 与 /fetch 端点
+// 完全一致（webvpn_ticket_missing / webvpn_ticket_expired），客户端一套逻辑即可。
+//
+// 诚实边界：cache_miss 零出站，无法验证网关侧是否仍认这张票。webvpn.status=ready
+// 只表示「本地保管着一张未被判死的票」，不是「网关保证放行」。
+// 真正判死仍靠 /fetch 的 302，或客户端自己请求时遇到的 302。
+//
 // 无论哪种形态，取不到票时仍是 200，不变成 500。
 type cacheMissResponse struct {
 	Code    string         `json:"code"`
@@ -72,6 +81,8 @@ type cacheMissResponse struct {
 	Mode string `json:"mode,omitempty"`
 	// Session 是会话语义：ok（已下发票）/ unavailable（需要票但没拿到）/ client_side（票由客户端自备）。
 	Session string `json:"session,omitempty"`
+	// WebVPN 是校外形态的本地票状态信号（direct 形态为 nil，不出现在响应里）。
+	WebVPN *WebVPNGateResult `json:"webvpn,omitempty"`
 }
 
 // sessionStateUnavailable 表示需要票但没拿到（未接 issuer、无 tgt、换票失败）。
@@ -259,9 +270,24 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 
 	if mode == AccessVPN {
 		// 校外形态：后端不参与票价链路，只给编码地址。
-		// session 语义在这里是「后端没有代你准备凭据」，由客户端自带网关会话。
+		//
+		// 缺陷修复（2026-11-18）：原来这里无条件回 session=client_side，
+		// 客户端拿不到「没交票」的信号，弹窗触发条件没有信号源。
+		// 现在查本地票状态并附带 webvpn 字段，code 与 /fetch 完全同码。
+		gate := s.inspectWebVPNTicket(ctx, userID)
+		resp.WebVPN = &gate
 		resp.Session = sessionStateClientSide
-		s.audit(ctx, userID, "cache_miss", "vpn_recipe_client_side", string(school.TargetWebvpn))
+		// 审计按状态分流，便于观测「多少用户卡在没交票」。
+		switch gate.Status {
+		case WebVPNTicketReady:
+			s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
+		case WebVPNTicketExpired:
+			s.audit(ctx, userID, "cache_miss", "vpn_ticket_expired", string(school.TargetWebvpn))
+		case WebVPNTicketMissing:
+			s.audit(ctx, userID, "cache_miss", "vpn_ticket_missing", string(school.TargetWebvpn))
+		default:
+			s.audit(ctx, userID, "cache_miss", "vpn_recipe_client_side", string(school.TargetWebvpn))
+		}
 		return resp
 	}
 

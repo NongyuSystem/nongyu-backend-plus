@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/school"
 )
 
 // ── 内存版 WebVPNTicketStore ────────────────────────────────────────────
@@ -130,13 +131,22 @@ func newWebVPNEngine(t *testing.T, doer *scriptedWebVPNDoer) (*gin.Engine, *Serv
 	)
 	store := newMemWebVPNStore()
 	svc.BindWebVPNTicketStore(store)
+	// cache_miss 需要缓存未命中：绑内存缓存 + schema 校验器，走完整 GET 路径。
+	svc.BindCache(newMemCache(func() time.Time { return time.Now() }))
+	validator, err := NewSchemaValidator()
+	if err != nil {
+		t.Fatalf("编译 schema 失败: %v", err)
+	}
+	svc.BindSchemaValidator(validator)
 
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
-		c.Set("authenticatedUserID", "user-1")
+		c.Set(school.CtxUserID, "user-1")
 		c.Next()
 	})
 	RegisterWebVPN(engine, svc)
+	// 同一 svc 也挂缓存路由：cache_miss 与 /fetch 共用票状态，正是缺陷所在的那条链路。
+	RegisterCache(engine, svc)
 	return engine, svc, store
 }
 
@@ -190,11 +200,11 @@ func TestWebVPN_RejectsBadShape(t *testing.T) {
 	engine, _, store := newWebVPNEngine(t, &scriptedWebVPNDoer{})
 
 	for _, bad := range []string{
-		"",                       // 空
-		"short",                  // 太短
-		"has space in it here",   // 含空白
-		`<a href="x">Found</a>`,  // HTML 片段（实测踩过的坑）
-		"ticket\nwith\nnewline",  // 控制字符
+		"",                      // 空
+		"short",                 // 太短
+		"has space in it here",  // 含空白
+		`<a href="x">Found</a>`, // HTML 片段（实测踩过的坑）
+		"ticket\nwith\nnewline", // 控制字符
 	} {
 		code, _ := doReq(t, engine, http.MethodPost, "/school/webvpn-session",
 			`{"ticket":`+quote(bad)+`}`)
@@ -255,7 +265,11 @@ func TestWebVPN_FetchSuccessCarriesOnlyGatewayTicket(t *testing.T) {
 }
 
 // TestWebVPN_FetchExpiredClearsTicket 网关 302 回 /login 时判定票失效并清票。
-func TestWebVPN_FetchExpiredClearsTicket(t *testing.T) {
+// TestWebVPN_FetchExpiredMarksTicket 网关 302 回 /login 时判定票失效。
+//
+// 现在改为写「失效哨兵」而不是删记录：删了就只能报 missing，客户端会把
+// 「登录过、票死了」误当成「从没登录过」，弹窗引导动作会错。
+func TestWebVPN_FetchExpiredMarksTicket(t *testing.T) {
 	doer := &scriptedWebVPNDoer{
 		status:   http.StatusFound,
 		location: "https://webvpn.sicau.edu.cn/login",
@@ -274,8 +288,24 @@ func TestWebVPN_FetchExpiredClearsTicket(t *testing.T) {
 	if body["code"] != "webvpn_ticket_expired" {
 		t.Fatalf("应回 webvpn_ticket_expired，实际 %v", body["code"])
 	}
-	if _, _, err := store.Get(context.Background(), "user-1"); err == nil {
-		t.Fatal("失效的票必须被清掉，否则下次还会拿死票打学校站")
+	// 记录还在，但已换成失效哨兵：后续 cache_miss 报 expired 而非 missing。
+	stored, _, err := store.Get(context.Background(), "user-1")
+	if err != nil || !isExpiredSentinel(stored) {
+		t.Fatalf("失效后应留下哨兵，实际 stored=%q err=%v", stored, err)
+	}
+	// 判死后再代取，仍然回 401，且不会拿死票再次打学校站。
+	doer.mu.Lock()
+	before := len(doer.requests)
+	doer.mu.Unlock()
+	code, _ = doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("判死后再次代取应仍回 401，实际 %d", code)
+	}
+	doer.mu.Lock()
+	after := len(doer.requests)
+	doer.mu.Unlock()
+	if after != before {
+		t.Fatalf("失效哨兵不应再出站打学校站，实际多了 %d 次", after-before)
 	}
 }
 
@@ -336,4 +366,111 @@ func TestWebVPN_Clear(t *testing.T) {
 func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// ── 缺陷回归：cache_miss 必须把「没交票」这件事告诉客户端 ──────────────
+
+// cacheMissBody 发一个带 vpn 头的 cache GET，回响应体（辅助）。
+func cacheMissBody(t *testing.T, engine *gin.Engine) map[string]any {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, "/school/jiaowu/cache/course", nil)
+	r.Header.Set("X-Nongyu-Campus-Network", "vpn")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, r)
+	out := map[string]any{}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return out
+}
+
+func webvpnOf(body map[string]any) map[string]any {
+	m, _ := body["webvpn"].(map[string]any)
+	return m
+}
+
+// TestWebVPN_CacheMissReportsMissing 没交过票时 cache_miss 必须给 missing 信号。
+//
+// 这是本次缺陷的核心：原来只回 session=client_side，客户端无从判断要不要弹窗。
+func TestWebVPN_CacheMissReportsMissing(t *testing.T) {
+	engine, _, _ := newWebVPNEngine(t, &scriptedWebVPNDoer{})
+
+	body := cacheMissBody(t, engine)
+	if body["code"] != "cache_miss" {
+		t.Fatalf("应仍是 cache_miss，实际 %v", body["code"])
+	}
+	g := webvpnOf(body)
+	if g == nil {
+		t.Fatal("vpn 形态必须带 webvpn 字段（缺陷就是这里没带）")
+	}
+	if g["status"] != string(WebVPNTicketMissing) {
+		t.Fatalf("没交票应 status=missing，实际 %v", g["status"])
+	}
+	if g["code"] != "webvpn_ticket_missing" {
+		t.Fatalf("应回 webvpn_ticket_missing，实际 %v", g["code"])
+	}
+}
+
+// TestWebVPN_CacheMissReportsReady 交过票后 cache_miss 给 ready（不弹窗）。
+func TestWebVPN_CacheMissReportsReady(t *testing.T) {
+	engine, _, _ := newWebVPNEngine(t, &scriptedWebVPNDoer{})
+
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+
+	g := webvpnOf(cacheMissBody(t, engine))
+	if g == nil || g["status"] != string(WebVPNTicketReady) {
+		t.Fatalf("交过票应 status=ready，实际 %v", g)
+	}
+	if g["code"] != nil {
+		t.Fatalf("ready 时不应带错误码，实际 %v", g["code"])
+	}
+}
+
+// TestWebVPN_CacheMissReportsExpiredAfterFetch判死 /fetch 判死后 cache_miss 必须报 expired，
+// 与 missing 区分开——「登录过、票死了」和「从没登录过」客户端动作不同。
+func TestWebVPN_CacheMissReportsExpiredAfterFetch(t *testing.T) {
+	doer := &scriptedWebVPNDoer{
+		status:   http.StatusFound,
+		location: "https://webvpn.sicau.edu.cn/login",
+	}
+	engine, _, _ := newWebVPNEngine(t, doer)
+
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+	// /fetch 判死
+	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/course/fetch", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("/fetch 应回 401，实际 %d", code)
+	}
+
+	// 判死后的 cache_miss 必须带 expired，而不是悄悄回落到 missing
+	g := webvpnOf(cacheMissBody(t, engine))
+	if g == nil {
+		t.Fatal("cache_miss 缺 webvpn 字段")
+	}
+	if g["status"] != string(WebVPNTicketExpired) {
+		t.Fatalf("判死后应 status=expired，实际 %v（会误当成从没登录过）", g["status"])
+	}
+	if g["code"] != "webvpn_ticket_expired" {
+		t.Fatalf("应回 webvpn_ticket_expired，实际 %v", g["code"])
+	}
+}
+
+// TestWebVPN_ResubmitClearsExpiredSentinel 重新登录交票后，expired 清除回到 ready。
+func TestWebVPN_ResubmitClearsExpiredSentinel(t *testing.T) {
+	engine, svc, _ := newWebVPNEngine(t, &scriptedWebVPNDoer{})
+	// 先提交一张票，再直接写失效哨兵（模拟上次 /fetch 判死）
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+	svc.markWebVPNTicketExpired(context.Background(), "user-1")
+	g := webvpnOf(cacheMissBody(t, engine))
+	if g["status"] != string(WebVPNTicketExpired) {
+		t.Fatalf("写哨兵后应为 expired，实际 %v", g["status"])
+	}
+	// 重新登录交票
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"a1b2c3d4e5f60718"}`)
+	g = webvpnOf(cacheMissBody(t, engine))
+	if g["status"] != string(WebVPNTicketReady) {
+		t.Fatalf("重交票后应回到 ready，实际 %v", g["status"])
+	}
 }
