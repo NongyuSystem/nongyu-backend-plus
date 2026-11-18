@@ -1,26 +1,5 @@
 package app
 
-import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"errors"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"nongyu-backend-plus/internal/config"
-	identitylogin "nongyu-backend-plus/internal/identity/login"
-	"nongyu-backend-plus/internal/platform"
-)
-
-// ---- from e2e_login_test.go ----
 // #26 门槛 4 的**可自动化部分**：完整 HTTP 链路
 //   POST /identity/login → 拿令牌 → GET /identity/me 200；无令牌 401。
 //
@@ -28,82 +7,17 @@ import (
 // seam：HTTP 端点（公共行为），不测内部函数。
 // 真实凭据的人工验收另记在票评论里（依赖学校统一身份认证可达）。
 
-// fakeSchoolAuth 是假的学校认证源：按学号返回固定身份，模拟「客户端已完成学校登录」。
-type fakeSchoolAuth struct {
-	ident identitylogin.SchoolIdentity
-	err   error
-}
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
 
-func (f fakeSchoolAuth) Authenticate(context.Context, identitylogin.SchoolCredential) (identitylogin.SchoolIdentity, error) {
-	if f.err != nil {
-		return identitylogin.SchoolIdentity{}, f.err
-	}
-	return f.ident, nil
-}
-
-// e2eDSN 建一个全新空 schema 并返回带 search_path 的 DSN。
-// 本文件在 package app 内（需要访问 schoolForTest），因此不能复用 app_test 包的 appTestDSN。
-func e2eDSN(t *testing.T, name string) string {
-	t.Helper()
-	base := os.Getenv("DATABASE_URL")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, base)
-	if err != nil {
-		t.Fatalf("建管理连接失败：%v", err)
-	}
-	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+name+" CASCADE"); err != nil {
-		t.Fatalf("清理 schema 失败：%v", err)
-	}
-	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+name); err != nil {
-		t.Fatalf("建 schema 失败：%v", err)
-	}
-	t.Cleanup(func() {
-		c, cc := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cc()
-		p, e := pgxpool.New(c, base)
-		if e != nil {
-			return
-		}
-		defer p.Close()
-		_, _ = p.Exec(c, "DROP SCHEMA IF EXISTS "+name+" CASCADE")
-	})
-	sep := "?"
-	if bytes.Contains([]byte(base), []byte("?")) {
-		sep = "&"
-	}
-	return base + sep + "search_path=" + name
-}
-
-// newE2EApp 装配一个真实 App，并把学校认证源换成假实现。
-func newE2EApp(t *testing.T, schema string, school identitylogin.SchoolAuthenticator) (*App, string) {
-	t.Helper()
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("未设置 DATABASE_URL，跳过端到端链路测试")
-	}
-	dsn := e2eDSN(t, schema)
-
-	const authKey = "e2e-chain-auth-key-32-bytes-min!!"
-	cfg := config.Config{
-		Addr: ":0", AppEnv: "test", ShutdownTimeoutSec: 1,
-		TicketKey: "e2e-ticket-key-32-bytes-min!!!!", HTTPTimeoutSec: 3,
-		AuthKey: authKey, RateLimitPerMinute: 1000,
-		DatabaseURL: dsn,
-		HTTPEnforce: false,
-	}
-
-	old := schoolForTest
-	schoolForTest = school
-	t.Cleanup(func() { schoolForTest = old })
-
-	a, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
-	t.Cleanup(func() { _ = a.Shutdown(time.Second) })
-	return a, authKey
-}
+	identitylogin "nongyu-backend-plus/internal/identity/login"
+	"nongyu-backend-plus/internal/platform"
+)
 
 // 完整链路：登录拿令牌 → 用令牌访问受保护端点 200 → 无令牌 401。
 func TestE2E_LoginThenAccessProtectedEndpoint(t *testing.T) {
@@ -226,65 +140,4 @@ func TestE2E_TokenCarriesNoSensitiveData(t *testing.T) {
 		}
 	}
 	_ = platform.ScopeApp
-}
-
-// ---- from http_server_test.go ----
-// #21 M7：HTTP 服务器必须有读、写、空闲三个超时。
-// 期望值来自票正文验收判据，不是从实现里重算。
-
-func TestHTTPServerTimeouts_ReadWriteIdleAllSet(t *testing.T) {
-	// 直接构造被测的最小对象：NewHTTPServer 是装配层用来产出 *http.Server 的公共 seam。
-	srv := NewHTTPServer(":0", nil, 8*time.Second, 20*time.Second, 90*time.Second)
-	if srv.ReadTimeout != 8*time.Second {
-		t.Fatalf("ReadTimeout 应为 8s，实际 %v", srv.ReadTimeout)
-	}
-	if srv.WriteTimeout != 20*time.Second {
-		t.Fatalf("WriteTimeout 应为 20s，实际 %v", srv.WriteTimeout)
-	}
-	if srv.IdleTimeout != 90*time.Second {
-		t.Fatalf("IdleTimeout 应为 90s，实际 %v", srv.IdleTimeout)
-	}
-	if srv.ReadHeaderTimeout <= 0 {
-		t.Fatal("ReadHeaderTimeout 也应保留")
-	}
-}
-
-// ---- from status_probe_test.go ----
-// #24：探针必须在依赖 Ping 失败时如实返回 false。
-// 覆盖「运行中 Redis 挂掉」的场景——/status 每次请求现查，不会缓存旧状态。
-
-func TestNewStatusProbe_ReflectsPingFailure(t *testing.T) {
-	pgOK := true
-	redisOK := true
-	probe := newStatusProbe(
-		func(context.Context) error {
-			if !pgOK {
-				return errors.New("pg down")
-			}
-			return nil
-		},
-		func(context.Context) error {
-			if !redisOK {
-				return errors.New("redis down")
-			}
-			return nil
-		},
-		func() string { return "closed" },
-		"postgres",
-		nil, // 本测试不关心埋点计数
-		nil, // 也不关心附件清理计数
-		"",  // 也不关心对象存储实现
-	)
-
-	if !probe.Postgres() || !probe.Redis() {
-		t.Fatal("依赖正常时两个探针都应报可达")
-	}
-	// 模拟运行中 Redis 挂掉
-	redisOK = false
-	if probe.Redis() {
-		t.Fatal("Redis Ping 失败后探针必须返回 false（/status 会据此报 down）")
-	}
-	if !probe.Postgres() {
-		t.Fatal("Redis 挂掉不应影响 Postgres 探针")
-	}
 }

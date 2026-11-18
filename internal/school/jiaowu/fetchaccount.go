@@ -8,12 +8,12 @@ import "context"
 // 取数账号只存在于管理员维护的池里，仅用于抓取全站共有、不需登录的教务页。
 // 两套凭据都不允许出现在日志、审计或给客户端的响应里。
 type FetchAccount struct {
-	ID       int64
-	Label    string
-	TGT      string // go-admin-tgt 值
+	ID           int64
+	Label        string
+	TGT          string // go-admin-tgt 值
 	CookieHeader string // 整套 auth 域 cookie（含 laravel_session 等），换票/续期必需
-	VPNTicket string // wengine_vpn_ticket
-	Enabled  bool
+	VPNTicket    string // wengine_vpn_ticket
+	Enabled      bool
 }
 
 // FetchAccountPool 给公共页取数提供一套可用凭据。

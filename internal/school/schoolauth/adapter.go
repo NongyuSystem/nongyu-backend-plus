@@ -1,5 +1,14 @@
 package schoolauth
 
+// 学校认证适配器：把「客户端交上来的 go-admin-tgt」换成学校身份。
+//
+// 本文件原本是三个文件的拼接产物（adapter.go + bridge.go + doer_contract.go），
+// 已拆回独立文件：
+//   - bridge.go         DomainIdentity / AsDomain（给身份域的形状）
+//   - doer_contract.go  HTTPDoer 的行为契约（不跟随 3xx、不自管 cookie）
+//
+// 本文件只保留适配器本体：凭据类型、身份类型、认证源接口、Authenticate 实现。
+
 import (
 	"context"
 	"errors"
@@ -10,7 +19,6 @@ import (
 	"time"
 )
 
-// ---- from adapter.go ----
 // ErrAuthFailed 表示学校认证被拒（凭据无效或已过期）。
 var ErrAuthFailed = errors.New("schoolauth: 学校认证失败")
 
@@ -367,15 +375,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred Credential) (Iden
 var maskedTail = regexp.MustCompile(`(\d{4})$`)
 
 // Suffix4FromMasked 从证件号（完整或掩码）取后四位。
-//
-// 实测：统一身份认证页面上显示 `650****2614`，只保留前 3 与后 4。
-// 因此**完整号拿不到**，只能取后四位；这也是 ADR-0002 决定只存后四位的原因。
 func Suffix4FromMasked(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	m := maskedTail.FindStringSubmatch(s)
+	m := maskedTail.FindStringSubmatch(strings.TrimSpace(s))
 	if m == nil {
 		return ""
 	}
@@ -386,93 +387,3 @@ func Suffix4FromMasked(s string) string {
 var _ = func(c *http.Cookie) SessionCookie {
 	return SessionCookie{Name: c.Name, Value: c.Value}
 }
-
-// ---- from bridge.go ----
-// 本文件把适配器的结果接到身份域需要的形状上，而不让 schoolauth 直接 import identity。
-//
-// 做法：用**泛型化的小接口**做桥——装配层把 login.SchoolCredential 的字段
-// 以参数形式传进来，适配器不依赖 identity 包的具体类型。
-// 这样 school 与 identity 两个域之间没有直接 import；桥接逻辑放在装配层
-// （internal/app），符合「业务域不互相 import」的约束。
-
-// DomainIdentity 是身份域能接受的身份形状。
-// 由装配层把 schoolauth.Identity 映射成 identity/login.SchoolIdentity。
-type DomainIdentity struct {
-	StudentNo     string
-	Name          string
-	College       string
-	IDCardSuffix4 string
-	// IDCardFull 是完整号（空表示只有掩码）。由装配层加密后写入画像。
-	IDCardFull        string
-	Major             string
-	ClassName         string
-	Grade             string
-	ProfileIncomplete bool
-}
-
-// AsDomain 把适配器结果转成身份域形状。
-func (i Identity) AsDomain() DomainIdentity {
-	return DomainIdentity{
-		StudentNo:         i.StudentNo,
-		Name:              i.Name,
-		College:           i.College,
-		IDCardSuffix4:     i.IDCardSuffix4,
-		IDCardFull:        i.IDCardFull,
-		Major:             i.Major,
-		ClassName:         i.ClassName,
-		Grade:             i.Grade,
-		ProfileIncomplete: i.ProfileIncomplete,
-	}
-}
-
-// 已删除（#25 / Spec M10）：原 httpSource / HTTPSourceOptions / NewHTTPSource 骨架实现。
-//
-// 删除理由：
-//  1. **零生产消费者**：全仓 grep 确认只有它自己的测试在用；装配层实际注入的是
-//     YWTBSource（ywtb.go，基于 Bearer + laravel_session 的真实协议）。
-//  2. **它是「等实测确认后再填」的占位**：ParseIdentity / ParseAcademic 需外部注入，
-//     而真实协议早已通过 ywtb 与教务三跳链路实测确认并落地，占位已无意义。
-//  3. **注释与代码曾长期不一致**（标着「当前为骨架」），留在仓库里只会误导后续接手者
-//     以为「还有一条待补的第二取数路径」。
-//
-// 若将来真的需要第二条取数路径，应基于实测协议新写实现，而不是复活这个占位骨架。
-
-// ---- from doer_contract.go ----
-// 本文件记录 Cheng 教务取数对 HTTPDoer 的**行为契约**。
-//
-// 为什么单独写一份：这条约束踩过一次，症状极其误导。
-//
-// 实测（2026-11-09，真实网络）：教务建立会话是 3 跳重定向
-//
-//	caslogin.asp → check_cas.asp?sign=.. → note.asp → index1.asp
-//
-// 而 `ASPSESSIONID*` 这个会话 cookie 是在**中间跳**的 302 上下发的。
-//
-// 如果 HTTPDoer 的实现启用了自动跟随（`http.Client` 的默认行为，
-// 即 `CheckRedirect` 返回 nil），且没有配置 `cookiejar`，则：
-//   - 客户端自己跟完了所有跳转；
-//   - 中间跳的 Set-Cookie 被丢弃（没有 jar 就没处存）；
-//   - 调用方拿到的是**最终响应**（200、无 Set-Cookie）。
-//
-// JiaowuSource 据此判断「教务未下发会话 cookie」，报错退出——
-// 而真实原因跟 cookie 毫无关系，是「跳转被代理跟完了」。
-//
-// 因此 HTTPDoer 的实现必须满足：
-//
-//  1. **不自动跟随 3xx**：返回跳转响应本身，由调用方决定是否跟随。
-//     这也是出站闸口（ADR-0001）的既定要求：3xx 要能被看见与拦截，
-//     而不是被传输层悄悄吃掉。
-//  2. **不自行管理 cookie**：Cookie 由调用方显式传入请求头，
-//     响应里的 Set-Cookie 由调用方显式收集（resp.Cookies()）。
-//     闸口本来就会剥离 Set-Cookie（ADR-0001 第 5 条）——
-//     因此本条在闸口下表现为「实现方需要把 cookie 交回给调用方」。
-//
-// 若后续给 HTTPDoer 换成真实实现，务必在构造 http.Client 时设置：
-//
-//	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-//
-// 否则本包会在第一步就误判失败。
-
-// HTTPDoerContract 仅作文档占位，说明 JiaowuSource 对 HTTPDoer 的行为要求。
-// 详见本文件顶部说明。
-const HTTPDoerContract = "must-not-follow-redirects"

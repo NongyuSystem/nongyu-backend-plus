@@ -3,36 +3,44 @@
 // 唯一职责：把 config / platform / server / 业务域 拼起来。
 // 依赖注入只发生在这里；业务域之间不互相 import，需要协作也由本层编排。
 // 这样「换数据库实现」「换框架」「拆微服务」都只动这一层。
+//
+// ── 装配层的判据（2026-11 结构整改）────────────────────────────────
+//
+// 本包只允许出现两类语句：
+//  1. 构造具体实现（new X(...)）；
+//  2. 把实现注入接口（svc.BindY(x) / Register(engine, svc)）。
+//
+// 不允许出现：业务判断、SQL、HTTP 报文解析、领域规则。
+// 若某段代码既不是构造也不是注入，它就不属于 app——那是本包被塞垃圾的信号。
+//
+// 文件分工（按装配阶段拆，便于定位，改哪一块就只开哪个文件）：
+//
+//	app.go              进程外壳：App 类型、Capabilities、Handler/Run/Shutdown、关停顺序
+//	assemble.go         New 的总流程：按阶段调用下面各文件，自身只做顺序编排
+//	assemble_infra.go   外部能力：迁移、票据存储、加解密、缓存、出站 Doer、对象存储
+//	assemble_http.go    HTTP 骨架：引擎、请求号、请求签名、认证与限流
+//	assemble_identity.go 身份域：认证适配器、PG 存储、登录/会话/用户子域
+//	assemble_domains.go 业务域路由：教务、二课、内容、消息、皮肤、埋点、管理端、观测
+//	status.go           /status 观测出口
+//	*_bridge.go         业务域之间的窄适配器（跨域协作只在装配层发生）
+//	*_wiring.go         单域的路由注册与钩子接线
+//
+// 历史遗留的、不属于装配层的文件（announcement_viewer.go、post_cache.go 等）已标
+// TODO，见 _artifacts/structure-lead-diagnosis.md。
 package app
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"nongyu-backend-plus/internal/app/notify"
 	"nongyu-backend-plus/internal/config"
-	"nongyu-backend-plus/internal/content/announcement"
-	"nongyu-backend-plus/internal/content/post"
-	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identitylogin "nongyu-backend-plus/internal/identity/login"
-	identitysession "nongyu-backend-plus/internal/identity/session"
-	identityuser "nongyu-backend-plus/internal/identity/user"
-	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
-	"nongyu-backend-plus/internal/platform/objectstore"
-	"nongyu-backend-plus/internal/platform/pgstore"
-	"nongyu-backend-plus/internal/school/jiaowu"
-	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/schoolauth"
-	"nongyu-backend-plus/internal/school/secondclass"
-	"nongyu-backend-plus/internal/server"
-	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 
 	"github.com/gin-gonic/gin"
@@ -45,10 +53,9 @@ import (
 // 关于 Store（issue #23）的收尾：早先这里有 platform.Store 字段 + NewMockStore()
 // 的进程内存实现。核查确认**零消费者**——业务域从不读它，真正承载票据的是 Tickets、
 // 承载用户/会话/审计的是按 DATABASE_URL 装配的 Postgres 仓储。
-// 该字段在 #23 时已移除；本文件这次连带把「留作骨架期备用」的
-// platform.Store 接口与 MockStore 实现一起删除——按仓库依赖策略
-// 「停用即删，不留着以后可能用」，长期零引用的代码留着只会误导读代码的人
-// （让人以为还有一条基于 key-value 的存储路径）。
+// 该字段在 #23 时已移除；连带把「留作骨架期备用」的 platform.Store 接口与
+// MockStore 实现一起删除——按仓库依赖策略「停用即删，不留着以后可能用」，
+// 长期零引用的代码留着只会误导读代码的人（让人以为还有一条基于 key-value 的存储路径）。
 type Capabilities struct {
 	Tickets platform.TicketStore
 	Cipher  platform.Cipher
@@ -59,17 +66,6 @@ type Capabilities struct {
 
 // renewInterval 是定时续期扫描的间隔（保守值，避免高频打扰学校侧）。
 const renewInterval = 5 * time.Minute
-
-// exchangerOrNil 把 *JiaowuSource 转成 TicketExchanger，并在为 nil 时返回**真正的 nil 接口**。
-//
-// 直接写 `Exchanger: jwSrc` 会有 typed-nil 陷阱：*JiaowuSource(nil) 装进接口后
-// 接口值 != nil，导致 YWTBSource 里 `s.exchanger == nil` 判断失效，运行时才崩。
-func exchangerOrNil(jw *schoolauth.JiaowuSource) schoolauth.TicketExchanger {
-	if jw == nil {
-		return nil
-	}
-	return jw
-}
 
 // schoolForTest 是**仅供本包测试**注入假学校认证源的钩子。
 //
@@ -110,958 +106,6 @@ type App struct {
 	storeMode storeMode
 }
 
-// New 完成全部装配，返回可直接 Run 的 App。
-// 骨架期注入内存/Mock 实现；数据库层 / 真实出站闸口就绪后，只改这里注入即可，业务域零改动。
-func New(cfg config.Config, logger *slog.Logger) (*App, error) {
-	// #21 M3：认证默认开启。
-	// 生产环境 AUTH_KEY 为空由 config.Load() 强校验拦住（不在此重写）。
-	// 此处补 dev 侧的显式开关：真实 dev/prod 装配（AppEnv 非空）时，AUTH_KEY 为空
-	// 且未显式开启 AllowInsecureDev → 拒绝装配，避免「所有业务端点无身份校验」悄悄发生。
-	// 判据抽到 config.IsProductionLike（单一来源）：prod / production / staging 都必须
-	// 挂认证；dev 由 AllowInsecureDev 显式开关兜底；test/空串是单测注入，跳过。
-	// 修评审 M1：之前 isRealEnv 漏了 staging，导致准生产可静默以「全端点无鉴权」启动。
-	if config.IsProductionLike(cfg.AppEnv) && strings.TrimSpace(cfg.AuthKey) == "" && !cfg.AllowInsecureDev {
-		return nil, fmt.Errorf("app: AUTH_KEY 为空且未开启 ALLOW_INSECURE_DEV：认证中间件不会挂载，所有业务端点将无身份校验；生产/预发布必须配置 AUTH_KEY，dev 需显式开启 ALLOW_INSECURE_DEV")
-	}
-	if config.IsProductionLike(cfg.AppEnv) && strings.TrimSpace(cfg.AuthKey) == "" && cfg.AllowInsecureDev {
-		logger.Warn("ALLOW_INSECURE_DEV 已开启：AUTH_KEY 为空，认证中间件未挂载，所有业务端点无身份校验；仅限本地开发")
-	}
-	if err := checkAppSigningConfig(cfg, logger); err != nil {
-		return nil, err
-	}
-	// 迁移（issue #23 / Spec M4）：配了 DATABASE_URL 时，启动即把 migrations/*.sql
-	// 幂等执行一遍。必须排在**所有 Postgres 仓储构造之前**——PGAuditStore 的
-	// Ping、PGIdentityStore 的 Ping 都只探测连通性、不建表，业务查询要求表已存在。
-	// Migrate 自带小连接池、执行完即关；search_path 由 DSN 透传，测试隔离同样生效。
-	// 失败即拒绝启动：带着半成品 schema 上线比直接失败更危险。
-	if cfg.DatabaseURL != "" {
-		migCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := platform.Migrate(migCtx, cfg.DatabaseURL)
-		cancel()
-		if err != nil {
-			return nil, fmt.Errorf("启动迁移失败：%w", err)
-		}
-	}
-
-	// 票据存储：配了 REDIS_ADDR 就用外置持久实现（生产必须），否则回落到进程内存（仅本地开发）。
-	//
-	// **必须按用途分命名空间**（2026-11-17 事故）：TicketStore 的 key 只有
-	// `<prefix>ticket:<userID>`，而「教务 tgt」「校内状态」「网关票」三种东西都要
-	// 「按用户存一段不透明字节」。共用实例会互相当成对方的记录覆盖——一次
-	// POST /school/login 或续期回调把上游返回的 HTML 写进去，就把真正的
-	// {TGT, CookieHeader} 顶掉了。症状是次日 cache_miss 全部 session=unavailable。
-	//
-	// 现在每个用途一个独立实例（Redis 用不同 Prefix 段、内存用独立 map），
-	// 从存储层保证「谁也不会写到别人的记录上」，不依赖调用方自觉。
-	var tickets platform.TicketStore       // 教务 tgt（只给 TGTManager 用）
-	var presenceStore platform.TicketStore // 校内/校外上报状态
-	var webvpnStore platform.TicketStore   // 客户端交上来的 wengine_vpn_ticket
-	var closeTickets func() error
-	if cfg.RedisAddr != "" {
-		newStore := func(kind string) (*platform.RedisTicketStore, error) {
-			s, err := platform.NewRedisTicketStore(platform.RedisOptions{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
-				Prefix:   cfg.RedisPrefix + kind + ":",
-			})
-			if err != nil {
-				return nil, err
-			}
-			// 启动期探测：连不上就拒绝启动，避免带着坏依赖上线。
-			pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := s.Ping(pingCtx); err != nil {
-				_ = s.Close()
-				return nil, fmt.Errorf("票据存储（Redis）不可达 %s：%w", cfg.RedisAddr, err)
-			}
-			return s, nil
-		}
-
-		tgtStore, err := newStore("tgt")
-		if err != nil {
-			return nil, fmt.Errorf("票据存储（Redis）初始化失败：%w", err)
-		}
-		presenceRedis, err := newStore("presence")
-		if err != nil {
-			_ = tgtStore.Close()
-			return nil, fmt.Errorf("校内状态存储（Redis）初始化失败：%w", err)
-		}
-		webvpnRedis, err := newStore("webvpn")
-		if err != nil {
-			_ = tgtStore.Close()
-			_ = presenceRedis.Close()
-			return nil, fmt.Errorf("网关票存储（Redis）初始化失败：%w", err)
-		}
-
-		tickets = tgtStore
-		presenceStore = presenceRedis
-		webvpnStore = webvpnRedis
-		closeTickets = func() error {
-			return errors.Join(tgtStore.Close(), presenceRedis.Close(), webvpnRedis.Close())
-		}
-	} else {
-		tickets = platform.NewMockTicketStore()
-		presenceStore = platform.NewMockTicketStore()
-		webvpnStore = platform.NewMockTicketStore()
-		logger.Warn("票据存储使用进程内存实现：重启即丢票，仅限本地开发/测试", "hint", "配置 REDIS_ADDR 以启用外置持久")
-	}
-
-	// 票据主密钥用的是真实 AES-256-GCM（NewAESCipher 是 NewMockCipher 的真名别名，
-	// 见 #21 M9：骨架期命名误导，装配层新代码一律用 NewAESCipher）。
-	cipher := platform.NewAESCipher(cfg.TicketKey)
-
-	// 通用缓存层：穿透/雪崩/击穿/降级回灌四类防护都在实现里。
-	// 只有配了 Redis 才启用；未配置时 cache 为 nil，业务侧按「无缓存直接命中」处理。
-	var cache *platform.RedisCache
-	if cfg.RedisAddr != "" {
-		rc, err := platform.NewRedisCache(platform.RedisOptions{
-			Addr:     cfg.RedisAddr,
-			Password: cfg.RedisPassword,
-			DB:       cfg.RedisDB,
-			Prefix:   cfg.RedisPrefix,
-		}, platform.CacheOptions{
-			DefaultTTL:       time.Duration(cfg.CacheDefaultTTLSec) * time.Second,
-			JitterRatio:      cfg.CacheJitterRatio,
-			NotFoundTTL:      time.Duration(cfg.CacheNotFoundTTLSec) * time.Second,
-			RebuildTimeout:   2 * time.Second,
-			FallbackEnabled:  true,
-			FlushRatePerSec:  cfg.CacheFlushRatePerSec,
-			BreakerThreshold: cfg.CacheBreakerThreshold,
-			BreakerCooldown:  time.Duration(cfg.CacheBreakerCooldownSec) * time.Second,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("缓存层（Redis）初始化失败：%w", err)
-		}
-		cache = rc
-	}
-
-	// 出站 Doer：HTTPEnforce=true（config.Load() 默认 true）→ 真实实现 RealHTTPDoer，
-	// 真的发网络请求；false → 保留骨架期 MockHTTPDoer（#11 契约测试 / 上层单测隔离用）。
-	//
-	// 注意（避免后人误读）：HTTPEnforce 这**一个**开关在当前装配层同时决定了两件事——
-	//   ① 是否强制安全策略（白名单 / 不跟随重定向 / 超时 / 响应体上限）；
-	//   ② 是否使用真实网络出站。
-	// 这两件事在语义上其实是**正交**的（理论上可以「强制策略 + 走 mock」，或「真实网络
-	// + 不强制」），但 config.Config 目前只有 HTTPEnforce 这一个字段，装配层也就只有这一个
-	// 判据可用。作为本票（#22）的最小改动，这里让二者共用该开关是可接受的折中；不要据此
-	// 推断「Enforce 的语义就等于真实网络」——Enforce 本义只是「强制安全策略」。后续若要把
-	// 两者解耦，应在 config 增加独立字段（例如 HTTPUseRealDoer），而不是复用 Enforce。
-	//
-	// MockHTTPDoer 本身与其测试（caps_gateway_test.go 等）原样保留，零改动。
-	var doer platform.HTTPDoer
-	outboundDoer := "mock"
-	if cfg.HTTPEnforce {
-		doer = platform.NewRealHTTPDoer(platform.RealHTTPDoerOptions{
-			AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
-			Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
-		})
-		outboundDoer = "real"
-	} else {
-		doer = platform.NewMockHTTPDoer(platform.DoerPolicy{
-			Enforce:      false, // 骨架期：零值策略，只记录 + 返回可配置响应
-			AllowedHosts: outboundAllowlist(cfg.HTTPAllowlist),
-			Timeout:      time.Duration(cfg.HTTPTimeoutSec) * time.Second,
-		})
-	}
-	clock := platform.NewRealClock()
-	// 可信代理白名单：默认不信任任何 X-Forwarded-For（见 server.New 的长注释）。
-	// 只有部署在会改写 XFF 的反向代理之后，才由 TRUSTED_PROXIES 显式给出该代理的地址段。
-	trustedProxies, err := config.ParseTrustedProxies(cfg.TrustedProxies)
-	if err != nil {
-		return nil, fmt.Errorf("装配失败：%w", err)
-	}
-	engine := server.New(trustedProxies...)
-
-	// 请求追踪号：每个请求一个审计流水号，写入 context 与 X-Request-Id 响应头。
-	// 必须最先挂，后续所有 handler 与审计都能拿到它。
-	engine.Use(server.RequestIDMiddleware())
-
-	// 业务域的仓储：按 DATABASE_URL 一次性决定四个域走内存还是 PG。
-	//
-	// 必须在 Migrate 之后（表要先建好）、在业务域构造之前。
-	// 配了但连不上时返回错误而**不降级成内存**——静默降级会让
-	// 「生产看起来正常、实际一条数据都没落库」。
-	pgPool, err := openPGPool(context.Background(), cfg.DatabaseURL)
-	if err != nil {
-		return nil, err
-	}
-	// 注意：**不要在这里 defer pool.Close()**。
-	// 曾经写过那样的 defer，结果它在装配**成功**返回时也执行，
-	// 把连接池关掉，所有 PG 查询报 "closed pool"——而日志里只看到 500。
-	// 池的生命周期归 App：由 App.Shutdown 关闭（见 App.pgPool）。
-	// 中途失败时的泄漏可接受（进程即将退出，OS 会回收 fd）。
-	repos, err := newRepoBundle(pgPool, clock.Now)
-	if err != nil {
-		return nil, err
-	}
-	logger.Info("业务仓储已装配", "mode", string(repos.Mode))
-
-	// 审计持久层（Postgres）：配了 DATABASE_URL 才启用，否则审计只写 slog。
-	var auditStore platform.AuditStore
-	var pgAudit *platform.PGAuditStore
-	if cfg.DatabaseURL != "" {
-		st, err := platform.NewPGAuditStore(platform.PGOptions{
-			DSN:         cfg.DatabaseURL,
-			BufferSize:  2048,
-			BatchSize:   64,
-			FlushPeriod: time.Second,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("审计存储（Postgres）初始化失败：%w", err)
-		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := st.Ping(pingCtx); err != nil {
-			return nil, fmt.Errorf("审计存储（Postgres）不可达：%w", err)
-		}
-		auditStore = st
-		pgAudit = st
-	} else {
-		logger.Warn("审计持久层未启用：审计只写 stdout", "hint", "配置 DATABASE_URL 以落库到 Postgres")
-	}
-
-	// 令牌签发/验签器：登录成功后用它把 session_id 包成客户端可用的令牌。
-	// AuthKey 为空时（仅本地开发）不签发令牌，登录接口会因此不可用。
-	var tokenIssuer *server.TokenVerifier
-	if cfg.AuthKey != "" {
-		tokenIssuer = server.NewTokenVerifier(cfg.AuthKey, clock)
-	}
-
-	// 学校认证适配器：把「客户端交上来的 go-admin-tgt」换成学校身份。
-	//
-	// **唯一数据源是学工系统 xsgz**（2026-11-10 维护者决定）：
-	// 客户端只做一次统一登录，之后交出 go-admin-tgt（确认身份）与
-	// xsgz access token（取全量档案），后端负责所有取数与入库。
-	// jiaowu 的 GBK 页面解析与 ywtb 的 getUserInfo 取数**已 disable**：
-	// 它们给不出身份证号、家庭住址、考生号、紧急联系人、教育经历等字段。
-	var schoolAuthAdapter identitylogin.SchoolAuthenticator
-	// tgt 保管器：登录成功后按用户保存，之后取学籍不必再让客户端交凭据。
-	var tgtMgr *schoolauth.TGTManager
-	// 身份域持久层（在下方初始化；xsgz 落库回调需要引用它，故提前声明）。
-	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
-	var identityStore *platform.PGIdentityStore
-
-	// 教务源：这里只用它的「换票」能力（确认学号 + 滚动续期 tgt），
-	// **不再用它抓 bjiben.asp 取专业/班级/年级**（那条路径已 disable）。
-	var jwSrc *schoolauth.JiaowuSource
-	if s, err := schoolauth.NewJiaowuSource(schoolauth.JiaowuOptions{Doer: doer}); err == nil {
-		jwSrc = s
-		// tgt 保管：换票响应会带回新 tgt，服务端加密存 9 天并滚动续期，
-		// 客户端只需首次登录时交一次，之后不必反复传凭据。
-		if cfg.TicketKey != "" && tickets != nil {
-			if mgr, err := schoolauth.NewTGTManager(schoolauth.TGTManagerOptions{
-				Store:  tickets,
-				Cipher: platform.NewAESCipher(cfg.TicketKey + ":tgt"),
-				Source: jwSrc,
-				Clock:  clock,
-			}); err == nil {
-				jwSrc.WithTGT(mgr)
-				tgtMgr = mgr
-				logger.Info("已启用 tgt 保管：换票续期由服务端自动完成")
-			} else {
-				logger.Warn("tgt 保管未启用，每次取数需客户端提供凭据", "err", err)
-			}
-		}
-	} else {
-		logger.Warn("换票源构造失败，学校认证登录将不可用", "err", err)
-	}
-
-	// 唯一取身份源：xsgz detail 端点（13 个分组，字段最全）。
-	if authSrc, err := schoolauth.NewXSGZSource(schoolauth.XSGZOptions{
-		Doer:      doer,
-		Exchanger: exchangerOrNil(jwSrc),
-		// 取到完整档案后落库（4 张表）。落库失败不阻断登录。
-		OnDetail: func(ctx context.Context, d schoolauth.XSGZStudentDetail) error {
-			if identityStore == nil {
-				return nil
-			}
-			pd := d.ToProfileData()
-			// 身份证号加密后落库（ADR-0002：明文绝不入库）。
-			// 复用 TicketKey 作密钥（同样是「必须加密保存的敏感数据」一类），
-			// 用不同派生后缀隔离用途，避免与 tgt 共用同一把实际密钥。
-			var sealed []byte
-			suffix := ""
-			if pd.IDCardNo != "" {
-				if cfg.TicketKey != "" {
-					var serr error
-					sealed, serr = platform.NewAESCipher(cfg.TicketKey + ":idcard").Seal([]byte(pd.IDCardNo))
-					if serr != nil {
-						logger.Warn("身份证加密失败，只保存后四位", "err", serr)
-						sealed = nil
-					}
-				}
-				suffix = schoolauth.Suffix4FromMasked(pd.IDCardNo)
-			}
-			return identityStore.SaveXSGZProfile(ctx, platform.XSGZProfileInput{
-				StudentNo:     pd.StudentNo,
-				Fields:        pd.Fields,
-				Groups:        pd.Groups,
-				FamilyMembers: pd.FamilyMembers,
-				Resumes:       pd.Resumes,
-				IDCardSealed:  sealed,
-				IDCardSuffix4: suffix,
-				Age:           pd.Age,
-			})
-		},
-		// 取数链路各步失败都打 WARN：取档案失败不阻断登录，但绝不能静默。
-		// 2026-11-13 实测踩到：Redis 里存的「tgt」其实是 302 重定向的 HTML
-		// （`<a href="https://webvpn.sicau.edu.cn/login">Found</a>.`），
-		// 换票必然 500 未登录，而旧代码把错误丢掉，画像空了也无从排查。
-		OnError: func(err error) {
-			logger.Warn("学工取数链路失败", "err", err)
-		},
-	}); err == nil {
-		// Academic 传 nil：jiaowu 的 GBK 页面取数已 disable（#28 后续）。
-		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
-			schoolAuthAdapter = schoolauthBridge{a: a}
-		} else {
-			logger.Warn("学校认证适配器构造失败，学校认证登录将不可用", "err", err)
-		}
-	} else {
-		logger.Warn("ywtb 取数源构造失败，学校认证登录将不可用", "err", err)
-	}
-
-	// 身份域持久层：与审计共用同一个 Postgres（库 nongyu），但连接池独立。
-	// （identityStore 已在上方提前声明。）
-	var sessionCache *platform.RedisSessionCache
-	var identityUserSvc *identityuser.Service
-	var identitySessionSvc *identitysession.Service
-	var identityLoginSvc *identitylogin.Service
-	if cfg.DatabaseURL != "" {
-		st, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: cfg.DatabaseURL})
-		if err != nil {
-			return nil, fmt.Errorf("身份域存储初始化失败：%w", err)
-		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		err = st.Ping(pingCtx)
-		cancel()
-		if err != nil {
-			return nil, fmt.Errorf("身份域存储（Postgres）不可达：%w", err)
-		}
-		identityStore = st
-
-		identityUserSvc = identityuser.New(st, st)
-		identitySessionSvc = identitysession.New(st, st, clock)
-
-		// 公告的读者画像解析器：userID → 学号 → 学院/年级。
-		// 没有它，「按学院/年级定向」的公告对所有人不可见（fail-closed）。
-		installProfileResolver(newProfileResolver(st, identityUserSvc))
-
-		// 会话 Redis 副本：可用则加速鉴权读，不可用不影响正确性（回落 PG）。
-		if cfg.RedisAddr != "" {
-			if rc, err := platform.NewRedisSessionCache(platform.RedisOptions{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
-				Prefix:   cfg.RedisPrefix,
-			}); err == nil {
-				pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				if err := rc.Ping(pingCtx); err == nil {
-					sessionCache = rc
-					identitySessionSvc.WithCache(rc)
-				} else {
-					logger.Warn("会话 Redis 副本不可用，鉴权将直读 Postgres", "err", err)
-					_ = rc.Close()
-				}
-				cancel()
-			}
-		}
-
-		// 邮件投递：配了 SMTP_HOST 就用真实发信，否则回落到日志实现（仅本地调试）。
-		var mailer platform.Mailer
-		if cfg.SMTPHost != "" {
-			smtpMailer, err := platform.NewSMTPMailer(platform.MailOptions{
-				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-				Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
-				From: cfg.SMTPFrom, Insecure: cfg.SMTPInsecure,
-			}, logger)
-			if err != nil {
-				return nil, fmt.Errorf("SMTP 发信初始化失败：%w", err)
-			}
-			mailer = smtpMailer
-			logger.Info("邮件验证码使用 SMTP 发信", "host", cfg.SMTPHost, "port", cfg.SMTPPort)
-		} else {
-			mailer = &platform.LogMailer{Logger: logger}
-			logger.Warn("未配置 SMTP_HOST：验证码只写日志，仅限本地开发")
-		}
-
-		// 邮箱验证码存储需要 Redis；没有 Redis 时该登录方式不可用。
-		var mailCodes *platform.RedisMailCodeStore
-		if cfg.RedisAddr != "" {
-			if mc, err := platform.NewRedisMailCodeStore(platform.RedisOptions{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
-				Prefix:   cfg.RedisPrefix,
-			}); err == nil {
-				pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				if err := mc.Ping(pingCtx); err == nil {
-					mailCodes = mc
-				} else {
-					logger.Warn("验证码存储（Redis）不可用，邮箱验证码登录将不可用", "err", err)
-					_ = mc.Close()
-				}
-				cancel()
-			}
-		}
-
-		// 登录子域：密码镜像与身份证必须用**两把独立密钥**（ADR-0002 第 2 条二修）。
-		if cfg.TicketKey != "" {
-			// schoolForTest 仅供本包测试注入假的学校认证源（默认 nil，生产行为不变）。
-			// 有了它，端到端 HTTP 链路测试才能在不打真实学校网络的前提下跑通
-			// 「取验证码 → 提交 → 拿令牌 → 访问受保护端点」这条链（#26 门槛 4）。
-			schoolAdapter := schoolAuthAdapter
-			if schoolForTest != nil {
-				schoolAdapter = schoolForTest
-			}
-			identityLoginSvc = identitylogin.New(identitylogin.Options{
-				Users:       st,
-				Profiles:    st,
-				Methods:     st,
-				MailCodes:   mailCodes,
-				Mailer:      mailer,
-				Clock:       clock,
-				UserService: identityUserSvc,
-				PasswordBox: platform.NewAESCipher(cfg.TicketKey + ":password"),
-				IDCardBox:   platform.NewAESCipher(cfg.TicketKey + ":idcard"),
-				// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
-				School: schoolAdapter,
-				// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
-				TGTSaver: tgtSaverBridge{mgr: tgtMgr},
-				// 登录失败计数的跨实例存储：配了 Redis 就用外置原子计数，
-				// 未配则留空退回进程内 map（单实例足够；多实例时攻击者可在
-				// 实例间分摊尝试次数，见 login/lockout.go 的说明）。
-				FailCounter: loginFailCounter(cache),
-			})
-		}
-	} else {
-		logger.Warn("身份域未启用：未配置 DATABASE_URL，用户与会话能力不可用")
-	}
-
-	// 请求签名先于用户鉴权：登录、发验证码这些公开路径也要证明来自客户端。
-	// 唯一免签探针是 /healthz（只报进程存活）；/status 含内部依赖状态，
-	// 必须带签名 + 有效会话才能访问（见 server/appsign.go 的 IsAppSignExempt）。
-	// 密钥为空时不挂（本地开发 / 既有单测）；prod 已由 checkAppSigningConfig 拦住。
-	installAppSigning(engine, cfg, cache, clock, logger)
-
-	// 认证与限流：AuthKey 非空时挂到所有业务路由之前（gin 的 Use 必须先于路由注册）。
-	//
-	// 身份域可用时用**可吊销**中间件：令牌只带会话标识，验签后还要查会话，
-	// 因此能踢人（单设备顶替、登出、账号禁用即时生效）。
-	// 身份域不可用时退化为旧的自包含令牌中间件，并在日志里显式告警——
-	// 那种模式下吊销不生效，只适合本地开发。
-	// appLimiter 提到外层：消息域的内部信限频要复用同一个实例（口径一致）。
-	var appLimiter *server.RateLimiter
-	if cfg.AuthKey != "" {
-		verifier := tokenIssuer
-		appLimiter = server.NewRateLimiter(clock, cfg.RateLimitPerMinute, time.Minute)
-		if identityStore != nil {
-			resolver := server.NewSessionStoreResolver(identityStore, identityStore, clock)
-			engine.Use(server.RevocableAuthMiddleware(verifier, resolver, server.ScopeApp),
-				server.RateLimitMiddleware(appLimiter))
-		} else {
-			logger.Warn("使用不可吊销的自包含令牌鉴权：登出与踢人不会生效，仅限本地开发")
-			engine.Use(server.AuthMiddleware(verifier), server.RateLimitMiddleware(appLimiter))
-		}
-	}
-
-	// 编排：把 platform 能力通过接口注入教务子域，再把子域路由注册到 gin.Engine。
-	// 业务子域不 import app/server/config；装配是这一层唯一职责（架构落点草图 §8）。
-	// #17 起用 NewWithAccel + RegisterAccel：加速开关从 cfg.AccelEnabled 读（默认 false），
-	// 端点在生产装配里真正可达；续期调度器把观测周期回喂给 Service 的写票 TTL。
-	scheduler := jiaowu.NewRenewScheduler(tickets, clock)
-	jiaowuSvc := jiaowu.NewWithAccel(doer, tickets, cipher, clock, logger, cfg.AccelEnabled)
-	jiaowuSvc.BindRenewScheduler(scheduler)
-	jiaowuSvc.BindAuditStore(auditStore)
-
-	// 公共类取数账号池：只有 tgt + webvpn 票、不对应任何 app 用户的专用凭据，
-	// 由管理员通过管理端维护。配了 DATABASE_URL 走 PG（加密落库），否则走内存。
-	var fetchAccountAdmin jiaowu.FetchAccountAdminStore
-	if pgPool != nil {
-		repo := pgstore.NewFetchAccountPGRepo(pgPool, cfg.TicketKey, clock.Now)
-		jiaowuSvc.BindFetchAccountPool(repo)
-		fetchAccountAdmin = repo
-	} else {
-		repo := pgstore.NewFetchAccountMemoryRepo()
-		jiaowuSvc.BindFetchAccountPool(repo)
-		fetchAccountAdmin = repo
-	}
-	if jwSrc != nil {
-		// 取数账号的 st 用整套 auth cookie 换，不进 TGTManager 的用户级保管。
-		jiaowuSvc.BindFetchAccountSTIssuer(fetchAccountSTBridge{src: jwSrc})
-		// 两种能力共用同一个桥：
-		//   - SessionIssuer：direct 形态下用已保管 tgt 换 ASPSESSIONID（要求能到 jiaowu）
-		//   - TGTRefresher：续期回调走真正的 tgt 续期
-		//   - JiaowuSTIssuer：vpn 形态下用已保管 tgt 换教务 st，回投编码 caslogin
-		//     建网关侧教务会话（校外取课表等需登录页必需）
-		// vpn 形态的**网关票**仍只能由客户端真实登录产生，后端换不到；
-		// 这里补的是「教务会话」，两者不是一回事。
-		bridge := jiaowuSessionBridge{src: jwSrc}
-		jiaowuSvc.BindSessionIssuer(bridge)
-		jiaowuSvc.BindTGTRefresher(bridge)
-		jiaowuSvc.BindJiaowuSTIssuer(bridge)
-	}
-	jiaowu.RegisterAccel(engine, jiaowuSvc)
-
-	// 回传缓存子域（#40/#41/#32/#34）：把缓存层与 schema 校验器注入教务子域，
-	// 再挂 GET/POST/DELETE /school/jiaowu/cache/:dataType。
-	//
-	// 这两件能力都是「有则启用、无则端点回 503」的可选依赖：
-	//   - cache 为 nil：没配 REDIS_ADDR，纯缓存语义无处落地；
-	//   - schema 编译失败：意味着某类回传永远不会被校验，宁可让端点不可用，
-	//     也不能放未校验的数据进缓存。
-	cacheSubdomainReady := false
-	if cache != nil {
-		validator, verr := jiaowu.NewSchemaValidator()
-		if verr != nil {
-			// fail-fast 的边界：这里不让整个进程起不来（其它子域不受影响），
-			// 但必须显式告警且不挂缓存路由——挂上去也只会写入未校验数据。
-			logger.Error("回传缓存子域未启用：schema 校验器编译失败", "err", verr)
-		} else {
-			jiaowuSvc.BindCache(cache)
-			jiaowuSvc.BindSchemaValidator(validator)
-			jiaowu.RegisterCache(engine, jiaowuSvc)
-			cacheSubdomainReady = true
-		}
-	}
-	if !cacheSubdomainReady {
-		logger.Warn("回传缓存端点未挂载：需要 REDIS_ADDR 且 schema 全部编译通过",
-			"cache_configured", cache != nil)
-	}
-
-	// 学校二课（#71 / 规格 spec-学校二课接入.md）：后端只做「请求配方下发」与「记录」，
-	// 对二课零出站、零凭据。配方与写类端点只依赖包级静态表（当前只读）+ 审计，不依赖 Redis/schema，
-	// 故无条件挂载；读副本三条端点才需要缓存与 schema 校验，走与教务同款的降级 gate。
-	//
-	// 两个降级分支都必须「告警 + 不挂对应路由 + 进程照常起」，绝不静默降级，
-	// 也绝不因可选依赖缺失让整个进程起不来（其它子域不受影响）。
-	secondclassSvc := secondclass.New(secondclass.Options{
-		Clock:  clock,
-		Logger: logger,
-		Audit:  auditStore,
-	})
-
-	// 写类配方端点：无条件可用。没配 Redis 时客户端仍能拿到「怎么请求」的配方。
-	secondclass.RegisterRecipe(engine, secondclassSvc)
-
-	secondclassCacheReady := false
-	if cache != nil {
-		validator, verr := secondclass.NewSchemaValidator()
-		if verr != nil {
-			// schema 编译失败意味着某类回传永远不会被校验，宁可不挂记录端点，
-			// 也不能放未校验的数据进缓存（与教务同款 fail-fast 边界）。
-			logger.Error("二课记录端点未启用：schema 校验器编译失败", "err", verr)
-		} else {
-			secondclassSvc.BindCache(cache)
-			secondclassSvc.BindSchemaValidator(validator)
-			secondclass.RegisterCache(engine, secondclassSvc)
-			secondclassCacheReady = true
-		}
-	}
-	if !secondclassCacheReady {
-		logger.Warn("二课记录端点未挂载（写类配方端点仍可用）：需要 REDIS_ADDR 且 schema 全部编译通过",
-			"cache_configured", cache != nil)
-	}
-
-	// 身份域路由：登录/登出走编排层 flow（它负责「登录成功后签发会话」），
-	// 画像读取与修改走 user 子域。身份全部来自 context，不读请求体里的 userID。
-	if identityStore != nil {
-		if identityLoginSvc != nil && identitySessionSvc != nil && identityUserSvc != nil {
-			// 注入 UserRepo 以记录登录审计（IP/设备/时间，issue #29）。
-			flowSvc := identityflow.New(identityLoginSvc, identitySessionSvc, identityUserSvc, clock).WithUserRepo(identityStore)
-			if jwSrc != nil {
-				// 登出时清掉学校凭据（tgt）：ADR-0001 第 3 条「退出登录即清除」。
-				// 用同一个桥，它的 ClearCredential 直接委托 TGTManager.Clear。
-				flowSvc.WithCredentialCleaner(jiaowuSessionBridge{src: jwSrc})
-			}
-			identityflow.Register(engine, flowSvc, tokenIssuer)
-		}
-		if identityUserSvc != nil {
-			// 本人端点挂普通 engine；按学号读画像属于管理台，挂到下面的
-			// adminGroup（ScopeAdmin + AdminOnly）。两者不可混挂：
-			// 早先整个 Register 都挂在 engine 上，导致任意 role=0 的 App
-			// 会话可读全校学生画像（spec-身份域与平台底座:72 只允许管理员）。
-			identityuser.RegisterPublic(engine, identityUserSvc, server.CurrentUserID)
-		}
-	}
-
-	// 定时续期循环：调度器只挑候选/错峰，真正执行换票交给 Service.RenewFor（经出站闸口）。
-	// ctx 由 App 持有，Shutdown 时 cancel + Stop，保证优雅关停、不留悬挂 goroutine。
-	renewCtx, cancelRenew := context.WithCancel(context.Background())
-	renewDone := scheduler.Run(renewCtx, renewInterval, jiaowuSvc.RenewFor)
-
-	// 缓存回灌循环：Redis 不可用期间写入内存的条目，在恢复后按限速（每秒 N 条）
-	// 慢慢同步回 Redis，避免恢复瞬间把 Redis 打满。无缓存时退化为空循环。
-	var flushDone <-chan struct{}
-	if cache != nil {
-		flushDone = runCacheFlusher(renewCtx, cache, logger)
-	}
-
-	// #16 校内/校外状态：用独立命名空间的 presenceStore（不再临时 NewMockTicketStore——
-	// 那会让上报状态在配了 Redis 的生产里也丢，且与 tgt 争同一个 key）。
-	// 后端配置先用常量 ModeDirect、陈旧阈值显式传 5 分钟；两者若要可配置需扩 config，
-	// 属后续 effort，本期不动 config 以免超出票范围。
-	presenceSvc := presence.New(
-		presenceStore,
-		clock,
-		presence.ModeDirect,
-		5*time.Minute,
-	)
-	presence.Register(engine, presenceSvc)
-
-	// 校外访问：客户端交上来的 wengine_vpn_ticket 按用户加密保管，
-	// 后端用它经编码地址代取教务页（不需要 tgt、不需要教务 st）。
-	//
-	// 票的来源只能是客户端真实登录网关——后端换不到（见 schoolauth 里删除
-	// IssueGatewayCookies 的说明）。所以这里只做保管与代取，绝不自造票。
-	if webvpnStore != nil {
-		jiaowuSvc.BindWebVPNTicketStore(webvpnTicketStore{
-			store:  webvpnStore,
-			cipher: platform.NewAESCipher(cfg.TicketKey + ":webvpn"),
-		})
-		jiaowu.RegisterWebVPN(engine, jiaowuSvc)
-	} else {
-		logger.Warn("WebVPN 代取端点未挂载：需要可用的票据存储")
-	}
-
-	// 内容域（map #43 / Spec 六类常见功能）：公告的读者侧与管理端。
-	//
-	// 装配要点：
-	//   - 仓储现在用内存实现。PostgreSQL 实现（platform/pgstore）尚未落地，
-	//     迁移脚本 migrations/0005_content.sql 已就位；切 PG 时只换这一行的
-	//     构造，业务域与路由都不用动（这正是「实现放 platform」的目的）。
-	//   - 读者视图由装配层注入：内容域不 import 身份域，只声明需要哪些事实。
-	//   - 管理端挂在**独立路由组**上：全局中间件只校验会话存在与有效，
-	//     这里再叠一层 admin scope 与角色门槛。两者缺一不可——
-	//     scope 回答「这套令牌是不是给管理台签的」，role 回答「这个人够不够格」。
-	announcementSvc := announcement.New(announcement.Options{
-		Repo:  repos.Announcements,
-		Clock: clock,
-	})
-	announcement.RegisterPublic(engine, announcementSvc, announcementViewerOf)
-
-	// 帖子域（map #43 / Spec 六类常见功能）。
-	//
-	// 读者侧两条是**公开读**（未登录也能看列表与详情），写侧十一条需要会话。
-	// 两者都挂在 engine 上——写侧的保护来自全局鉴权中间件，但每个写 handler
-	// 仍会自己 fail-closed 取用户（双保险，不假设中间件一定生效）。
-	//
-	// 对象存储用内存实现：MinIO 实现尚未落地（platform/objectstore 只有接口
-	// 与 MemoryObjectStore）。上传的 5MB 硬限、格式嗅探、key 模板都在业务侧，
-	// 换真实实现时只改这一行的构造。
-	// 对象存储：配了 MINIO_ENDPOINT 就用真实 MinIO，否则回落内存实现。
-	// 与 PG 不同：这里**允许降级到内存**并显式告警，因为附件是可丢的
-	//（Spec 里附件清理本身就是旁路），不像数据持久化那样必须硬失败。
-	// 但告警必须显眼，否则「生产附件重启即丢」会一直没人发现。
-	var objectStore platform.ObjectStore
-	objectStoreKind := "memory"
-	if cfg.MinIOEndpoint != "" {
-		ms, err := objectstore.New(context.Background(), objectstore.Options{
-			Endpoint:  cfg.MinIOEndpoint,
-			AccessKey: cfg.MinIOAccessKey,
-			SecretKey: cfg.MinIOSecretKey,
-			Bucket:    cfg.MinIOBucket,
-			UseSSL:    cfg.MinIOUseSSL,
-		})
-		if err != nil {
-			// 此时续期循环已经启动（上面 scheduler.Run），直接 return 会
-			// 留下悬挂的 goroutine 与未释放的 ctx。必须先停掉再返回。
-			cancelRenew()
-			if identityStore != nil {
-				_ = identityStore.Close()
-			}
-			return nil, err
-		}
-		objectStore = ms
-		objectStoreKind = "minio"
-		logger.Info("对象存储已装配", "impl", "minio", "endpoint", cfg.MinIOEndpoint, "bucket", cfg.MinIOBucket)
-	} else {
-		objectStore = platform.NewMemoryObjectStore()
-		logger.Warn("对象存储使用内存实现：重启即丢附件，仅限本地开发/测试",
-			"hint", "配置 MINIO_ENDPOINT 以启用真实存储")
-	}
-	// 缓存只在配了 Redis 时注入；未配时帖子域按「无缓存直查」处理。
-	// 必须传适配器而不是 *RedisCache：业务域只认 Get/Set/Delete。
-	var postCacheOpt post.Cache
-	if cache != nil {
-		postCacheOpt = postCache{cache}
-	}
-	postSvc := post.New(post.Options{
-		Repo:        repos.Posts,
-		Clock:       clock,
-		ObjectStore: objectStore,
-		Cache:       postCacheOpt,
-		Logger:      logger,
-	})
-	post.RegisterPublic(engine, postSvc, currentUserIDOf)
-	post.RegisterSession(engine, postSvc, currentUserIDOf)
-	logger.Info("帖子域已装配：读者侧 2 条 + 会话侧 11 条（含附件上传）")
-
-	// 皮肤包上传 / 下载服务（issue #53 / ADR-0003、0004、0006）。
-	//
-	// 落点：包体 zip 存对象存储（配了 MINIO_ENDPOINT 就是 MinIO，否则内存实现），
-	// 元数据与「全局单指针」存 Postgres（配了 DATABASE_URL）/ 内存实现。
-	// 二者与帖子域共用同一个 objectStore 与 repos 切换口径，不另起一套存储。
-	//
-	// App 侧三条只读路由挂在 engine 上：免用户会话（已加入 publicReadablePaths），
-	// 但仍要过 NY1 请求签名中间件——客户端首帧后拉取目录/包体时可能尚未登录，
-	// 但必须证明来自持有密钥的客户端。B 端上传走 /admin/*（见下方 adminGroup）。
-	skinSvc := skin.New(skin.Options{
-		Repo:        repos.Skins,
-		ObjectStore: objectStore,
-		Clock:       clock,
-		Logger:      logger,
-	})
-	skin.RegisterPublic(engine, skinSvc)
-	logger.Info("皮肤域已装配：App 侧 3 条只读（目录/详情/包体）")
-
-	// 用户行为埋点（map #43 / Spec 六类常见功能）。
-	//
-	// 三条硬约束都在业务侧兜住：信封统一、脱敏三步顺序、缓冲满不返 503。
-	// 这里只负责构造与注册。
-	trackSvc := track.New(track.Options{
-		Repo:  repos.Track,
-		Clock: clock,
-	})
-	track.Register(engine, trackSvc, currentUserIDOf)
-	logger.Info("埋点域已装配：上报端点 1 条")
-
-	// 管理端路由组：仅当身份域可用时才挂（否则 admin 会话无从校验）。
-	if identityStore != nil && cfg.AuthKey != "" {
-		adminGroup := engine.Group("/",
-			server.RevocableAuthMiddleware(tokenIssuer,
-				server.NewSessionStoreResolver(identityStore, identityStore, clock),
-				server.ScopeAdmin),
-			server.AdminOnly(platform.RoleAdmin),
-		)
-		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
-		post.RegisterAdmin(adminGroup, postSvc)
-		track.RegisterAdmin(adminGroup, trackSvc)
-		// 教务公共服务取数账号 + 公共缓存失效（仅管理员）。
-		jiaowu.RegisterFetchAccountAdmin(adminGroup, fetchAccountAdmin, jiaowuSvc)
-		// 皮肤包 B 端上传 / 列表 / 激活（issue #53）。与管理台同一套
-		// admin 会话 + role 门槛；CreatedBy 取已认证会话的用户 ID 字符串。
-		skin.RegisterAdmin(adminGroup, skinSvc, func(c *gin.Context) (string, bool) {
-			uid := c.GetString(server.CtxUserID)
-			return uid, uid != "" && uid != "0"
-		})
-		// 按学号读画像：与 /admin/* 同一套门槛（admin 会话 + role>=1）。
-		if identityUserSvc != nil {
-			identityuser.RegisterAdmin(adminGroup, identityUserSvc, identityStore)
-		}
-	} else {
-		logger.Warn("管理端端点未挂载：需要身份域（DATABASE_URL）与 AuthKey 才能校验 admin 会话")
-	}
-
-	// 站内消息域 + 通知派生编排（map #43 / Spec 六类常见功能）。
-	//
-	// 三处依赖都必须注入，缺一不可：
-	//   - UserExists：收件人存在性（内部信 fail-closed 的前提）；不注入则所有内部信
-	//     都会被拒成「收件人不存在」——这是刻意的 fail-closed，不是 bug。
-	//   - Limiter：内部信按发送者限频；复用既有 RateLimiter，口径与其它端点一致。
-	//   - notify.Sink：把 message.Emit 投影给编排层，两域互不 import。
-	//
-	// 消息端点一律要求会话，因此只在 AuthKey 非空时挂；否则挂上去也是无人可调。
-	var notifier *notify.Notifier
-	if cfg.AuthKey != "" {
-		var userExists message.UserExistsFunc
-		if identityStore != nil {
-			userExists = messageUserExists(identityStore)
-		} else {
-			logger.Warn("消息域收件人存在性未启用：未配置 DATABASE_URL，内部信将一律被拒")
-		}
-		msgSvc := message.New(message.Options{
-			Repo:       repos.Messages,
-			Clock:      clock,
-			UserExists: userExists,
-			Limiter:    messageLimiter(appLimiter),
-		})
-		message.Register(engine, msgSvc, currentUserIDOf)
-
-		// 通知派生编排：异步旁路，队列满/写入失败只记 dropped，绝不拖垮主业务。
-		notifier = notify.New(notify.Options{
-			Sink:     notifySink{svc: msgSvc},
-			Capacity: 1024,
-			Audit:    notifyAudit(auditStore, clock),
-			Logger:   logger,
-		})
-		// 把两个源域的窄钩子接到编排层（跨域编排只在装配层发生）。
-		postSvc.SetNotifyHook(postNotifyAdapter{posts: postSvc, notify: notifier}.Handle)
-		announcementSvc.SetPublishHook(announcementNotifyAdapter{notify: notifier}.Handle)
-		logger.Info("消息域已装配：端点 /messages* + 通知派生编排（已接帖子 4 触发点 / 公告发布）")
-	} else {
-		logger.Warn("消息域端点未挂载：需要 AUTH_KEY 才能要求会话")
-	}
-
-	// #24 / Spec M6：观测出口 /status。与 /healthz 分开——后者只报进程存活、不探下游。
-	// 探针用真实依赖的 Ping，Redis 掉线后本端点会如实报 down。
-	var pgPing, redisPing func(context.Context) error
-	if pgAudit != nil {
-		pgPing = pgAudit.Ping
-	} else if identityStore != nil {
-		pgPing = identityStore.Ping
-	}
-	if cache != nil {
-		redisPing = cache.Ping
-	} else if rt, ok := tickets.(*platform.RedisTicketStore); ok {
-		redisPing = rt.Ping
-	}
-	breakerName := "none"
-	if cache != nil {
-		breakerName = fmt.Sprint(cache.BreakerState())
-	}
-	// storage 必须如实反映业务仓储实际用的实现，不能只看 DATABASE_URL：
-	// 配了库但走内存（或反之）时，运维看 /status 会被误导。
-	storageKind := string(repos.Mode)
-	// 埋点缓冲计数接进 /status：dropped 是「缓冲满就丢」的静默行为的唯一观测面。
-	RegisterStatus(engine, newStatusProbe(pgPing, redisPing, func() string {
-		if cache != nil {
-			return fmt.Sprint(cache.BreakerState())
-		}
-		return breakerName
-	}, storageKind, func() (int64, int64) {
-		if trackSvc == nil {
-			return 0, 0
-		}
-		return trackSvc.Written(), trackSvc.Dropped()
-	}, func() int64 {
-		if postSvc == nil {
-			return 0
-		}
-		return postSvc.CleanupFailureCount()
-	}, objectStoreKind))
-
-	a := &App{
-		cfg:    cfg,
-		engine: engine,
-		server: NewHTTPServer(cfg.Addr, engine,
-			time.Duration(cfg.HTTPReadTimeoutSec)*time.Second,
-			time.Duration(cfg.HTTPWriteTimeoutSec)*time.Second,
-			time.Duration(cfg.HTTPIdleTimeoutSec)*time.Second),
-		caps: Capabilities{
-			Tickets: tickets,
-			Cipher:  cipher,
-			Doer:    doer,
-			Clock:   clock,
-			Cache:   cache,
-		},
-		cancelRenew:   cancelRenew,
-		renewDone:     renewDone,
-		flushDone:     flushDone,
-		closeStore:    closeTickets,
-		cache:         cache,
-		pgAudit:       pgAudit,
-		identityStore: identityStore,
-		sessionCache:  sessionCache,
-		notifier:      notifier,
-		trackSvc:      trackSvc,
-		pgPool:        pgPool,
-		storeMode:     repos.Mode,
-		logger:        logger,
-	}
-	// 启动日志（issue #23）：字段必须说真话，不再写死 "store","mock"。
-	// 早先那个 mock 只被塞进 Capabilities.Store 且无任何消费者，写死 mock 会让人
-	// 误判「用户/会话/票据都没落库」。现在逐项报告真实装配：
-	//   - store  = 身份/审计的持久后端：配了 DATABASE_URL 是 postgres，否则 none；
-	//   - tickets= 票据后端：配了 REDIS_ADDR 是 redis（外置持久），否则 memory（重启即丢）；
-	//   - 其余字段同样取自真实装配变量，而非字面量常量。
-	storeBackend := "none"
-	if cfg.DatabaseURL != "" {
-		storeBackend = "postgres"
-	}
-	ticketsBackend := "memory"
-	if cfg.RedisAddr != "" {
-		ticketsBackend = "redis"
-	}
-	logger.Info("装配完成", "addr", cfg.Addr, "env", cfg.AppEnv,
-		"store", storeBackend, "tickets", ticketsBackend,
-		"outboundEnforce", cfg.HTTPEnforce, "outboundDoer", outboundDoer,
-		"accelEnabled", cfg.AccelEnabled,
-		"authEnabled", cfg.AuthKey != "", "appSignEnabled", len(cfg.AppSigningKeys) > 0,
-		"cacheEnabled", cache != nil,
-		"identityEnabled", identityStore != nil, "auditEnabled", pgAudit != nil,
-		"sessionCacheEnabled", sessionCache != nil)
-	// 无鉴权是「失败开放」形态：只在本地开发/单测可接受，必须显式告警，
-	// 避免有人用字面量 Config 起服务时静默开放（prod 由 config.Load 强校验拦住）。
-	if cfg.AuthKey == "" {
-		logger.Warn("认证中间件未启用：所有业务端点无身份校验，仅限本地开发/测试使用",
-			"reason", "AUTH_KEY 为空")
-	}
-	warnAppSigningDisabled(cfg, logger)
-	return a, nil
-}
-
-// runCacheFlusher 是缓存回灌循环：每秒调一次 FlushOnce，调用频次 × 每次条数 = 限速。
-// Redis 仍不可用时 FlushOnce 返回错误，这里只记一次日志并继续（不刷屏、不重试风暴）。
-func runCacheFlusher(ctx context.Context, cache *platform.RedisCache, logger *slog.Logger) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		failing := false
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if cache.PendingBackfill() == 0 {
-					if failing {
-						logger.Info("缓存回灌：积压已清空")
-						failing = false
-					}
-					continue
-				}
-				n, err := cache.FlushOnce(ctx)
-				if err != nil {
-					if !failing {
-						logger.Warn("缓存回灌受阻（Redis 仍不可用），保留积压下轮再试", "err", err)
-						failing = true
-					}
-					continue
-				}
-				if n > 0 {
-					logger.Info("缓存回灌进度", "flushed", n, "pending", cache.PendingBackfill())
-				}
-			}
-		}
-	}()
-	return done
-}
-
-// outboundAllowlist 合并「内建的真实目标 host」与配置里的额外白名单。
-// 内建项保证经 school.Resolve + Encode 产出的 webvpn 域地址一定可出站；
-// 配置项供部署时追加（如测试环境域名），改配置即时生效。
-//
-// 注意：内建清单必须覆盖**所有后端真正会请求的学校域**。漏一个的症状是
-// `platform: outbound target denied`——请求在白名单校验处就被拦下、零出站，
-// 看起来像「学校站不可达」或「tgt 失效」，实际只是 host 没登记。
-// xsgz.sicau.edu.cn（学工系统）曾是漏项：它是当前唯一数据源，
-// 换 token 与取档案都打它，漏了会导致登录成功但画像全空（2026-11-13 实测踩到）。
-func outboundAllowlist(extra string) []string {
-	base := []string{
-		"jiaowu.sicau.edu.cn",
-		"auth.sicau.edu.cn",
-		"webvpn.sicau.edu.cn",
-		// 学工系统：唯一数据源。tgt 换 access token、enterHall、student/detail 全打它。
-		"xsgz.sicau.edu.cn",
-	}
-	return append(base, parseAllowlist(extra)...)
-}
-
-// parseAllowlist 把逗号分隔的白名单串拆成去空白、去空项的主机名列表。
-func parseAllowlist(raw string) []string {
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if h := strings.TrimSpace(p); h != "" {
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
 // Capabilities 返回装配层注入的全部外部能力（只读快照）。
 func (a *App) Capabilities() Capabilities { return a.caps }
 
@@ -1073,14 +117,22 @@ func (a *App) Run() error {
 	return a.server.ListenAndServe()
 }
 
-// Shutdown 在给定超时内优雅关停：先停定时续期循环，再等待在途请求结束。
+// Shutdown 在给定超时内优雅关停。
+//
+// 顺序是有意的，改动前先读一遍每一步的理由：
+//
+//	① 停定时循环（续期 / 缓存回灌）——它们会持续产生写入；
+//	② 停 HTTP 收新请求并等在途请求结束；
+//	③ flush 旁路队列（通知 / 埋点）——此时队列只减不增；
+//	④ 关业务仓储连接池——必须在各域 flush 之后，否则写入会撞上已关的池；
+//	⑤ 关外置存储连接（Redis）。
 func (a *App) Shutdown(timeout time.Duration) error {
 	a.stopRenew()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	err := a.server.Shutdown(ctx)
+
 	// 通知派生编排层：把队列里剩余事件写完再退出（旁路，失败只记日志）。
-	// 放在 server.Shutdown 之后：此时已不再接新请求，队列只减不增。
 	if a.notifier != nil {
 		a.notifier.Flush()
 	}
@@ -1088,7 +140,7 @@ func (a *App) Shutdown(timeout time.Duration) error {
 	if a.trackSvc != nil {
 		a.trackSvc.Flush()
 	}
-	// 业务仓储连接池：必须在各域 flush 之后再关，否则写入会撞上已关的池。
+	// 业务仓储连接池：必须在各域 flush 之后再关。
 	if a.pgPool != nil {
 		a.pgPool.Close()
 	}
@@ -1145,4 +197,15 @@ func (a *App) stopRenew() {
 			_ = a.identityStore.Close()
 		}
 	})
+}
+
+// exchangerOrNil 把 *JiaowuSource 转成 TicketExchanger，并在为 nil 时返回**真正的 nil 接口**。
+//
+// 直接写 `Exchanger: jwSrc` 会有 typed-nil 陷阱：*JiaowuSource(nil) 装进接口后
+// 接口值 != nil，导致 YWTBSource 里 `s.exchanger == nil` 判断失效，运行时才崩。
+func exchangerOrNil(jw *schoolauth.JiaowuSource) schoolauth.TicketExchanger {
+	if jw == nil {
+		return nil
+	}
+	return jw
 }

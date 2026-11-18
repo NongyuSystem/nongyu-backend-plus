@@ -79,17 +79,17 @@ func accessModeOf(raw string) AccessMode {
 // 这里不编。来源：docs/tech/课程表与成绩查询可重写契约清单.md 与
 // docs/tech/解析器施工级补充-4个待定解析器.md。
 var pageRecipes = map[DataType]pageRecipe{
-	DataTypeCourse:          {path: "/xuesheng/gongxuan/gongxuan/kbbanji.asp?title_id1=4", parser: "jiaowu-course-v1"},
-	DataTypeScore:           {path: "/xuesheng/chengji/chengji/sear_ch_all.asp", parser: "jiaowu-score-v1"},
-	DataTypeExam:            {path: "/xuesheng/kao/kao/xuesheng.asp?title_id1=01", parser: "jiaowu-exam-v1"},
-	DataTypeProgress:        {path: "/xuesheng/chengji/xdjd/xuefen_2023.asp?title_id1=1", parser: "jiaowu-progress-v1"},
-	DataTypeRank:            {path: "/xuesheng/chengji/chengji/zytongbf.asp", parser: "jiaowu-rank-v1"},
-	DataTypePlan:            {path: "/xuesheng/jihua/jihua/jjihua.asp?title_id1=1", parser: "jiaowu-plan-v1"},
-	DataTypePersonal:        {path: "/xuesheng/dangan/banji/bjiben.asp", parser: "jiaowu-personal-v1"},
-	DataTypeNotice:          {path: "/web/web/web/index.asp", parser: "jiaowu-notice-v1"},
-	DataTypeTeachingNotice:  {path: "/web/web/web/index.asp", parser: "jiaowu-teaching-notice-v1"},
-	DataTypeCompetition:     {path: "/web/web/web/index.asp", parser: "jiaowu-competition-v1"},
-	DataTypeKaike:           {path: "/xuesheng/gongxuan/gongxuan/kai.asp", parser: "jiaowu-kaike-v1"},
+	DataTypeCourse:         {path: "/xuesheng/gongxuan/gongxuan/kbbanji.asp?title_id1=4", parser: "jiaowu-course-v1"},
+	DataTypeScore:          {path: "/xuesheng/chengji/chengji/sear_ch_all.asp", parser: "jiaowu-score-v1"},
+	DataTypeExam:           {path: "/xuesheng/kao/kao/xuesheng.asp?title_id1=01", parser: "jiaowu-exam-v1"},
+	DataTypeProgress:       {path: "/xuesheng/chengji/xdjd/xuefen_2023.asp?title_id1=1", parser: "jiaowu-progress-v1"},
+	DataTypeRank:           {path: "/xuesheng/chengji/chengji/zytongbf.asp", parser: "jiaowu-rank-v1"},
+	DataTypePlan:           {path: "/xuesheng/jihua/jihua/jjihua.asp?title_id1=1", parser: "jiaowu-plan-v1"},
+	DataTypePersonal:       {path: "/xuesheng/dangan/banji/bjiben.asp", parser: "jiaowu-personal-v1"},
+	DataTypeNotice:         {path: "/web/web/web/index.asp", parser: "jiaowu-notice-v1"},
+	DataTypeTeachingNotice: {path: "/web/web/web/index.asp", parser: "jiaowu-teaching-notice-v1"},
+	DataTypeCompetition:    {path: "/web/web/web/index.asp", parser: "jiaowu-competition-v1"},
+	DataTypeKaike:          {path: "/xuesheng/gongxuan/gongxuan/kai.asp", parser: "jiaowu-kaike-v1"},
 	DataTypeClassroomInfo: {
 		parser:   "jiaowu-classroom-info-v1",
 		needs:    "教室名关键词（bj）",

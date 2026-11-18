@@ -10,7 +10,6 @@ import (
 	"nongyu-backend-plus/migrations"
 )
 
-// ---- from migrate.go ----
 // 迁移执行能力（issue #23 / Spec M4 / 验收第 3 条）。
 //
 // 落点理由：迁移是「把 Postgres 建成业务域期望的形状」，与 PGIdentityStore /
