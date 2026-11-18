@@ -47,23 +47,16 @@ type cacheEnvelope struct {
 
 // cacheMissResponse 是未命中的响应：HTTP 200 + 业务码 cache_miss。
 //
-// 客户端拿到它就按 method 请求 address，自己解析 HTML，再把 JSON 回传。
+// 客户端是纯执行器：拿 address + cookies 交给后端代取链路（或直接请求），
+// 自己解析 HTML、把 JSON 回传。两种形态**同构**——区别只在地址与 cookie 的内容。
 //
 // address 形态取决于请求头 X-Nongyu-Campus-Network：
-//   - 校内（direct）：直连教务 URL，后端用已保管的 tgt 换出 ASPSESSIONID 一并下发；
-//   - 校外（vpn）：WebVPN 编码地址，**cookies 恒为空**——网关票只能由客户端自己登录网关产生，
-//     后端换不到（见 sessionStateClientSide 说明）。
+//   - 校内（direct）：直连教务 URL，cookies 装 ASPSESSIONID（后端用 tgt 换）；
+//   - 校外（vpn）：WebVPN 编码地址，cookies 装 wengine_vpn_ticket（后端保管库取）。
 //
-// 校外形态额外带回 WebVPN 字段：把「本地票状态」明确告诉客户端。
-// 原来只回 session=client_side，客户端分不清「还没登录网关」和「已登录票正常」，
-// 也就无法按你的要求「只在票无效/需要登录时弹窗」。现在 code 与 /fetch 端点
-// 完全一致（webvpn_ticket_missing / webvpn_ticket_expired），客户端一套逻辑即可。
-//
-// 诚实边界：cache_miss 零出站，无法验证网关侧是否仍认这张票。webvpn.status=ready
-// 只表示「本地保管着一张未被判死的票」，不是「网关保证放行」。
-// 真正判死仍靠 /fetch 的 302，或客户端自己请求时遇到的 302。
-//
-// 无论哪种形态，取不到票时仍是 200，不变成 500。
+// 客户端什么都没有、全在后端取（2026-11-18 拍板）：两种形态都必须把配给该地址的
+// cookie 放进 cookies，否则代取链路拿不到凭据。取不到票时 cookies 为空、
+// session=unavailable；弹窗由客户端自己判 302，后端不造零出站看不出的状态字段。
 type cacheMissResponse struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
@@ -79,21 +72,12 @@ type cacheMissResponse struct {
 	BasePath string `json:"basePath,omitempty"`
 	// Mode 是本次判定出的地址形态：direct（直连）或 vpn（经网关编码）。
 	Mode string `json:"mode,omitempty"`
-	// Session 是会话语义：ok（已下发票）/ unavailable（需要票但没拿到）/ client_side（票由客户端自备）。
+	// Session 是会话语义：ok（已下发票）/ unavailable（需要票但没拿到）。
 	Session string `json:"session,omitempty"`
-	// WebVPN 是校外形态的本地票状态信号（direct 形态为 nil，不出现在响应里）。
-	WebVPN *WebVPNGateResult `json:"webvpn,omitempty"`
 }
 
-// sessionStateUnavailable 表示需要票但没拿到（未接 issuer、无 tgt、换票失败）。
+// sessionStateUnavailable 表示需要票但没拿到（未接 issuer、无 tgt、无网关票）。
 const sessionStateUnavailable = "unavailable"
-
-// sessionStateClientSide 表示票由客户端自备（vpn 形态：后端不参与票价链路）。
-//
-// 为什么不在后端换网关票：wengine_vpn_ticket 只在网关服务端已登记该会话为已登录时有效，
-// 那种票只有客户端真实登录网关才会产生。后端用 tgt 走门户 appid 换票再回投，
-// 只能拿到游客票（回投停在 /wui/#/ 的 fragment 上），打编码地址一律 302。
-const sessionStateClientSide = "client_side"
 
 // dataTypeFromPath 从 URL 取并校验 dataType。
 //
@@ -269,25 +253,16 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 	}
 
 	if mode == AccessVPN {
-		// 校外形态：后端不参与票价链路，只给编码地址。
-		//
-		// 缺陷修复（2026-11-18）：原来这里无条件回 session=client_side，
-		// 客户端拿不到「没交票」的信号，弹窗触发条件没有信号源。
-		// 现在查本地票状态并附带 webvpn 字段，code 与 /fetch 完全同码。
-		gate := s.inspectWebVPNTicket(ctx, userID)
-		resp.WebVPN = &gate
-		resp.Session = sessionStateClientSide
-		// 审计按状态分流，便于观测「多少用户卡在没交票」。
-		switch gate.Status {
-		case WebVPNTicketReady:
-			s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
-		case WebVPNTicketExpired:
-			s.audit(ctx, userID, "cache_miss", "vpn_ticket_expired", string(school.TargetWebvpn))
-		case WebVPNTicketMissing:
+		// 校外形态：从保管库取网关票放进 cookies，与 direct 完全同构。
+		// 客户端拿 address + cookies 交给代取链路，自己不碰网关地址。
+		cookies := s.webvpnCookiesForClient(ctx, userID)
+		if len(cookies) == 0 {
 			s.audit(ctx, userID, "cache_miss", "vpn_ticket_missing", string(school.TargetWebvpn))
-		default:
-			s.audit(ctx, userID, "cache_miss", "vpn_recipe_client_side", string(school.TargetWebvpn))
+			return resp // session=unavailable, cookies=[]
 		}
+		resp.Cookies = cookies
+		resp.Session = "ok"
+		s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
 		return resp
 	}
 

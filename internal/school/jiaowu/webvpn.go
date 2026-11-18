@@ -36,53 +36,28 @@ var ErrWebVPNTicketExpired = errors.New("jiaowu: WebVPN 网关票已失效，需
 // 真正的失效信号仍是网关返回 302——本 TTL 只是兜底。
 const webvpnTicketTTL = 12 * time.Hour
 
-// webvpnExpiredSentinel 是「票已被判失效」的存储标记。
+// webvpnExpiredSentinel 是「票已被网关判失效」的存储标记。
 //
-// /fetch 判定票失效时**不直接删记录**，而是写入这个哨兵：
-//   - 票值本身是可见 ASCII（见 LooksLikeWebVPNTicket），哨兵用 NUL 开头，天然区分；
-//   - 这样后续 cache_miss 能报 `webvpn_ticket_expired`（登录过、票死了），
-//     而不是 `webvpn_ticket_missing`（从没登录过）——两者客户端动作不同，
-//     分开才能让「只有票无效才弹窗」成立。
-//
-// 短 TTL：客户端重新登录交票会覆盖它；即便不覆盖，超时后自然回落到 missing，
-// 反正两者都要引导登录。
+// /fetch 判定票失效时不直接删记录，而是写入这个哨兵：票值本身是可见 ASCII，
+// 哨兵用 NUL 开头天然区分；这样 /fetch 再次收到请求时能直接报 expired，
+// 不再拿死票打学校站。客户端重新登录交票会覆盖它，超时后自然回落。
 const webvpnExpiredSentinel = "\x00expired"
 const webvpnExpiredMarkTTL = 30 * time.Minute
 
-// WebVPNTicketState 是本地可判定的网关票状态。
+// webvpnCookiesForClient 从保管库取出网关票，包装成 cache_miss 要下发的 cookie。
 //
-// 诚实边界：cache_miss 是纯本地、零出站操作，无法验证网关侧是否还认这张票。
-// `ready` 只表示「本地有一张未被判死的票」，不保证网关一定接受。
-// 真正判死靠 /fetch 的 302 或客户端自己请求时遇到的 302。
-type WebVPNTicketState string
-
-const (
-	WebVPNTicketReady     WebVPNTicketState = "ready"     // 有票、未过期、未被判死
-	WebVPNTicketMissing   WebVPNTicketState = "missing"   // 没交过票 / 已被清
-	WebVPNTicketExpired   WebVPNTicketState = "expired"   // 本地过期，或 /fetch 判过死
-	WebVPNTicketUnmanaged WebVPNTicketState = "unmanaged" // 后端未启用票保管（纯客户端持有票的部署）
-)
-
-// WebVPNGateResult 是 cache_miss 附带的网关票信号。
+// 模型（2026-11-18 拍板）：客户端什么都没有、全在后端取。它拿 cache_miss 的
+// address + cookies 交给后端代取链路，自己不碰网关地址、不碰任何 cookie 罐。
+// 所以 vpn 形态必须把保管库里的 wengine_vpn_ticket 放进 cookies。
 //
-// Code 与 /fetch 端点的错误码完全一致（webvpn_ticket_missing /
-// webvpn_ticket_expired），客户端用同一套判断逻辑即可，不需要为两条路径写两套。
-type WebVPNGateResult struct {
-	Status    WebVPNTicketState `json:"status"`
-	Code      string            `json:"code,omitempty"`
-	ExpiresAt string            `json:"expiresAt,omitempty"`
-}
-
-// webvpnGateCode 把状态翻译成 /fetch 用的错误码。
-func webvpnGateCode(st WebVPNTicketState) string {
-	switch st {
-	case WebVPNTicketMissing:
-		return "webvpn_ticket_missing"
-	case WebVPNTicketExpired:
-		return "webvpn_ticket_expired"
-	default:
-		return ""
+// 失效哨兵/本地过期不下发（返回 nil）：拿不到票就是拿不到票，弹窗由客户端
+// 自己判 302。后端零出站，本来看不出网关侧是否仍认这张票，不造状态字段。
+func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) []IssuedCookie {
+	ticket, err := s.webvpnTicketOf(ctx, userID)
+	if err != nil {
+		return nil
 	}
+	return []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
 }
 
 // WebVPNTicketStore 保管客户端交来的网关票（加密后按 userID 存）。
@@ -138,40 +113,6 @@ func (s *Service) WebVPNTicket(ctx context.Context, userID string) WebVPNTicketS
 		return WebVPNTicketStatus{}
 	}
 	return WebVPNTicketStatus{Present: true, ExpiresAt: exp}
-}
-
-// inspectWebVPNTicket 是 cache_miss 用的本地票状态判定（零出站）。
-//
-// 这是本次缺陷修复的核心：原来 vpn 分支无条件回 session=client_side，
-// 客户端无法区分「没登录网关」与「已登录且票正常」。现在明确给出 status。
-//
-// 判定顺序（都只读本地存储，不打学校站）：
-//  1. 未接保管 store    → unmanaged（这种部署里票只在客户端手里，后端无从判断，
-//     客户端须自己按 WebView 会话处理）
-//  2. 无记录            → missing
-//  3. 记录是失效哨兵    → expired
-//  4. 本地 TTL 已过     → expired（顺手清掉，回落 missing 之前的中间态）
-//  5. 其余              → ready
-func (s *Service) inspectWebVPNTicket(ctx context.Context, userID string) WebVPNGateResult {
-	if s.webvpnTickets == nil {
-		return WebVPNGateResult{Status: WebVPNTicketUnmanaged}
-	}
-	ticket, exp, err := s.webvpnTickets.Get(ctx, userID)
-	if err != nil || strings.TrimSpace(ticket) == "" {
-		return WebVPNGateResult{Status: WebVPNTicketMissing, Code: webvpnGateCode(WebVPNTicketMissing)}
-	}
-	if isExpiredSentinel(ticket) {
-		return WebVPNGateResult{Status: WebVPNTicketExpired, Code: webvpnGateCode(WebVPNTicketExpired)}
-	}
-	// 本地兜底过期：不主动打学校站，只按保管窗口判断。
-	if !exp.IsZero() && !s.clock.Now().Before(exp) {
-		_ = s.ClearWebVPNTicket(ctx, userID)
-		return WebVPNGateResult{Status: WebVPNTicketExpired, Code: webvpnGateCode(WebVPNTicketExpired)}
-	}
-	return WebVPNGateResult{
-		Status:    WebVPNTicketReady,
-		ExpiresAt: exp.UTC().Format("2006-01-02T15:04:05Z07:00"),
-	}
 }
 
 // markWebVPNTicketExpired 记录「这张票已被网关判死」，供后续 cache_miss 复用。

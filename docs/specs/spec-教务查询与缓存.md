@@ -253,35 +253,36 @@
 | 请求头取值 | mode | address | cookies | session |
 | --- | --- | --- | --- | --- |
 | `direct` / `campus` / `intranet` / `1` / `true` | `direct` | `https://jiaowu.sicau.edu.cn/...` | `ASPSESSIONID*` | `ok` / `unavailable` |
-| `vpn` / `webvpn` / `0` / `false`，或缺省、不可识别 | `vpn` | `https://webvpn.sicau.edu.cn/https/<KEY_HEX><密文>/...` | 空 | `client_side` |
+| `vpn` / `webvpn` / `0` / `false`，或缺省、不可识别 | `vpn` | `https://webvpn.sicau.edu.cn/https/<KEY_HEX><密文>/...` | `wengine_vpn_ticket` | `ok` / `unavailable` |
 
-`session=client_side` 表示**票由客户端自备**，不是失败：`vpn` 形态后端完全不出站、不下发任何票，
-客户端用自己的 WebView 会话（`wengine_vpn_ticket`）去访问编码地址。
+**两种形态完全同构**：`cache_miss` 给出配给该 `address` 的 cookie，客户端/代取链路拿
+`address + cookies` 去取数，自己解析回传。区别只在地址与 cookie 的内容。
 
-### 2026-11-18 修：vpn 形态额外带回「本地票状态」
+### 2026-11-18 定案：vpn 形态必须下发网关票
 
-`session=client_side` 本身**不区分**「用户还没登录网关」和「已登录且票正常」——
-这会让客户端「只在票无效才弹窗」没有信号源。现在 `cache_miss` 在 vpn 形态额外返回
-`webvpn` 对象，`code` 与 `/school/jiaowu/cache/:dataType/fetch` 同码，客户端一套判断即可：
+模型：**客户端什么都没有、全在后端取**。客户端不碰网关地址、不碰任何 cookie 罐。
+`wengine_vpn_ticket` 由客户端登录网关后 `POST /school/webvpn-session` 交来，后端按用户
+加密保管（`webvpn:` 命名空间）；`cache_miss` 的 vpn 分支从保管库取票放进 `cookies`，
+`session` 与 direct 一致用 `ok`/`unavailable`。
 
-| webvpn.status | webvpn.code | 含义 | 客户端动作 |
-| --- | --- | --- | --- |
-| `ready` | 无 | 本地保管着未被判死的票 | 不弹窗，正常取数 |
-| `missing` | `webvpn_ticket_missing` | 没交过票 | 去登录网关并提交 |
-| `expired` | `webvpn_ticket_expired` | 票被判死或本地过期 | **重新登录网关**后重交 |
-| `unmanaged` | 无 | 后端未启用票保管 | 客户端自己按 WebView 会话处理 |
+之前有一版把 `cookies` 恒置空、额外回 `session=client_side` 和一套 `webvpn.status`
+状态字段——那是基于「客户端自己拿 WebView 罐直连」的错误前提，且后端零出站根本
+验证不了网关侧票是否有效，状态恒为 `missing` 会误导弹窗。该版已删除。
 
-**诚实边界**：`cache_miss` 是零出站操作，无法验证网关侧是否仍认这张票。`ready` 只表示
-「本地有一张未被判死的票」，不是「网关保证放行」。真正判死仍靠 `/fetch` 的 302
-（或客户端自己请求时遇到的 302），判死后写**失效哨兵**而非删记录——这样后续
-`cache_miss` 能报 `expired`（登录过、票死了），而不是 `missing`（从没登录过），
-两者引导动作不同。哨兵在重新交票时被覆盖，或 30 分钟后自然回落。
+**弹窗信号**：客户端自己判 302。带票请求编码地址时被 302 回 `webvpn.sicau.edu.cn/login`
+即票失效，需重新登录网关并重交票。后端不造零出站看不出的状态字段。
 
-为什么后端不下发网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
+**失效哨兵**：`/fetch` 判死票时写哨兵而非删记录，避免拿死票反复打学校站；
+哨兵不下发成 cookie（无票即 `cookies=[]`、`session=unavailable`），重新交票即覆盖。
+
+**实测边界**：网关票只够过网关（公开页 200）。课表等需登录页还要教务自己的
+CAS 会话（`go-admin-tgt` 换教务 st → 回投编码后的 `caslogin.asp`），这一步由后端
+代取链路完成，不是单纯「带 cookie」能解决的。后端不声称 `cookies` 里的票保证放行。
+
+为什么后端不自造网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
 该会话为已登录**时才有效。后端用 tgt 走门户 appid 换票并回投网关，只能拿到 16 位游客票
 （回投链停在 `/wui/#/` 的 fragment 上，fragment 不进 HTTP，剩余会话绑定全在门户 SPA 里），
-拿这张票打任何编码地址都 302 回 `/login`。因此该能力已从代码中删除，
-`vpn` 形态只下发编码地址。
+拿这张票打任何编码地址都 302 回 `/login`。因此票只能由客户端真实登录后交来。
 
 为什么判定权在客户端：教务站只在校内网可达，而「这个学生此刻在校内还是校外」只有客户端知道。
 后端出口在校内也推不出学生位置，所以不做后端探测，也不复用 `/school/presence` 的持久化上报

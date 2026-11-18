@@ -785,13 +785,14 @@ func TestCache_MissDefaultsToVPNRecipe(t *testing.T) {
 	if !strings.Contains(addr, "kbbanji.asp?title_id1=4") {
 		t.Fatalf("编码地址应保留明文 path，实际 %q", addr)
 	}
-	// 校外形态：后端不参与票价链路，票由客户端自备。
-	if body["session"] != "client_side" {
-		t.Fatalf("vpn 形态应 session=client_side，实际 %v", body["session"])
+	// 该脚手架没绑 webvpn 保管库，所以取不到票：cookies 为空、session=unavailable。
+	// 票的实际下发由 webvpn_test.go 里带保管库的用例覆盖。
+	if body["session"] != "unavailable" {
+		t.Fatalf("无票时应 session=unavailable，实际 %v", body["session"])
 	}
 	cookies, _ := body["cookies"].([]any)
 	if len(cookies) != 0 {
-		t.Fatalf("vpn 形态不应下发 cookie，实际 %v", cookies)
+		t.Fatalf("没保管票时不应下发 cookie，实际 %v", cookies)
 	}
 	if issuer.calls != 0 {
 		t.Fatalf("vpn 形态不应建会话，实际调用 %d 次", issuer.calls)
@@ -885,10 +886,10 @@ func TestAccessModeFromHeader(t *testing.T) {
 
 // TestCache_MissVPNNeverIssuesCookies 校外形态恒不下发票。
 //
-// 2026-11-17 定案：wengine_vpn_ticket 只能由客户端真实登录网关产生，
-// 后端换到的是游客票（网关侧未登记登录态）。所以 vpn 形态无论接没接 issuer，
-// 都必须 session=client_side 且 cookies 为空——绝不把后端换来的票发出去。
-func TestCache_MissVPNNeverIssuesCookies(t *testing.T) {
+// 2026-11-18 定案：vpn 形态的票来自后端保管库（webvpnCookiesForClient），
+// 与 direct 的 SessionIssuer 完全无关。即使接了 issuer，vpn 形态也不该调用它。
+// 该脚手架没绑保管库，所以取不到票：cookies 为空、session=unavailable。
+func TestCache_MissVPNDoesNotCallDirectIssuer(t *testing.T) {
 	engine, svc, _, _ := newCacheTestServer(t, "user-1")
 	// 即使接了 issuer，vpn 形态也不应调用它。
 	issuer := &fakeSessionIssuer{cookies: []IssuedCookie{{Name: "ASPSESSIONIDabc", Value: "v"}}}
@@ -899,15 +900,15 @@ func TestCache_MissVPNNeverIssuesCookies(t *testing.T) {
 	if body["mode"] != "vpn" {
 		t.Fatalf("应判定 vpn，实际 %v", body["mode"])
 	}
-	if body["session"] != "client_side" {
-		t.Fatalf("vpn 形态应 session=client_side，实际 %v", body["session"])
+	if body["session"] != "unavailable" {
+		t.Fatalf("无保管票时应 session=unavailable，实际 %v", body["session"])
 	}
 	cookies, _ := body["cookies"].([]any)
 	if len(cookies) != 0 {
-		t.Fatalf("vpn 形态绝不下发票，实际 %v", cookies)
+		t.Fatalf("没保管票时 cookies 应为空，实际 %v", cookies)
 	}
 	if issuer.calls != 0 {
-		t.Fatalf("vpn 形态不应调用 issuer，实际 %d 次", issuer.calls)
+		t.Fatalf("vpn 形态不应调用 direct 的 issuer，实际 %d 次", issuer.calls)
 	}
 }
 
