@@ -15,19 +15,19 @@ package server_test
 //          未签名/未认证请求被拒，拿不到内部基础设施状态。
 //
 // 不改动任何生产代码，不 import 未导出的实现细节；只用导出的中间件、
-// 导出谓词与 app.RegisterStatus 复现真实路径。
+// 导出谓词与 httpserver.RegisterStatus 复现真实路径。
 
 import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/app/httpserver"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"nongyu-backend-plus/internal/app"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/school"
 	"nongyu-backend-plus/internal/server"
@@ -126,7 +126,7 @@ func TestZZPocSchool_StatusLeaksInternalStateUnsigned_RED(t *testing.T) {
 		server.NewMemoryNonceStore(clock), clock, nil))
 	r.Use(server.AuthMiddleware(server.NewTokenVerifier("poc-auth-key", clock)))
 	// 真实 /status 实现（internal/app/status.go 的导出装配入口）。
-	app.RegisterStatus(r, app.StatusProbe{
+	httpserver.RegisterStatus(r, httpserver.StatusProbe{
 		Postgres:    func() bool { return true },
 		Redis:       func() bool { return true },
 		Breaker:     func() string { return "half-open" },

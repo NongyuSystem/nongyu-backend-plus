@@ -25,7 +25,9 @@ nongyu-backend-plus/
 ├── cmd/server/            # 唯一入口：装配 + 启动 + 优雅关停
 ├── internal/
 │   ├── app/               # 装配层（composition root）：依赖注入只在这里
-│   │   └── notify/        # 跨域编排单元（通知派生）
+│   │   ├── notify/        # 跨域编排单元（通知派生）
+│   │   ├── bridge/        # 跨域适配器：把 A 域接口接成 B 域要求的形状
+│   │   └── httpserver/    # HTTP 外壳：超时配置、/status 观测、请求签名接线
 │   ├── config/            # 环境变量读取与校验（见 .env.example，37 变量）
 │   ├── server/            # Gin 适配层：路由、中间件、/healthz、/status
 │   ├── architecture/      # import 方向守卫测试（防止分层再次倒置）

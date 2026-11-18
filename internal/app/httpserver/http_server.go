@@ -1,4 +1,4 @@
-package app
+package httpserver
 
 // #21 M7：HTTP 服务器的超时配置。
 //
@@ -19,11 +19,11 @@ const (
 	defaultHeaderTimeout = 5 * time.Second
 )
 
-// NewHTTPServer 构造带完整超时的 HTTP 服务器。
+// NewServer 构造带完整超时的 HTTP 服务器。
 //
 // 这是装配层与测试共用的公共 seam：app.New 用它，测试也直接通过它观察
 // 三个超时是否生效，而不需要真的起服务或触碰 App 的私有字段。
-func NewHTTPServer(addr string, handler http.Handler, read, write, idle time.Duration) *http.Server {
+func NewServer(addr string, handler http.Handler, read, write, idle time.Duration) *http.Server {
 	if read <= 0 {
 		read = defaultReadTimeout
 	}

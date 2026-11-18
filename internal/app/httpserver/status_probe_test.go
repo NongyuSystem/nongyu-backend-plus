@@ -1,4 +1,4 @@
-package app
+package httpserver
 
 // #24：探针必须在依赖 Ping 失败时如实返回 false。
 // 覆盖「运行中 Redis 挂掉」的场景——/status 每次请求现查，不会缓存旧状态。
@@ -12,7 +12,7 @@ import (
 func TestNewStatusProbe_ReflectsPingFailure(t *testing.T) {
 	pgOK := true
 	redisOK := true
-	probe := newStatusProbe(
+	probe := NewStatusProbe(
 		func(context.Context) error {
 			if !pgOK {
 				return errors.New("pg down")

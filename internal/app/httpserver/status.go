@@ -1,4 +1,4 @@
-package app
+package httpserver
 
 // #24 / Spec #18 M6：可观测性出口。
 //
@@ -112,9 +112,9 @@ func stringOrUnknown(fn func() string) string {
 	return fn()
 }
 
-// newStatusProbe 在装配层用真实依赖构造探针。
+// NewStatusProbe 在装配层用真实依赖构造探针。
 // 传进来的 ping 函数各自带超时，避免 /status 自己挂死。
-func newStatusProbe(
+func NewStatusProbe(
 	pgPing, redisPing func(context.Context) error,
 	breaker func() string,
 	storage string,

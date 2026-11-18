@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"nongyu-backend-plus/internal/app/bridge"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -129,7 +130,7 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 	}); err == nil {
 		// Academic 传 nil：jiaowu 的 GBK 页面取数已 disable（#28 后续）。
 		if a, err := schoolauth.New(schoolauth.Options{Auth: authSrc}); err == nil {
-			schoolAuthAdapter = schoolauthBridge{a: a}
+			schoolAuthAdapter = bridge.NewSchoolAuth(a)
 		} else {
 			logger.Warn("学校认证适配器构造失败，学校认证登录将不可用", "err", err)
 		}
@@ -212,11 +213,11 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 			// 学校认证：用客户端交上来的 Bearer token + cookie 走 ywtb 取数。
 			School: schoolAdapter,
 			// 登录成功后按用户保管 tgt；后续取学籍/续期不再需要客户端交凭据。
-			TGTSaver: tgtSaverBridge{mgr: d.tgtMgr},
+			TGTSaver: bridge.NewTGTSaver(d.tgtMgr),
 			// 登录失败计数的跨实例存储：配了 Redis 就用外置原子计数，
 			// 未配则留空退回进程内 map（单实例足够；多实例时攻击者可在
 			// 实例间分摊尝试次数，见 login/lockout.go 的说明）。
-			FailCounter: loginFailCounter(infra.cache),
+			FailCounter: bridge.LoginFailCounter(infra.cache),
 		})
 	}
 

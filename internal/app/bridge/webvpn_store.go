@@ -1,4 +1,4 @@
-package app
+package bridge
 
 // 网关票的存储实现（装配层）。
 //
@@ -17,14 +17,14 @@ import (
 	"nongyu-backend-plus/internal/platform"
 )
 
-// webvpnTicketStore 把 platform.TicketStore 适配成 jiaowu.WebVPNTicketStore。
-type webvpnTicketStore struct {
+// WebVPNTicketStore 把 platform.TicketStore 适配成 jiaowu.WebVPNTicketStore。
+type WebVPNTicketStore struct {
 	store platform.TicketStore
 	// cipher 是可选的加密封装。网关票是活凭证，落库前必须加密。
 	cipher platform.Cipher
 }
 
-func (s webvpnTicketStore) Put(ctx context.Context, userID, ticket string, expiresAt time.Time) error {
+func (s WebVPNTicketStore) Put(ctx context.Context, userID, ticket string, expiresAt time.Time) error {
 	ticket = strings.TrimSpace(ticket)
 	if ticket == "" {
 		return fmt.Errorf("webvpn: 票为空")
@@ -40,7 +40,7 @@ func (s webvpnTicketStore) Put(ctx context.Context, userID, ticket string, expir
 	return s.store.Put(ctx, userID, payload, expiresAt)
 }
 
-func (s webvpnTicketStore) Get(ctx context.Context, userID string) (string, time.Time, error) {
+func (s WebVPNTicketStore) Get(ctx context.Context, userID string) (string, time.Time, error) {
 	raw, exp, err := s.store.Get(ctx, userID)
 	if err != nil {
 		return "", time.Time{}, err
@@ -56,6 +56,11 @@ func (s webvpnTicketStore) Get(ctx context.Context, userID string) (string, time
 	return string(plain), exp, nil
 }
 
-func (s webvpnTicketStore) Delete(ctx context.Context, userID string) error {
+func (s WebVPNTicketStore) Delete(ctx context.Context, userID string) error {
 	return s.store.Delete(ctx, userID)
+}
+
+// NewWebVPNTicketStore 构造网关票存储桥。
+func NewWebVPNTicketStore(store platform.TicketStore, cipher platform.Cipher) WebVPNTicketStore {
+	return WebVPNTicketStore{store: store, cipher: cipher}
 }

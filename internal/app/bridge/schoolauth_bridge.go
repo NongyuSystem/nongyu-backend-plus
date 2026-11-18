@@ -1,4 +1,4 @@
-package app
+package bridge
 
 // 装配层的桥接：把 schoolauth 适配器接成身份域要的 SchoolAuthenticator。
 //
@@ -15,8 +15,8 @@ import (
 	"nongyu-backend-plus/internal/school/schoolauth"
 )
 
-// schoolauthBridge 实现 login.SchoolAuthenticator。
-type schoolauthBridge struct {
+// SchoolAuth 实现 login.SchoolAuthenticator。
+type SchoolAuth struct {
 	a *schoolauth.Authenticator
 }
 
@@ -25,7 +25,7 @@ type schoolauthBridge struct {
 // 注意：这里**还不知道农屿 userID**（登录正在确认身份的过程中），
 // 因此 tgt 保管此时只能先以「客户端本次交来的」为准；
 // 登录成功、有了 userID 之后再落库（由 flow 层在成功路径调用 TGTManager.Save）。
-func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCredential) (login.SchoolIdentity, error) {
+func (b SchoolAuth) Authenticate(ctx context.Context, in login.SchoolCredential) (login.SchoolIdentity, error) {
 	// 凭据形态只有一种：客户端完成学校登录后交来的 go-admin-tgt（及其同域 cookie）。
 	// 曾经的 BearerToken 已删除（#28）：真实链路里客户端没有它，
 	// 且换票响应本身就带身份，不需要第二条取数路径。
@@ -64,18 +64,18 @@ func (b schoolauthBridge) Authenticate(ctx context.Context, in login.SchoolCrede
 }
 
 // 编译期断言：桥接必须满足身份域的接口。
-var _ login.SchoolAuthenticator = schoolauthBridge{}
+var _ login.SchoolAuthenticator = SchoolAuth{}
 
-// tgtSaverBridge 把 schoolauth.TGTManager 适配成 login.TGTSaver。
+// TGTSaver 把 schoolauth.TGTManager 适配成 login.TGTSaver。
 //
 // 为什么需要桥：login 子域要知道「按用户保管凭据」这个能力，但不能 import school；
 // schoolauth 也不该知道 identity 的接口。翻译放在装配层。
-type tgtSaverBridge struct {
+type TGTSaver struct {
 	mgr *schoolauth.TGTManager
 }
 
 // Save 实现 login.TGTSaver。
-func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt, cookieHeader string) error {
+func (b TGTSaver) Save(ctx context.Context, userID int64, tgt, cookieHeader string) error {
 	if b.mgr == nil {
 		return nil
 	}
@@ -90,4 +90,14 @@ func (b tgtSaverBridge) Save(ctx context.Context, userID int64, tgt, cookieHeade
 }
 
 // 编译期断言。
-var _ login.TGTSaver = tgtSaverBridge{}
+var _ login.TGTSaver = TGTSaver{}
+
+// NewSchoolAuth 构造学校认证适配桥。
+func NewSchoolAuth(a *schoolauth.Authenticator) SchoolAuth {
+	return SchoolAuth{a: a}
+}
+
+// NewTGTSaver 构造 tgt 保管桥；mgr 为 nil 时 Save 是空操作。
+func NewTGTSaver(mgr *schoolauth.TGTManager) TGTSaver {
+	return TGTSaver{mgr: mgr}
+}

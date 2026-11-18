@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"nongyu-backend-plus/internal/app/httpserver"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if err := validateAuthConfig(cfg, logger); err != nil {
 		return nil, err
 	}
-	if err := checkAppSigningConfig(cfg, logger); err != nil {
+	if err := httpserver.CheckAppSigningConfig(cfg, logger); err != nil {
 		return nil, err
 	}
 
@@ -122,7 +123,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Warn("认证中间件未启用：所有业务端点无身份校验，仅限本地开发/测试使用",
 			"reason", "AUTH_KEY 为空")
 	}
-	warnAppSigningDisabled(cfg, logger)
+	httpserver.WarnAppSigningDisabled(cfg, logger)
 	return a, nil
 }
 

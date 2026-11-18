@@ -1,11 +1,11 @@
-package app
+package httpserver
 
 // 安卓请求签名（NY1）在装配层的接线。
 //
 // 为什么单独成文件：签名有「启动前强校验 / 中间件装配 / 启动后告警」三处，
 // 原先散落在 app.go 的开头、中段、结尾共 7 处，和身份/缓存/邮件装配混在一起，
 // 想确认「签名到底开没开」要跳读整个 769 行的主文件。抽到这里后 app.go
-// 只留两次调用：开头 checkAppSigningConfig、中段 installAppSigning。
+// 只留两次调用：开头 CheckAppSigningConfig、中段 InstallAppSigning。
 //
 // 协议本身在 internal/server/appsign.go，密钥解析在 internal/config/config.go；
 // 本文件只负责把三者接起来，不重复实现任何验签逻辑。
@@ -27,12 +27,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// checkAppSigningConfig 是启动前的签名配置强校验。
+// CheckAppSigningConfig 是启动前的签名配置强校验。
 //
 // 生产/预发布且未开 ALLOW_INSECURE_DEV 时，缺 APP_SIGNING_KEYS 直接拒绝启动：
 // 此时不会挂签名中间件，所有接口可被任意客户端仿造，是「失败开放」形态。
 // 开了 ALLOW_INSECURE_DEV 只放本地开发，并显式告警。
-func checkAppSigningConfig(cfg config.Config, logger *slog.Logger) error {
+func CheckAppSigningConfig(cfg config.Config, logger *slog.Logger) error {
 	if !config.IsProductionLike(cfg.AppEnv) || len(cfg.AppSigningKeys) > 0 {
 		return nil
 	}
@@ -43,15 +43,15 @@ func checkAppSigningConfig(cfg config.Config, logger *slog.Logger) error {
 	return nil
 }
 
-// installAppSigning 把签名中间件挂到路由上，返回是否真的启用。
+// InstallAppSigning 把签名中间件挂到路由上，返回是否真的启用。
 //
 // 调用方必须把它排在用户鉴权之前——登录、发验证码这些公开路径也要证明来自
 // 客户端。只有 /healthz 由中间件内部豁免（唯一免签探针，只报进程可达）；
 // /status 返回内部依赖状态，必须同时签名 + 有效会话，不再豁免。
 //
 // 密钥为空时不挂（本地开发 / 既有单测能继续用 curl 打接口）；prod 已由
-// checkAppSigningConfig 拦住，走到这里说明是显式允许的本地开发。
-func installAppSigning(engine *gin.Engine, cfg config.Config, cache *platform.RedisCache,
+// CheckAppSigningConfig 拦住，走到这里说明是显式允许的本地开发。
+func InstallAppSigning(engine *gin.Engine, cfg config.Config, cache *platform.RedisCache,
 	clock platform.Clock, logger *slog.Logger) bool {
 
 	if len(cfg.AppSigningKeys) == 0 {
@@ -70,9 +70,9 @@ func installAppSigning(engine *gin.Engine, cfg config.Config, cache *platform.Re
 	return true
 }
 
-// warnAppSigningDisabled 在装配结束时补一条告警：签名没启用时，接口不校验
+// WarnAppSigningDisabled 在装配结束时补一条告警：签名没启用时，接口不校验
 // 客户端签名。和「装配完成」日志分开，避免和同一次 Info 里的其它能力状态混淆。
-func warnAppSigningDisabled(cfg config.Config, logger *slog.Logger) {
+func WarnAppSigningDisabled(cfg config.Config, logger *slog.Logger) {
 	if len(cfg.AppSigningKeys) == 0 {
 		logger.Warn("请求签名中间件未启用：未配置 APP_SIGNING_KEYS，接口不校验客户端签名，仅限本地开发/测试")
 	}

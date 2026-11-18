@@ -16,6 +16,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"nongyu-backend-plus/internal/app/bridge"
+	"nongyu-backend-plus/internal/app/httpserver"
 	jiaowustore "nongyu-backend-plus/internal/school/jiaowu/store"
 	"time"
 
@@ -79,7 +81,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	}
 	if id.jwSrc != nil {
 		// 取数账号的 st 用整套 auth cookie 换，不进 TGTManager 的用户级保管。
-		jiaowuSvc.BindFetchAccountSTIssuer(fetchAccountSTBridge{src: id.jwSrc})
+		jiaowuSvc.BindFetchAccountSTIssuer(bridge.NewFetchAccountST(id.jwSrc))
 		// 两种能力共用同一个桥：
 		//   - SessionIssuer：direct 形态下用已保管 tgt 换 ASPSESSIONID（要求能到 jiaowu）
 		//   - TGTRefresher：续期回调走真正的 tgt 续期
@@ -87,7 +89,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 		//     建网关侧教务会话（校外取课表等需登录页必需）
 		// vpn 形态的**网关票**仍只能由客户端真实登录产生，后端换不到；
 		// 这里补的是「教务会话」，两者不是一回事。
-		bridge := jiaowuSessionBridge{src: id.jwSrc}
+		bridge := bridge.NewJiaowuSession(id.jwSrc)
 		jiaowuSvc.BindSessionIssuer(bridge)
 		jiaowuSvc.BindTGTRefresher(bridge)
 		jiaowuSvc.BindJiaowuSTIssuer(bridge)
@@ -133,10 +135,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	// 票的来源只能是客户端真实登录网关——后端换不到（见 schoolauth 里删除
 	// IssueGatewayCookies 的说明）。所以这里只做保管与代取，绝不自造票。
 	if infra.webvpnStore != nil {
-		jiaowuSvc.BindWebVPNTicketStore(webvpnTicketStore{
-			store:  infra.webvpnStore,
-			cipher: platform.NewAESCipher(cfg.TicketKey + ":webvpn"),
-		})
+		jiaowuSvc.BindWebVPNTicketStore(bridge.NewWebVPNTicketStore(infra.webvpnStore, platform.NewAESCipher(cfg.TicketKey+":webvpn")))
 		jiaowu.RegisterWebVPN(engine, jiaowuSvc)
 	} else {
 		logger.Warn("WebVPN 代取端点未挂载：需要可用的票据存储")
@@ -188,7 +187,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 			if id.jwSrc != nil {
 				// 登出时清掉学校凭据（tgt）：ADR-0001 第 3 条「退出登录即清除」。
 				// 用同一个桥，它的 ClearCredential 直接委托 TGTManager.Clear。
-				flowSvc.WithCredentialCleaner(jiaowuSessionBridge{src: id.jwSrc})
+				flowSvc.WithCredentialCleaner(bridge.NewJiaowuSession(id.jwSrc))
 			}
 			identityflow.Register(engine, flowSvc, httpStack.tokenV)
 		}
@@ -249,7 +248,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	// 必须传适配器而不是 *RedisCache：业务域只认 Get/Set/Delete。
 	var postCacheOpt post.Cache
 	if infra.cache != nil {
-		postCacheOpt = postCache{infra.cache}
+		postCacheOpt = bridge.NewPostCache(infra.cache)
 	}
 	postSvc := post.New(post.Options{
 		Repo:        repos.Posts,
@@ -383,7 +382,7 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	// 配了库但走内存（或反之）时，运维看 /status 会被误导。
 	storageKind := string(repos.Mode)
 	// 埋点缓冲计数接进 /status：dropped 是「缓冲满就丢」的静默行为的唯一观测面。
-	RegisterStatus(engine, newStatusProbe(pgPing, redisPing, func() string {
+	httpserver.RegisterStatus(engine, httpserver.NewStatusProbe(pgPing, redisPing, func() string {
 		if infra.cache != nil {
 			return fmt.Sprint(infra.cache.BreakerState())
 		}

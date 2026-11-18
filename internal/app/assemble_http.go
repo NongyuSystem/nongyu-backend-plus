@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"nongyu-backend-plus/internal/app/httpserver"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -60,7 +61,7 @@ func buildHTTPStack(cfg config.Config, infra infraDeps, logger *slog.Logger) (*h
 
 	s := &httpStack{
 		engine: engine,
-		server: NewHTTPServer(cfg.Addr, engine,
+		server: httpserver.NewServer(cfg.Addr, engine,
 			time.Duration(cfg.HTTPReadTimeoutSec)*time.Second,
 			time.Duration(cfg.HTTPWriteTimeoutSec)*time.Second,
 			time.Duration(cfg.HTTPIdleTimeoutSec)*time.Second),
@@ -77,8 +78,8 @@ func buildHTTPStack(cfg config.Config, infra infraDeps, logger *slog.Logger) (*h
 	// 请求签名先于用户鉴权：登录、发验证码这些公开路径也要证明来自客户端。
 	// 唯一免签探针是 /healthz（只报进程存活）；/status 含内部依赖状态，
 	// 必须带签名 + 有效会话才能访问（见 server/appsign.go 的 IsAppSignExempt）。
-	// 密钥为空时不挂（本地开发 / 既有单测）；prod 已由 checkAppSigningConfig 拦住。
-	installAppSigning(engine, cfg, infra.cache, infra.clock, logger)
+	// 密钥为空时不挂（本地开发 / 既有单测）；prod 已由 httpserver.CheckAppSigningConfig 拦住。
+	httpserver.InstallAppSigning(engine, cfg, infra.cache, infra.clock, logger)
 
 	return s, nil
 }

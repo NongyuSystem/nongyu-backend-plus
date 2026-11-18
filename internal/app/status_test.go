@@ -8,11 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"nongyu-backend-plus/internal/app/httpserver"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-
-	"nongyu-backend-plus/internal/app"
 )
 
 func TestStatusEndpoint_ReportsRealDependencyState(t *testing.T) {
@@ -21,21 +20,21 @@ func TestStatusEndpoint_ReportsRealDependencyState(t *testing.T) {
 	gin.DefaultErrorWriter = io.Discard
 
 	// Postgres 探针故意失败、Redis 探针成功：端点必须如实反映，不能一律 ok。
-	probe := app.StatusProbe{
+	probe := httpserver.StatusProbe{
 		Postgres: func() bool { return false },
 		Redis:    func() bool { return true },
 		Breaker:  func() string { return "closed" },
 		Storage:  func() string { return "postgres" },
 	}
 	r := gin.New()
-	app.RegisterStatus(r, probe)
+	httpserver.RegisterStatus(r, probe)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/status", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("/status 应 200，实际 %d", w.Code)
 	}
-	var body app.StatusReport
+	var body httpserver.StatusReport
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("解析响应失败：%v", err)
 	}

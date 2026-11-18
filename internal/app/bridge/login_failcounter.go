@@ -1,4 +1,4 @@
-package app
+package bridge
 
 // 登录失败计数的跨实例存储适配（装配层职责）。
 //
@@ -23,12 +23,12 @@ import (
 	"nongyu-backend-plus/internal/platform"
 )
 
-// loginFailCounter 把 *RedisCache 适配成 login.Counter；cache 为 nil 时返回
+// LoginFailCounter 把 *RedisCache 适配成 login.Counter；cache 为 nil 时返回
 // 真正的 nil 接口（让 login 侧走进程内兜底）。
 //
 // 注意 typed-nil 陷阱：必须显式返回 nil 接口而不是 (*redisLoginCounter)(nil)，
 // 否则 login 侧 `if t.counter != nil` 判断会失效，走到一个空指针上。
-func loginFailCounter(cache *platform.RedisCache) login.Counter {
+func LoginFailCounter(cache *platform.RedisCache) login.Counter {
 	if cache == nil {
 		return nil
 	}

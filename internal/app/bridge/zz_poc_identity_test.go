@@ -1,4 +1,4 @@
-package app
+package bridge
 
 // 0-day 回归测试（sec-identity 轨；文件名保留 zz_poc_ 前缀以对应最初的 RED 报告）。
 //
