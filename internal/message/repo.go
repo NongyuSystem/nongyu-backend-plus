@@ -7,7 +7,7 @@ import (
 
 // Repo 是站内消息的持久化接口。
 //
-// 接口定义在域内、实现放 internal/platform/pgstore（README 架构约束第 4 条）。
+// 接口定义在域内、实现放本域 store/ 子包（README 架构约束第 4 条）。
 // 方法集收窄到本域真正需要的动作；「非本人 → 404」这类归属判定在**服务层**做
 // （FindByID 返回完整行、不做 owner 过滤），避免把「谁是收件人」这种领域判断
 // 泄进存储层，同时也让 repo 能被只关心存储的实现直接复用。
@@ -105,7 +105,7 @@ func AfterCursor(a *Message, c PageCursor) bool {
 
 // MatchesFilter 判断一条消息是否命中列表/未读数/全部已读的筛选条件。
 //
-// 导出供 pgstore 实现复用，保证「只返回本人、未软删、kind 过滤、仅未读」
+// 导出供 store 实现复用，保证「只返回本人、未软删、kind 过滤、仅未读」
 // 这四条口径在内存实现与将来的 PG 实现里完全一致。
 func MatchesFilter(m *Message, f ListFilter) bool {
 	if m.RecipientID != f.RecipientID {

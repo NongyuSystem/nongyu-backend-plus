@@ -1,4 +1,4 @@
-// Package pgstore 放业务域的存储实现。
+// Package store 放公告域的存储实现。
 //
 // README 架构约束第 4 条：「`internal/<业务域>` 内部自带 handler / service /
 // repo **接口**；存储**实现**放 `internal/platform` 或其子包」。

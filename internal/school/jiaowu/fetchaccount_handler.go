@@ -15,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// FetchAccountAdminStore 是管理端依赖的仓储接口，PG/内存实现都在 pgstore。
+// FetchAccountAdminStore 是管理端依赖的仓储接口，PG/内存实现都在本域 store/ 子包。
 // 导出给装配层声明变量用。
 type FetchAccountAdminStore interface {
 	List(ctx context.Context) ([]FetchAccount, error)

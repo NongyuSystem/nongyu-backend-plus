@@ -7,7 +7,7 @@ import (
 
 // Repo 是帖子的持久化接口。
 //
-// 接口在域内、实现放 internal/platform/pgstore（README 架构约束第 4 条）。
+// 接口在域内、实现放本域 store/ 子包（README 架构约束第 4 条）。
 // 归属（谁能改/删）与编辑窗口在**服务层**判定，repo 不做权限过滤——
 // 否则「谁是作者」这种领域判断会泄进存储层。
 type Repo interface {
@@ -64,7 +64,7 @@ func (c PageCursor) Zero() bool { return c.ID == 0 && c.PublishedAt.IsZero() }
 
 // LessForOrder 判断 a 是否排在 b 之前（发布时间倒序、同刻 ID 倒序）。
 //
-// 导出供 pgstore 复用：排序是领域约定，内存实现与将来的 PG 实现
+// 导出供 store 实现复用：排序是领域约定，内存实现与将来的 PG 实现
 // 必须同一判据，不许各写一遍。
 func LessForOrder(a, b *Post) bool {
 	if !a.PublishedAt.Equal(b.PublishedAt) {

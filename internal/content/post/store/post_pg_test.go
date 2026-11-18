@@ -1,4 +1,4 @@
-// Package pgstore_test 是 PG 仓储的外部测试包（只用导出 API）。
+// Package store_test 是 PG 仓储的外部测试包（只用导出 API）。
 //
 // 隔离方案：每个测试文件用自己的 schema（CREATE SCHEMA + SET search_path），
 // 跑前在该 schema 里执行权威迁移建表。这样：
@@ -23,7 +23,8 @@ import (
 	"nongyu-backend-plus/internal/platform/pg"
 )
 
-// pgTestBaseTime / pgTestClock 原本与 track_pg_test.go 同处 pgstore 包时共享；
+// pgTestBaseTime / pgTestClock 原本与 track_pg_test.go 同处一个 pgstore 包时共享；
+// 按域拆成独立 store/ 包后，本包自带一份。
 // 按域拆成独立 store/ 包后，本包自带一份。
 var pgTestBaseTime = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 
@@ -32,7 +33,7 @@ func pgTestClock(t time.Time) func() time.Time {
 }
 
 // pgTestSchemaPrefix 是测试 schema 的公共前缀，便于一次性清理。
-const pgTestSchemaPrefix = "t_pgstore_"
+const pgTestSchemaPrefix = "t_store_"
 
 // newPostTrackPool 建一个指向**独立 schema** 的连接池，并在其中执行全部迁移建表。
 //

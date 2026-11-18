@@ -11,7 +11,7 @@
 //   - docs/tech/决策-通知派生规则.md（Q4 幂等键与 upsert 合并、Q5 双层过滤）。
 //
 // 本包只依赖 internal/apperr（共享错误码）、internal/platform（Clock）与 gin，
-// 不 import server / app / identity / config；存储实现放 internal/platform/pgstore。
+// 不 import server / app / identity / config；存储实现放本域 store/ 子包。
 package message
 
 import (

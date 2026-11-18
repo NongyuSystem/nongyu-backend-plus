@@ -17,7 +17,7 @@ import (
 	"nongyu-backend-plus/internal/school"
 )
 
-// fakeFetchAccountPool 是内存池，行为与 pgstore 的内存实现一致。
+// fakeFetchAccountPool 是内存池，行为与本域 store 的内存实现一致。
 type fakeFetchAccountPool struct {
 	accounts []FetchAccount
 	failPick bool

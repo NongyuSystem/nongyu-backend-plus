@@ -662,7 +662,7 @@ func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 	return n
 }
 
-// sortSlice 是通用排序辅助（原与 announcement_pg_test.go 同属 pgstore 包时共享）。
+// sortSlice 是通用排序辅助（原与 announcement 的测试同属一个 pgstore 包时共享）。
 func sortSlice[T any](list []T, less func(a, b T) bool) {
 	for i := 1; i < len(list); i++ {
 		for j := i; j > 0 && less(list[j], list[j-1]); j-- {

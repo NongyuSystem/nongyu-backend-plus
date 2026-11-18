@@ -3,7 +3,7 @@
 // 与 announcement 同属 content 父包下的兄弟子域，两者互不 import。
 // 本包只依赖 platform（ObjectStore / Clock）、父包 content（Board 枚举）
 // 与全仓共享的 apperr（错误码）；不 import server / app / identity / config，
-// 也不 import 任何存储实现（实现放 internal/platform/pgstore）。
+// 也不 import 任何存储实现（实现放 <域>/store 子包（如 content/post/store））。
 //
 // 领域语义依据 docs/specs/spec-六类常见功能.md 的「帖子」节、「附件上传」节
 // 与「错误码」「Testing Decisions」节。

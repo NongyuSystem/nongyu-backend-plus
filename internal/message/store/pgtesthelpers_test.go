@@ -1,6 +1,6 @@
 package store_test
 
-// PG 集成测试公共设施（原属 internal/platform/pgstore，按域拆分后各包自带一份）。
+// PG 集成测试公共设施（原属已删除的 internal/platform/pgstore，按域拆分后各包自带一份）。
 //
 // 这几个 helper 原先在同一个 pgstore 包里跨文件共享；拆成多个独立 store/ 包后，
 // 每个 store_test 包需要自己的一份。刻意不抽到公共包：抽了会让测试反向依赖
@@ -104,7 +104,7 @@ func testSchemaName(t *testing.T) string {
 			sb.WriteByte('_')
 		}
 	}
-	name := "t_pgstore_" + sb.String()
+	name := "t_store_" + sb.String()
 	if len(name) > 40 {
 		name = name[:40]
 	}

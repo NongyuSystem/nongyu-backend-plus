@@ -1,12 +1,12 @@
-// Package pgstore_test 是 pgstore 的**外部测试包**。
+// Package store_test 是公告域 store 的**外部测试包**。
 //
-// 为什么用 pgstore_test 而不是 pgstore：外部测试包只依赖被测包的**导出**能力，
+// 为什么用 store_test 而不是 store：外部测试包只依赖被测包的**导出**能力，
 // 从根上避免「测试用到了只有内部才知道的字段」，也避免 import 环（本文件的
 // 辅助函数要 import platform 拿迁移入口）。
 //
 // 数据库隔离策略（**每个测试一个独立 schema**）：
 //   - 未设置 DATABASE_URL → 全部 t.Skip（CI 与纯单测环境不需要 Postgres）；
-//   - 设置了 → 为每个测试建 `t_pgstore_xxx` schema，在该 schema 上跑
+//   - 设置了 → 为每个测试建 `t_store_xxx` schema，在该 schema 上跑
 //     pg.Migrate 建表，连接池用带 search_path 的 DSN；
 //   - 测试结束 DROP SCHEMA ... CASCADE。
 //
@@ -116,7 +116,7 @@ func testSchemaName(t *testing.T) string {
 			sb.WriteByte('_')
 		}
 	}
-	name := "t_pgstore_" + sb.String()
+	name := "t_store_" + sb.String()
 	if len(name) > 40 {
 		name = name[:40]
 	}

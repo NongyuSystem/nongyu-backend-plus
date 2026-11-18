@@ -2,7 +2,7 @@
 //
 // 为什么单独成包：各域的 store/ 子包（content/post/store、message/store …）
 // 都需要「可空时间转换」和「参数占位符拼装」这两件事。以前它们被复制在每个
-// 文件里，或者挤在 platform/pgstore 这个反向依赖业务域的错误位置。
+// 文件里，或者挤在已删除的 platform/pgstore 那个反向依赖业务域的错误位置。
 //
 // 本包只依赖 pgx 与标准库，**不 import 任何业务域**，因此任何层都能安全引用。
 package pg

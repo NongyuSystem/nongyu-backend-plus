@@ -194,7 +194,7 @@ func Load() (Config, error) {
 	// 判据用 IsProductionLike（覆盖 prod / production / staging）而不是
 	// isProduction（只认 prod / production）：staging 是准生产，若跳过这里的
 	// 校验，就会用开发占位 TICKET_KEY 起服务，tgt / 身份证号密文可被源码里
-	// 公开的默认密钥直接解开（见 platform/caps_mock.go 的弱密钥修复）。
+	// 公开的默认密钥直接解开（见 platform/cipher.go 的弱密钥修复）。
 	// IsProductionLike 已是 app.New 判「必须挂认证」的同一口径，两处保持一致。
 	if IsProductionLike(cfg.AppEnv) {
 		if cfg.TicketKey == placeholderTicketKey || strings.TrimSpace(cfg.TicketKey) == "" {
