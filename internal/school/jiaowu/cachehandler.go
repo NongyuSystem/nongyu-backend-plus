@@ -253,14 +253,18 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 	}
 
 	if mode == AccessVPN {
-		// 校外形态：从保管库取网关票放进 cookies，与 direct 完全同构。
-		// 客户端拿 address + cookies 交给代取链路，自己不碰网关地址。
-		cookies := s.webvpnCookiesForClient(ctx, userID)
+		// 校外形态：下发网关票，并**每次**重新预热网关侧教务会话。
+		// 实测公开页会重置那个会话态，只在交票时预热一次不够稳。
+		cookies, casOK := s.webvpnCookiesForClient(ctx, userID)
 		if len(cookies) == 0 {
 			s.audit(ctx, userID, "cache_miss", "vpn_ticket_missing", string(school.TargetWebvpn))
 			return resp // session=unavailable, cookies=[]
 		}
 		resp.Cookies = cookies
+		if !casOK {
+			// 票在但会话没建上：地址与票仍给出（公开页可用），session 明确不可用。
+			return resp
+		}
 		resp.Session = "ok"
 		s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
 		return resp

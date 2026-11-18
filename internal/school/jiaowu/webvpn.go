@@ -44,20 +44,34 @@ const webvpnTicketTTL = 12 * time.Hour
 const webvpnExpiredSentinel = "\x00expired"
 const webvpnExpiredMarkTTL = 30 * time.Minute
 
-// webvpnCookiesForClient 从保管库取出网关票，包装成 cache_miss 要下发的 cookie。
+// webvpnCookiesForClient 取出网关票、包装成 cache_miss 要下发的 cookie，
+// 并重新预热这张票在网关侧的教务会话。
 //
-// 模型（2026-11-18 拍板）：客户端什么都没有、全在后端取。它拿 cache_miss 的
-// address + cookies 交给后端代取链路，自己不碰网关地址、不碰任何 cookie 罐。
-// 所以 vpn 形态必须把保管库里的 wengine_vpn_ticket 放进 cookies。
+// 为什么每次 miss 都要预热（2026-11-18 实测）：网关侧「已登录教务」状态会被
+// 访问教务公开页/首页（/web/web/web/index.asp，即 notice）**重置**。
+// 实测 course→notice→course：第二个 course 302；notice→course：course 302；
+// course→score→course：全部 200。真实客户端常先刷通知再点课表，所以
+// 「交票时预热一次」不可靠。这里每次下发前都重跑幂等的 CAS 三跳，
+// 无论客户端按什么顺序请求，拿到需登录页地址时会话都是刚建好的。
 //
-// 失效哨兵/本地过期不下发（返回 nil）：拿不到票就是拿不到票，弹窗由客户端
-// 自己判 302。后端零出站，本来看不出网关侧是否仍认这张票，不造状态字段。
-func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) []IssuedCookie {
+// 代价：校外形态每次 cache_miss 多 3~4 次出站。可接受——只发生在未命中，
+// 且客户端是纯执行器、不调后端接口，没有别的补会话时机。
+//
+// 预热失败不阻塞下发地址与票（公开页仍可用），但返回非 ok 让调用方知道。
+// 失效哨兵/本地过期不下发（返回 nil）：弹窗由客户端自己判 302。
+func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) ([]IssuedCookie, bool) {
 	ticket, err := s.webvpnTicketOf(ctx, userID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
+	cookies := []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
+	if err := s.establishWebVPNSession(ctx, userID, ticket); err != nil {
+		// 错误文本可能带凭据前缀：只记审计结果，绝不写进响应/日志。
+		s.audit(ctx, userID, "cache_miss", "vpn_cas_failed", string(school.TargetWebvpn))
+		return cookies, false
+	}
+	s.audit(ctx, userID, "cache_miss", "vpn_cas_ready", string(school.TargetWebvpn))
+	return cookies, true
 }
 
 // WebVPNTicketStore 保管客户端交来的网关票（加密后按 userID 存）。
@@ -73,7 +87,6 @@ type WebVPNTicketStore interface {
 // 有效性只有网关知道，任何本地判断都会误判（有效票与游客票同为 16 位十六进制）。
 // 真正的校验发生在第一次代取时：302 回 /login 即判定失效并清票。
 func (s *Service) SubmitWebVPNTicket(ctx context.Context, userID, ticket string) (time.Time, error) {
-	ticket = strings.TrimSpace(ticket)
 	if userID == "" {
 		return time.Time{}, &school.Error{Code: school.CodeSessionExpired}
 	}
@@ -87,6 +100,17 @@ func (s *Service) SubmitWebVPNTicket(ctx context.Context, userID, ticket string)
 	expiresAt := s.clock.Now().Add(webvpnTicketTTL)
 	if err := s.webvpnTickets.Put(ctx, userID, ticket, expiresAt); err != nil {
 		return time.Time{}, err
+	}
+	// 提交时先做一次预热，让交票后立刻能取数。
+	// 但网关侧教务会话会被公开页重置，所以 cache_miss 每次下发前还会重做
+	// （见 webvpnCookiesForClient）——这里只算「首次」，不是唯一一次。
+	//
+	// 预热失败不回滚保管：票本身有效（公开页可用），只是需登录页暂时拿不到，
+	// 记审计让调用方知道。错误文本可能带凭据前缀，绝不写进响应/日志。
+	if err := s.establishWebVPNSession(ctx, userID, ticket); err != nil {
+		s.audit(ctx, userID, "webvpn_ticket", "cas_failed", string(school.TargetWebvpn))
+	} else {
+		s.audit(ctx, userID, "webvpn_ticket", "cas_ready", string(school.TargetWebvpn))
 	}
 	// 审计只记结果，绝不记票值。
 	s.audit(ctx, userID, "webvpn_ticket", "stored", string(school.TargetWebvpn))
@@ -324,12 +348,19 @@ func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket str
 	}
 
 	current := encoded
+	// 累计上游下发的 cookie。虽然实测编码域三跳的 Set-Cookie 为空，但保留累计
+	// 逻辑与已验证成功的手动探针完全一致，避免「没读 body / 没带上游 cookie」
+	// 这类隐差异。
+	cookies := make([]string, 0, 4)
 	for hop := 0; hop < maxJiaowuCASRedirects; hop++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, current, nil)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Cookie", gatewayTicketCookieName+"="+ticket)
+		if len(cookies) > 0 {
+			req.Header.Add("Cookie", strings.Join(cookies, "; "))
+		}
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 		req.Header.Set("Referer", "https://webvpn.sicau.edu.cn/")
@@ -341,6 +372,13 @@ func (s *Service) establishWebVPNSession(ctx context.Context, userID, ticket str
 		if resp == nil {
 			return errors.New("jiaowu: nil response from outbound doer")
 		}
+		for _, c := range resp.Cookies() {
+			if c.Name != "" && c.Value != "" {
+				cookies = append(cookies, c.Name+"="+c.Value)
+			}
+		}
+		// 必须把 body 读完再关：与已验证成功的链路一致，也保证连接正常归还。
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxFetchBytes))
 		_ = resp.Body.Close()
 
 		if !isRedirectStatus(resp.StatusCode) {

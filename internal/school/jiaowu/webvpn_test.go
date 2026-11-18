@@ -267,6 +267,67 @@ func TestWebVPN_RejectsBadShape(t *testing.T) {
 	}
 }
 
+// TestWebVPN_CacheMissPrewarmsEveryTime 每次 vpn 形态的 cache_miss 都要重新
+// 预热教务会话。实测网关侧会话会被公开页重置，只预热一次不够稳。
+func TestWebVPN_CacheMissPrewarmsEveryTime(t *testing.T) {
+	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
+	engine, _, _ := newWebVPNEngine(t, doer)
+	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+
+	casCount := func() int {
+		doer.mu.Lock()
+		defer doer.mu.Unlock()
+		n := 0
+		for _, r := range doer.requests {
+			if strings.Contains(r.URL.Path, "caslogin.asp") {
+				n++
+			}
+		}
+		return n
+	}
+	before := casCount()
+	cacheMissBody(t, engine)
+	after1 := casCount()
+	if after1 <= before {
+		t.Fatalf("第 1 次 cache_miss 未重新预热（before=%d after=%d）", before, after1)
+	}
+	// 再来一次 miss，应再预热一次
+	cacheMissBody(t, engine)
+	after2 := casCount()
+	if after2 <= after1 {
+		t.Fatalf("第 2 次 cache_miss 也应重新预热（after1=%d after2=%d）", after1, after2)
+	}
+}
+
+// TestWebVPN_SubmitPrewarmsJiaowuSession 交票时要用 st 回投编码 caslogin 预热
+// 网关侧教务会话。这是「客户端拿 cache_miss 的 address+cookies 直连就能拿到
+// 课表」的前提——预热只在交票做一次，cache_miss 保持零出站。
+func TestWebVPN_SubmitPrewarmsJiaowuSession(t *testing.T) {
+	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
+	engine, _, _ := newWebVPNEngine(t, doer)
+
+	code, _ := doReq(t, engine, http.MethodPost, "/school/webvpn-session",
+		`{"ticket":"43d5b3947913eab2"}`)
+	if code != http.StatusOK {
+		t.Fatalf("交票应成功，实际 %d", code)
+	}
+	doer.mu.Lock()
+	defer doer.mu.Unlock()
+	casSeen := false
+	for i, r := range doer.requests {
+		if strings.Contains(r.URL.Path, "caslogin.asp") {
+			casSeen = true
+			if !strings.Contains(doer.cookies[i], "wengine_vpn_ticketwebvpn_sicau_edu_cn=43d5b3947913eab2") {
+				t.Fatalf("CAS 预热必须带网关票，实际 %q", doer.cookies[i])
+			}
+		}
+	}
+	if !casSeen {
+		t.Fatal("交票未做 CAS 预热，客户端直连会拿到 302/登录壳")
+	}
+}
+
 // TestWebVPN_FetchWithoutTicket 没交票时代取回 409，且零出站。
 func TestWebVPN_FetchWithoutTicket(t *testing.T) {
 	doer := &scriptedWebVPNDoer{}
@@ -390,12 +451,14 @@ func TestWebVPN_FetchNeedsInputTypeRejects(t *testing.T) {
 		`{"ticket":"43d5b3947913eab2"}`); code != http.StatusOK {
 		t.Fatal("前置：提交票失败")
 	}
+	// 提交票本身现在会做一次 CAS 预热出站；记录基线，之后断言 /fetch 没有新增请求。
+	before := doer.count()
 	code, _ := doReq(t, engine, http.MethodGet, "/school/jiaowu/cache/classroomInfo/fetch", "")
 	if code == http.StatusOK {
 		t.Fatal("缺入参的类型不应代取成功")
 	}
-	if doer.count() != 0 {
-		t.Fatalf("缺入参时不应出站，实际 %d 次", doer.count())
+	if doer.count() != before {
+		t.Fatalf("缺入参时 /fetch 不应出站，实际新增 %d 次", doer.count()-before)
 	}
 }
 

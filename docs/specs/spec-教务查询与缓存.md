@@ -293,6 +293,22 @@ cookie 罐里**——它绑在 WebVPN 网关服务端、按 `wengine_vpn_ticket`
 不静默透给客户端解析。真实环境实测补完后：
 `notice 64798 / course 32848 / score 50720 / exam 7899` 字节，全部含表格、无登录壳。
 
+**`cache_miss` 路径同样要预热（2026-11-18 修）**：客户端是纯执行器，
+拿 `cache_miss` 的 `address + cookies` 直接请求、自己不做 CAS。所以预热不能只在
+`/fetch` 里做。实现是：
+- 交票时先预热一次（首次即可取数）；
+- **每次 vpn 形态的 `cache_miss` 在下发 cookies 前都重新预热一次**（幂等）。
+
+为什么必须每次都做：实测发现网关侧「已登录教务」状态会被访问教务公开页/首页
+（`/web/web/web/index.asp`，即 `notice`）**重置**：
+`course→notice→course` 时第二个 course 302；`notice→course` 时 course 302；
+而 `course→score→course` 全部 200。真实客户端常先刷通知再点课表，
+只预热一次不可靠。每次 miss 重做后，`notice 在前` 与 `交错顺序` 实测全部 200 且含真实表格。
+
+代价：校外形态每次缓存未命中多 3~4 次出站。公共页长期命中缓存（按用户隔离的
+`<prefix>cache:<userID>:<dataType>`，管理员才能删失效），实际触发频率低，可接受。
+预热失败不阻塞下发地址与票（公开页仍可用），但 `session` 标 `unavailable`。
+
 为什么后端不自造网关票：2026-11-17 实测确认，`wengine_vpn_ticket` 只有在网关**服务端已登记
 该会话为已登录**时才有效。后端用 tgt 走门户 appid 换票并回投网关，只能拿到 16 位游客票
 （回投链停在 `/wui/#/` 的 fragment 上，fragment 不进 HTTP，剩余会话绑定全在门户 SPA 里），
