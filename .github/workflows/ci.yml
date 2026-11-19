@@ -1,0 +1,35 @@
+name: CI
+
+# 一个仓库一个 CI：backend 独立仓库自己管代码检查。
+#
+# 部署不走这里：GitHub runner（境外）到生产服务器（境内）国际路由不通，
+# 实测全端口超时（安全组全开、密钥正常、runner 到 1.1.1.1/github.com 正常）。
+# 生产部署走「本地 → 私有 registry → 服务器」，见 deploy/README.md 与 deploy/push.sh。
+#
+# 本 workflow 只做代码相关的事：静态检查 + 格式 + 全测试。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 静态检查 + 格式 + 全部测试
+        run: make check

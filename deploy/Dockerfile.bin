@@ -1,0 +1,18 @@
+# 用「预先交叉编译好的 Linux 二进制」打包运行镜像。
+#
+# 为什么不在这里用多阶段 golang 构建：
+#   本机能 go build 出静态二进制（CGO_ENABLED=0），但拉 golang:1.26 基础镜像会卡；
+#   而 CI（境外 runner）里 deploy/Dockerfile 的多阶段构建正常。
+#   这个 Dockerfile 用于「本地已经有二进制」的场景（如本地直接 push 到私有 registry）。
+#
+# 用法：
+#   CGO_ENABLED=0 GOOS=linux go build -o bin/server ./cmd/server
+#   docker build -f deploy/Dockerfile.bin -t nongyu-backend:<tag> .
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /app
+COPY bin/server /app/server
+
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app/server"]
