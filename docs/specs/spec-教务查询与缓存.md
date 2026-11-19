@@ -396,16 +396,28 @@ cookie 罐里**——它绑在 WebVPN 网关服务端、按 `wengine_vpn_ticket`
   **绝不回退到学生自己的凭据**（那会让公共数据按人分叉）。
 - 缺入参的查询类（教室/教师）：只给 `needs` + `basePath`，不碰池、不出站。
 - `/fetch` 公共类 → `fetchPublicViaWebVPN`：同一套池凭据代取。
-- 私有类维持原链路（学生票 + 交票时预热一次 CAS）。
+- 私有类维持链路（学生票 + CAS 预热）：**交票时预热一次，且每次 cache_miss
+  再预热一次**（2026-11-19 修正，见下）。
 - 普通 `DELETE /school/jiaowu/cache/:dataType` 对公共类回 `403 public_cache_admin_only`。
+
+### 2026-11-19 修正：私有类 cache_miss 必须每次预热 CAS
+
+曾在 `763e300` 把私有类 `webvpnCookiesForClient` 回退成"零出站、只取票"
+（理由是公开页已分流到取数池、学生侧只剩需登录页、互不重置，交票时预热一次即可）。
+**实测证明不可靠**：客户端是纯执行器，拿 `cache_miss` 的 address+cookies 直连、
+不做 CAS 握手；只在交票时预热一次，客户端随后取课表仍拿到 1841 字节英文登录页
+（网关侧会话有时效/可能被打断，不赌它延续）。
+
+修法：`webvpnCookiesForClient` 每次下发前都重跑幂等的 `establishWebVPNSession`
+（CAS 三跳），`cache_miss` 适配"票 + 预热结果"双返回值。交票时的预热保留。
+代价：校外私有类每次未命中多 3~4 次出站（仅未命中时）。
 
 ### 对前面几节的影响
 
-- 「客户端什么都没有、全在后端取」「每次 cache_miss 都预热 CAS」「公开页重置会话」
-  这几段是分流前的中间设计，**已被本节取代**：
-  - 会重置网关侧教务会话的公开页（`/web/web/web/index.asp`）现在全走池账号，
-    学生侧链路只剩需登录页，它们之间互不重置（实测 course→score→course 全 200）；
-  - 因此 `webvpnCookiesForClient` 回退为零出站（只取票），CAS 预热只在交票时做一次。
+- 「客户端什么都没有、全在后端取」「`webvpn.status` 状态字段」是分流前的中间设计，
+  **已被本节取代**。
+- 会重置网关侧教务会话的公开页（`/web/web/web/index.asp`）全走池账号；
+  私有类 cache_miss 每次预热 CAS（见上），不依赖会话延续。
 - `session=client_side` / `webvpn.status` 那版早已删除，不再适用。
 
 ### 真实环境验证（2026-11-18）

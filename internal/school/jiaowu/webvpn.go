@@ -44,23 +44,32 @@ const webvpnTicketTTL = 12 * time.Hour
 const webvpnExpiredSentinel = "\x00expired"
 const webvpnExpiredMarkTTL = 30 * time.Minute
 
-// webvpnCookiesForClient 取出网关票，包装成 cache_miss 要下发的 cookie。
+// webvpnCookiesForClient 取出网关票、包装成下发 cookie，并**每次**重新预热
+// 网关侧教务会话。
 //
-// 零出站：教务会话的预热在 **SubmitWebVPNTicket**（交票时）做一次就够——
-// 那个会话绑在网关票的网关服务端状态上、会延续。
+// 为什么必须每次做（2026-11-19 事故复盘）：客户端是纯执行器，拿 address+cookies
+// 直接 GET 编码地址，不做 CAS 握手。网关侧「已登录教务」状态绑在票上但有
+// 时效/可能被中间请求打断——只在交票时预热一次，客户端随后取课表仍可能拿到
+// 1841 字节登录页。实测 bf16825 的「每次 miss 都预热」是可靠的。
 //
-// 2026-11-18 按「公共服务用取数账号」分流后，会把网关侧会话重置的公开页
-// （notice 等）已全部走取数账号池，学生侧链路只剩课表/成绩等需登录页，
-// 它们之间互不影响（实测 course→score→course 全部 200），因此不再需要
-// 每次 miss 都重跑 CAS 三跳。
+// 2026-11-18 曾因「公开页重置会话」改成每次预热，随后以为公开页分流到取数池
+// 就不会重置、回退成交票一次——结果客户端又拿不到课表。结论：不赌会话延续，
+// 每次下发前都重跑幂等 CAS 三跳，代价是每次 miss 多 3~4 次出站（仅校外未命中）。
 //
-// 失效哨兵/本地过期不下发（返回 nil）：弹窗由客户端自己判 302。
-func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) []IssuedCookie {
+// 预热失败不阻塞下发地址与票（返回 cookies + false），但 session 标 unavailable。
+func (s *Service) webvpnCookiesForClient(ctx context.Context, userID string) ([]IssuedCookie, bool) {
 	ticket, err := s.webvpnTicketOf(ctx, userID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
+	cookies := []IssuedCookie{{Name: gatewayTicketCookieName, Value: ticket}}
+	if err := s.establishWebVPNSession(ctx, userID, ticket); err != nil {
+		// 错误文本可能带凭据前缀：只记审计结果，绝不写进响应/日志。
+		s.audit(ctx, userID, "cache_miss", "vpn_cas_failed", string(school.TargetWebvpn))
+		return cookies, false
+	}
+	s.audit(ctx, userID, "cache_miss", "vpn_cas_ready", string(school.TargetWebvpn))
+	return cookies, true
 }
 
 // WebVPNTicketStore 保管客户端交来的网关票（加密后按 userID 存）。

@@ -265,14 +265,18 @@ func (s *Service) cacheMiss(ctx context.Context, userID string, dt DataType, dec
 			return s.publicCacheMiss(ctx, resp, dt)
 		}
 
-		// 私有类：下发学生自己的网关票。教务会话在交票时已预热过一次，
-		// 且公共页分流后不再重置该会话，这里保持零出站。
-		cookies := s.webvpnCookiesForClient(ctx, userID)
+		// 私有类：下发学生自己的网关票，并每次重新预热网关侧教务会话。
+		// 客户端是纯执行器（拿票直连、不做 CAS），不预热会拿到 1841 字节登录页。
+		cookies, casOK := s.webvpnCookiesForClient(ctx, userID)
 		if len(cookies) == 0 {
 			s.audit(ctx, userID, "cache_miss", "vpn_ticket_missing", string(school.TargetWebvpn))
 			return resp // session=unavailable, cookies=[]
 		}
 		resp.Cookies = cookies
+		if !casOK {
+			// 票在但会话没建上：地址与票仍给出，session 标 unavailable。
+			return resp
+		}
 		resp.Session = "ok"
 		s.audit(ctx, userID, "cache_miss", "vpn_ticket_ready", string(school.TargetWebvpn))
 		return resp

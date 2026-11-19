@@ -267,9 +267,10 @@ func TestWebVPN_RejectsBadShape(t *testing.T) {
 	}
 }
 
-// TestWebVPN_CacheMissIsZeroOutbound 公共页分流到取数账号池后，学生侧
-// cache_miss 保持零出站：教务会话在交票时预热一次即可，不再每次 miss 重跑 CAS。
-func TestWebVPN_CacheMissIsZeroOutbound(t *testing.T) {
+// TestWebVPN_CacheMissPrewarmsEveryTime 私有类每次 cache_miss 都要重新预热
+// 教务会话。客户端是纯执行器（拿票直连、不做 CAS），只在交票时预热一次不够——
+// 网关侧会话有时效/会被打断，客户端随后仍会拿到登录页。实测每次 miss 都预热才可靠。
+func TestWebVPN_CacheMissPrewarmsEveryTime(t *testing.T) {
 	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
 	engine, _, _ := newWebVPNEngine(t, doer)
 	doReq(t, engine, http.MethodPost, "/school/webvpn-session",
@@ -287,19 +288,21 @@ func TestWebVPN_CacheMissIsZeroOutbound(t *testing.T) {
 		return n
 	}
 	before := casCount()
-	if before == 0 {
-		t.Fatal("交票时应已做一次 CAS 预热")
+	cacheMissBody(t, engine)
+	after1 := casCount()
+	if after1 <= before {
+		t.Fatalf("第 1 次 cache_miss 应重新预热（before=%d after=%d）", before, after1)
 	}
 	cacheMissBody(t, engine)
-	cacheMissBody(t, engine)
-	if got := casCount(); got != before {
-		t.Fatalf("cache_miss 不应新增 CAS 出站（before=%d after=%d）", before, got)
+	after2 := casCount()
+	if after2 <= after1 {
+		t.Fatalf("第 2 次 cache_miss 也应重新预热（after1=%d after2=%d）", after1, after2)
 	}
 }
 
 // TestWebVPN_SubmitPrewarmsJiaowuSession 交票时要用 st 回投编码 caslogin 预热
-// 网关侧教务会话。这是「客户端拿 cache_miss 的 address+cookies 直连就能拿到
-// 课表」的前提——预热只在交票做一次，cache_miss 保持零出站。
+// 网关侧教务会话，让交票后立即取数也能成功。注意 cache_miss 每次还会再预热
+// （见 TestWebVPN_CacheMissPrewarmsEveryTime）——两处都做，不赌会话延续。
 func TestWebVPN_SubmitPrewarmsJiaowuSession(t *testing.T) {
 	doer := &scriptedWebVPNDoer{body: "<html>ok</html>"}
 	engine, _, _ := newWebVPNEngine(t, doer)
