@@ -1,0 +1,77 @@
+name: Deploy
+
+# 一个仓库一个 CI：backend 独立仓库自己管构建与部署。
+#
+# 只做「代码相关」：checkout → make check → docker build → save → scp → 服务器 load + up。
+# 依赖（postgres18/redis/minio）在服务器初始化时已备好，CI 一律不碰。
+#
+# 触发：push main 自动部署；也可在 Actions 页手动触发。
+# 回滚：服务器端 deploy.sh 探活失败自动回滚到上一镜像，详见 deploy/deploy.sh。
+# 密钥：全部走 GitHub Secrets，仓库里没有任何明文凭据。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 静态检查 + 格式 + 全部测试
+        run: make check
+
+      - name: 构建镜像
+        id: build
+        run: |
+          SHORT="${GITHUB_SHA::12}"
+          echo "tag=${SHORT}" >> "$GITHUB_OUTPUT"
+          docker build -f deploy/Dockerfile -t "nongyu-backend:${SHORT}" .
+          docker save -o /tmp/nongyu-backend.tar "nongyu-backend:${SHORT}"
+          ls -lh /tmp/nongyu-backend.tar
+
+      - name: 准备 SSH 私钥
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: 传部署脚本到服务器
+        run: |
+          scp -o StrictHostKeyChecking=accept-new \
+              -P "${{ secrets.SERVER_PORT }}" -i ~/.ssh/deploy_key \
+              deploy/deploy.sh \
+              "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/nongyu/deploy.sh"
+          scp -P "${{ secrets.SERVER_PORT }}" -i ~/.ssh/deploy_key \
+              deploy/docker-compose.prod.yml \
+              "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/nongyu/docker-compose.prod.yml"
+
+      - name: 传镜像到服务器
+        run: |
+          scp -P "${{ secrets.SERVER_PORT }}" -i ~/.ssh/deploy_key \
+              /tmp/nongyu-backend.tar \
+              "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/tmp/nongyu-backend.tar"
+
+      - name: 远端部署（原子替换 + 探活 + 失败回滚）
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new \
+              -p "${{ secrets.SERVER_PORT }}" -i ~/.ssh/deploy_key \
+              "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+              "chmod +x /opt/nongyu/deploy.sh && /opt/nongyu/deploy.sh /tmp/nongyu-backend.tar ${{ steps.build.outputs.tag }}"
+
+      - name: 清理产物
+        if: always()
+        run: rm -f /tmp/nongyu-backend.tar
