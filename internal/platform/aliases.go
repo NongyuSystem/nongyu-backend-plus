@@ -56,21 +56,14 @@ var (
 	NewRedisSessionCache = redisx.NewRedisSessionCache
 )
 
-// ── pg 子包 ──
-type (
-	PGOptions        = pg.PGOptions
-	PGIdentityStore  = pg.PGIdentityStore
-	XSGZProfileInput = pg.XSGZProfileInput
-	XSGZTypedLite    = pg.XSGZTypedLite
-)
-
+// ── 迁移与测试基建（platform/pg）──
+// 注：身份仓储（PGIdentityStore / PGOptions 等）已搬到 internal/identity/store，
+// **不在本文件转发**——那会让 platform 反向依赖业务域，违反架构约束。
+// 调用方请直接用 identitystore.NewPGIdentityStore(...)。
 var (
-	NewPGIdentityStore    = pg.NewPGIdentityStore
 	Migrate               = pg.Migrate
 	TestSchemaName        = pg.TestSchemaName
 	WithSearchPath        = pg.WithSearchPath
 	EnsureTestSchema      = pg.EnsureTestSchema
 	QueryAuditByRequestID = mail.QueryAuditByRequestID
-	JSONStringField       = pg.JSONStringField
-	BuildXSGZProfileInput = pg.BuildXSGZProfileInput
 )

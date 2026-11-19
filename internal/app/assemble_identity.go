@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nongyu-backend-plus/internal/app/bridge"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -28,7 +29,7 @@ import (
 
 // identityDeps 是装配第三阶段的产物：身份域全部可注入件。
 type identityDeps struct {
-	store        *platform.PGIdentityStore
+	store        *identitystore.PGIdentityStore
 	sessionCache *platform.RedisSessionCache
 	userSvc      *identityuser.Service
 	sessionSvc   *identitysession.Service
@@ -57,7 +58,7 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 	var schoolAuthAdapter identitylogin.SchoolAuthenticator
 	// 身份域持久层（在下方初始化；xsgz 落库回调需要引用它，故用指针提前声明）。
 	// 身份域只在配了 DATABASE_URL 时启用——没有持久化就无法承载用户与会话。
-	var identityStore *platform.PGIdentityStore
+	var identityStore *identitystore.PGIdentityStore
 
 	// 教务源：这里只用它的「换票」能力（确认学号 + 滚动续期 tgt），
 	// **不再用它抓 bjiben.asp 取专业/班级/年级**（那条路径已 disable）。
@@ -109,7 +110,7 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 				}
 				suffix = schoolauth.Suffix4FromMasked(pd.IDCardNo)
 			}
-			return identityStore.SaveXSGZProfile(ctx, platform.XSGZProfileInput{
+			return identityStore.SaveXSGZProfile(ctx, identitystore.XSGZProfileInput{
 				StudentNo:     pd.StudentNo,
 				Fields:        pd.Fields,
 				Groups:        pd.Groups,
@@ -146,7 +147,7 @@ func buildIdentityDeps(cfg config.Config, infra infraDeps, httpStack *httpStack,
 		return d, nil
 	}
 
-	st, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: cfg.DatabaseURL})
+	st, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: cfg.DatabaseURL})
 	if err != nil {
 		return d, fmt.Errorf("身份域存储初始化失败：%w", err)
 	}

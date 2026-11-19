@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // 集成测试的数据库隔离。
@@ -74,7 +76,9 @@ func WithSearchPath(dsn, schema string) (string, error) {
 // 调用方应在测试包初始化时执行一次，用完不必删除（下次运行复用，
 // 但每个包的测试自己负责清掉自己的行）。
 func EnsureTestSchema(ctx context.Context, dsn, pkgPath string) (string, error) {
-	admin, err := NewPGIdentityStore(PGOptions{DSN: dsn})
+	// 直接用 pgxpool 而非身份仓储：测试基建只连库建 schema、执行 DDL，
+	// 不需要也不应该依赖业务域的仓储类型（那会让 platform 反向依赖 identity）。
+	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return "", err
 	}
@@ -82,11 +86,11 @@ func EnsureTestSchema(ctx context.Context, dsn, pkgPath string) (string, error) 
 
 	schema := TestSchemaName(pkgPath)
 	// 建 schema 与建表都在这个 schema 下：用 SET search_path 的方式逐条执行。
-	if err := admin.ExecDDL(ctx, "CREATE SCHEMA IF NOT EXISTS "+quoteIdent(schema)); err != nil {
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+quoteIdent(schema)); err != nil {
 		return "", err
 	}
-	// 首次使用时把四张表也建到这个 schema 里（幂等）。
-	if err := admin.ExecDDLInSchema(ctx, schema, identityDDLStatements()); err != nil {
+	// 首次使用时把全部表也建到这个 schema 里（幂等）。
+	if err := ExecDDLInSchema(ctx, admin, schema, identityDDLStatements()); err != nil {
 		return "", err
 	}
 	return WithSearchPath(dsn, schema)

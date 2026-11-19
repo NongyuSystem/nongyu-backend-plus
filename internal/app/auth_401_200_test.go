@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"os"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ import (
 
 // newAuthedApp 用独立 schema + 真实鉴权密钥装配一个 App，并返回同一个
 // schema 下的身份存储（用于造会话），保证 App 与测试看到同一份数据。
-func newAuthedApp(t *testing.T, schema string) (*app.App, *platform.PGIdentityStore) {
+func newAuthedApp(t *testing.T, schema string) (*app.App, *identitystore.PGIdentityStore) {
 	t.Helper()
 	if os.Getenv("DATABASE_URL") == "" {
 		t.Skip("未设置 DATABASE_URL，跳过装配层鉴权集成测试")
@@ -44,7 +45,7 @@ func newAuthedApp(t *testing.T, schema string) (*app.App, *platform.PGIdentitySt
 	}
 	t.Cleanup(func() { _ = a.Shutdown(time.Second) })
 
-	store, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	store, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("NewPGIdentityStore: %v", err)
 	}

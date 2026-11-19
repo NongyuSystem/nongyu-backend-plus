@@ -22,6 +22,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"os"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestRealStorage_SurvivesProcessRestart(t *testing.T) {
 	sealedTicket := []byte("sealed-tgt-bytes-for-issue23")
 	expiresAt := time.Now().Add(9 * 24 * time.Hour).UTC().Truncate(time.Second)
 
-	pg1, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	pg1, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("建 PG 连接（进程1）：%v", err)
 	}
@@ -116,7 +117,7 @@ func TestRealStorage_SurvivesProcessRestart(t *testing.T) {
 	defer func() { _ = app2.Shutdown(2 * time.Second) }()
 
 	// 用**全新连接池**逐一读回，验证跨进程存活。
-	pg2, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	pg2, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("建 PG 连接（进程2）：%v", err)
 	}

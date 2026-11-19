@@ -3,6 +3,7 @@ package flow_test
 import (
 	"context"
 	"errors"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"os"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func (f *fakeSchool) Authenticate(_ context.Context, in login.SchoolCredential) 
 type fixture struct {
 	flow     *flow.Service
 	sessions *session.Service
-	store    *platform.PGIdentityStore
+	store    *identitystore.PGIdentityStore
 }
 
 // setupFlow 为指定学号建一套完整依赖（真连 Postgres）。
@@ -68,7 +69,7 @@ func setupFlow(t *testing.T, ident login.SchoolIdentity) fixture {
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
 	}
-	store, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	store, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("NewPGIdentityStore: %v", err)
 	}

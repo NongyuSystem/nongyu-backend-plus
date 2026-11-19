@@ -33,6 +33,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"sync"
 	"time"
 
@@ -93,7 +94,7 @@ type App struct {
 	cache       *platform.RedisCache
 	pgAudit     *mail.PGAuditStore
 	// 身份域资源（未配置 DATABASE_URL 时为 nil）
-	identityStore *platform.PGIdentityStore
+	identityStore *identitystore.PGIdentityStore
 	sessionCache  *platform.RedisSessionCache
 	logger        *slog.Logger
 	// notifier 是通知派生编排层（未挂消息域时为 nil）。

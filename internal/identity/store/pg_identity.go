@@ -1,4 +1,4 @@
-package pg
+package store
 
 // PGIdentityStore：身份域四类仓储（model.UserRepo / model.ProfileRepo / model.LoginMethodRepo / model.SessionStore）
 // 的 **Postgres 单一实现**（原 pg_identity.go）。

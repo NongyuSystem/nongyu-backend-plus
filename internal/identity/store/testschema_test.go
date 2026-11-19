@@ -1,4 +1,4 @@
-package pg_test
+package store_test
 
 // 测试隔离机制：pg.TestSchemaName / pg.WithSearchPath / pg.EnsureTestSchema 的验收。
 // 前两条是纯函数，任何环境都跑；第三条真连 Postgres 建 schema，未配置
@@ -6,6 +6,7 @@ package pg_test
 
 import (
 	"context"
+	"nongyu-backend-plus/internal/identity/store"
 	"nongyu-backend-plus/internal/platform/pg"
 	"os"
 	"strings"
@@ -72,12 +73,12 @@ func TestEnsureTestSchema_IsolatesData(t *testing.T) {
 		t.Fatal("两个包的 DSN 必须不同（隔离的前提）")
 	}
 
-	storeA, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsnA})
+	storeA, err := store.NewPGIdentityStore(store.PGOptions{DSN: dsnA})
 	if err != nil {
 		t.Fatalf("storeA: %v", err)
 	}
 	defer storeA.Close()
-	storeB, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsnB})
+	storeB, err := store.NewPGIdentityStore(store.PGOptions{DSN: dsnB})
 	if err != nil {
 		t.Fatalf("storeB: %v", err)
 	}
@@ -105,8 +106,8 @@ func TestEnsureTestSchema_IsolatesData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("storeA.ByStudentNo: %v", err)
 	}
-	if err := storeA.DeleteUser(ctx, ua.ID); err != nil {
-		t.Fatalf("storeA.DeleteUser: %v", err)
+	if err := pg.DeleteUser(ctx, storeA.Pool(), ua.ID); err != nil {
+		t.Fatalf("pg.DeleteUser: %v", err)
 	}
 	if _, err := storeA.ByStudentNo(ctx, no); !platform.IsNotFound(err) {
 		t.Fatalf("A 里应已删除，实际 %v", err)

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"os"
 	"testing"
 	"time"
@@ -28,10 +29,10 @@ const pwdKey = "password-box-key-for-tests-only-32b"
 const idKey = "idcard-box-key-for-tests-only-32byts"
 
 type fixtures struct {
-	users      *platform.PGIdentityStore
-	profiles   *platform.PGIdentityStore
-	methods    *platform.PGIdentityStore
-	sessions   *platform.PGIdentityStore
+	users      *identitystore.PGIdentityStore
+	profiles   *identitystore.PGIdentityStore
+	methods    *identitystore.PGIdentityStore
+	sessions   *identitystore.PGIdentityStore
 	clock      *platform.MockClock
 	userSvc    *identityuser.Service
 	sessionSvc *session.Service
@@ -86,7 +87,7 @@ func setup(t *testing.T) fixtures {
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过 Postgres 集成测试")
 	}
-	store, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	store, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("NewPGIdentityStore: %v", err)
 	}

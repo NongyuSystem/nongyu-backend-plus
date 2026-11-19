@@ -40,7 +40,7 @@ nongyu-backend-plus/
 │   │   ├── objectstore/   # 对象存储（MinIO）实现
 │   │   └── （根）         # 契约接口、类型别名转发、AES/时钟/HTTPDoer/Mock 替身
 │   └── <业务域>/          # content/{post,announcement}・message・track・identity・school
-│       └── store/         # 该域的 Postgres / 内存仓储实现（域内固定分层）
+│       └── store/         # 该域的 Postgres / 内存仓储实现（含 identity，7 域齐全）
 ├── migrations/            # schema 变更（单向有序；启动时幂等执行）
 │   └── migrations.go      # //go:embed *.sql，权威 DDL 的唯一来源
 ├── deploy/                # 部署示例（Dockerfile / systemd / compose）

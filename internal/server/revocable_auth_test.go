@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"os"
 	"testing"
 	"time"
@@ -202,7 +203,7 @@ func TestRevocableAuth_RealStoreRevocation(t *testing.T) {
 	if dsn == "" {
 		t.Skip("未设置 DATABASE_URL，跳过真实存储集成测试")
 	}
-	store, err := platform.NewPGIdentityStore(platform.PGOptions{DSN: dsn})
+	store, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("NewPGIdentityStore: %v", err)
 	}

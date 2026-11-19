@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"nongyu-backend-plus/internal/app/httpserver"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"time"
 
 	"nongyu-backend-plus/internal/config"
@@ -93,7 +94,7 @@ func buildHTTPStack(cfg config.Config, infra infraDeps, logger *slog.Logger) (*h
 //
 // 由 buildIdentityDeps 在 identityStore 就绪后调用：既满足「Use 先于路由注册」，
 // 又满足「认证要用到 identityStore」。
-func (s *httpStack) installAuthAndRateLimit(cfg config.Config, identityStore *platform.PGIdentityStore, clock platform.Clock, logger *slog.Logger) {
+func (s *httpStack) installAuthAndRateLimit(cfg config.Config, identityStore *identitystore.PGIdentityStore, clock platform.Clock, logger *slog.Logger) {
 	if cfg.AuthKey == "" {
 		return
 	}

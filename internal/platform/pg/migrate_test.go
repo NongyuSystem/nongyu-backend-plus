@@ -17,6 +17,7 @@ package pg_test
 import (
 	"context"
 	"net/url"
+	identitystore "nongyu-backend-plus/internal/identity/store"
 	"nongyu-backend-plus/internal/platform/pg"
 	"os"
 	"sort"
@@ -179,7 +180,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 	}
 
 	// 在两次迁移之间放一条用户数据：幂等重跑不得丢数据。
-	store, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsn})
+	store, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("建连接失败：%v", err)
 	}
@@ -190,7 +191,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 	// 用例结束删掉这条数据，不给同 schema 的其它测试留残留（表本身保留，
 	// 它们与 pg.EnsureTestSchema 建的形态一致，后续测试可继续用）。
 	t.Cleanup(func() {
-		s, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsn})
+		s, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 		if err != nil {
 			return
 		}
@@ -198,7 +199,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if u, err := s.ByStudentNo(c, studentNo); err == nil {
-			_ = s.DeleteUser(c, u.ID)
+			_ = pg.DeleteUser(c, s.Pool(), u.ID)
 		}
 	})
 	_ = store.Close()
@@ -214,7 +215,7 @@ func TestMigrate_IdempotentOnSecondRun(t *testing.T) {
 	}
 
 	// 数据仍在：确认幂等不是靠「删表重建」实现的。
-	store2, err := pg.NewPGIdentityStore(pg.PGOptions{DSN: dsn})
+	store2, err := identitystore.NewPGIdentityStore(identitystore.PGOptions{DSN: dsn})
 	if err != nil {
 		t.Fatalf("建复查连接失败：%v", err)
 	}
