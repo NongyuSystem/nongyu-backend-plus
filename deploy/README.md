@@ -48,17 +48,27 @@ docker exec -e MC_HOST_local="http://nongyu:<pass>@nongyu-minio:9000" nongyu-min
   mc mb --ignore-existing local/nongyu
 ```
 
-## NAT（待你配置）
+## 对外地址（NAT，已配置）
 
-registry 在服务器内网 `5000`。你在 NAT 上把某端口（下称 `<NAT端口>`）转发到
-`103.236.88.53:5000`，然后本地按下面方式推送。
+| 服务 | 外部地址 | 服务器内部 |
+| --- | --- | --- |
+| 应用 API | `http://103.236.88.53:57979` | `127.0.0.1:3000`（compose `3000:8080`，容器监听 8080） |
+| 私有 registry | `103.236.88.53:61971` | `127.0.0.1:5000` |
+
+验证：`http://103.236.88.53:57979/healthz` → 200 `{"status":"ok"}`；
+`/status` → 401（prod 鉴权生效）。registry 未认证 401、认证 200。
+
+**注意**：服务器从 registry 拉镜像必须用 `localhost:5000`，不要走公网 `61971`
+（服务器连自己的公网 IP 绕 NAT 不通）。`push.sh` 已处理：本地 push 走 `REGISTRY`，
+远端 pull 固定 `localhost:5000`。
 
 ## 本地推送（日常部署）
 
 1. Docker Desktop → Settings → Docker Engine，把 registry 加入 insecure：
    ```json
-   "insecure-registries": ["103.236.88.53:<NAT端口>"]
+   "insecure-registries": ["103.236.88.53:61971"]
    ```
+   （配置文件实际在 `~/.docker/daemon.json`，改后需重启 Docker Desktop。）
 2. 一条命令（凭据不落盘）：
    ```bash
    REGISTRY=103.236.88.53:<NAT端口> \
