@@ -1,7 +1,5 @@
 name: Diagnose Network
 
-# 临时诊断：从 runner 侧测到生产服务器的连通性，定位部署超时根因。
-# 用完即删。
 on:
   workflow_dispatch:
 
@@ -9,27 +7,20 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
-      - name: runner 出口 IP
+      - name: runner 出口 IP + 对照连通性
         run: |
           echo "=== 出口 IP ==="
-          curl -s --max-time 10 https://api.ipify.org || echo "ipify fail"
-          echo
-          curl -s --max-time 10 https://ifconfig.me || echo "ifconfig fail"
-          echo
-
-      - name: 测服务器连通性
-        run: |
-          HOST="${{ secrets.SERVER_HOST }}"
-          echo "=== target=$HOST ==="
-          for P in 44400 22; do
-            echo "--- port $P ---"
-            timeout 12 bash -c "cat < /dev/null > /dev/tcp/$HOST/$P" 2>&1 && echo "  TCP $P 通" || echo "  TCP $P 不通/超时"
+          curl -s --max-time 10 https://api.ipify.org; echo
+          echo "=== 对照：境外公网（应通）==="
+          for h in 1.1.1.1 8.8.8.8 github.com; do
+            timeout 8 bash -c "cat < /dev/null > /dev/tcp/$h/443" 2>&1 && echo "  $h:443 通" || echo "  $h:443 不通"
           done
-          echo
-          echo "=== ssh 尝试 ==="
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          timeout 20 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
-            -p "${{ secrets.SERVER_PORT }}" -i ~/.ssh/deploy_key \
-            "${{ secrets.SERVER_USER }}@$HOST" "echo SSH_OK; whoami" 2>&1 || echo "  SSH 失败"
+          echo "=== 目标服务器 ==="
+          HOST="${{ secrets.SERVER_HOST }}"
+          echo "target=$HOST"
+          getent hosts "$HOST" || echo "  DNS 解析失败"
+          for P in 44400 22 80 443; do
+            timeout 12 bash -c "cat < /dev/null > /dev/tcp/$HOST/$P" 2>&1 && echo "  $HOST:$P 通" || echo "  $HOST:$P 不通/超时"
+          done
+          echo "=== 详细路由/错误 ==="
+          curl -v --max-time 12 "http://$HOST:80/" 2>&1 | tail -8 || true
