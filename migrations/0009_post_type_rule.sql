@@ -93,7 +93,7 @@ INSERT INTO post_type_rule
 VALUES
     ('course_review', 'courseName',  'string', TRUE, 1, 128, NULL, NULL, '课程名称'),
     ('course_review', 'teacherName', 'string', FALSE, 1, 64, NULL, NULL, '授课教师'),
-    ('course_review', 'rating',      'int',    TRUE, 0, 0, 1, 5, '评分（1-5）')
+    ('course_review', 'rating',      'int',    FALSE, 0, 0, 1, 5, '评分（1-5）')
 ON CONFLICT (type_code, field) DO NOTHING;
 
 -- feedback / courtyard 不登记任何规则行 = 这两个类型的 detail 必须为空。
