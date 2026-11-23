@@ -9,21 +9,23 @@ import (
 	"nongyu-backend-plus/internal/apperr"
 )
 
-// RegisterReviewQueries 挂载两个「评价专用查询」接口。
+// RegisterReviewQueries 挂载两个「课程模块专用」的评价查询接口。
 //
-// 与 RegisterPublic 分开是因为它们的**鉴权要求不同**：
-// 这两条需要会话（装配层挂在鉴权组上），而 /posts 是公开读。
-// 分成两个 Register 让「哪些要登录」在装配层一眼可见，
-// 而不是读 handler 内部才知道。
+// 定位（维护者澄清）：**不是搜索接口，是课程模块的两个固定功能入口**。
+// 用户在课程/教师上下文里点进去，参数由前端从该上下文带过来，
+// 用户不能自己输入关键词。所以这里不提供 q/keyword 之类的检索参数，
+// 也只做精确匹配——搜索的语义不属于这两个入口。
+//
+// 与 RegisterPublic 分开是因为**鉴权要求不同**：这两条需要会话
+// （装配层挂在鉴权组上），而 /posts 是公开读。分成两个 Register 让
+// 「哪些要登录」在装配层一眼可见，而不是读 handler 内部才知道。
 //
 //	GET /post-reviews/teacher?teacherName=王老师
 //	GET /post-reviews/teacher-course?teacherName=王老师&courseName=高等数学
 //
-// 为什么不用 /posts/reviews/*：gin 的路由树不允许  与
-//
-//	在同一层共存（通配符与静态段冲突，启动即 panic）。
-//
-// 用独立前缀既避开冲突，也让「这是两个专用查询」在 URL 上显式可见。
+// 为什么不用 /posts/reviews/*：gin 的路由树不允许 `/posts/:id`（通配符）
+// 与 `/posts/reviews/teacher`（静态段）在同一层共存，启动即 panic。
+// 用独立前缀既避开冲突，也让「这是两个专用入口」在 URL 上显式可见。
 func RegisterReviewQueries(r gin.IRouter, svc *Service, userIDOf UserIDFunc) {
 	if userIDOf == nil {
 		userIDOf = func(*gin.Context) (int64, bool) { return 0, false }
