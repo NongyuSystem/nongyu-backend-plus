@@ -190,8 +190,15 @@ func (s *Service) CacheGet(ctx context.Context, userID string, dt DataType, fall
 	}
 
 	// 正常路径：判断缓存是否还「新鲜」。
+	//   - 不缓存类型（ttlNone）：一律判 miss。这类数据每次提交都会变，
+	//     缓存会让用户看到「已评价」却仍能再评、或反之；
 	//   - 稳定类 + 已绑定学期末配置：写入后整个学期命中，到学期末+用户偏移才判 miss；
 	//   - 其它情况：仍按该类的 TTL 新鲜度窗口（数据留在缓存里供 fallback 用）。
+	if dt.TTL() == ttlNone {
+		// 显式判断而不是靠 `age > -1ns` 恒真：后者虽然结果相同，
+		// 但让人误以为「数据过期」，掩盖了「这个类型压根不缓存」这个设计意图。
+		return CacheSnapshot{}, ErrCacheMiss
+	}
 	if IsStableDataType(dt) && len(s.semesterEnds) > 0 {
 		if stableCacheExpired(s.clock.Now(), entry.FetchedAt, userID, s.semesterEnds) {
 			return CacheSnapshot{}, ErrCacheMiss

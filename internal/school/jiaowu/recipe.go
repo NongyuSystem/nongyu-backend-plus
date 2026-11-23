@@ -110,6 +110,21 @@ var pageRecipes = map[DataType]pageRecipe{
 		needs:    "教室名（bj）——先查 jshi_new.asp 拿 bianhao，再查 kbjshi_new.asp",
 		basePath: "/web/web/js_kb_cha/jshi_new.asp",
 	},
+	// —— 评教（2026-11-23 实测，见 docs/tech/实测-教务评教接口契约.md）——
+	//
+	// 列表页路径是固定的，直接给完整地址。
+	DataTypeEvaluation: {
+		path:   "/xuesheng/pj/pj/index.asp",
+		parser: "jiaowu-evaluation-v1",
+	},
+	// 评教表单页与提交端点都**需要课程编号等入参**（bh/jshi/kc 来自列表页），
+	// 所以只给骨架路径，由客户端把自己的值拼上去。
+	// 提交端点是 pjsave.asp（POST），这里给的是地址，**不发请求、不代提交**。
+	DataTypeEvaluationSubmit: {
+		parser:   "jiaowu-evaluation-submit-v1",
+		needs:    "课程编号（bh）、教师姓名（jshi，GBK 编码）、课程名（kc，GBK 编码）——取自评教列表页的『我要评教』链接",
+		basePath: "/xuesheng/pj/pj/baojia.asp",
+	},
 }
 
 // recipeResult 是 recipeOf 的输出。

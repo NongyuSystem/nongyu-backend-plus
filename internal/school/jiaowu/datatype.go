@@ -31,6 +31,11 @@ const (
 	DataTypeTeacherCourse   DataType = "teacherCourse"   // 教师课表
 	DataTypeClassroomCourse DataType = "classroomCourse" // 教室课表
 	DataTypeKaike           DataType = "kaike"           // 开课目录
+	// —— 评教（2026-11-23）——
+	// 与其他 15 类不同，评教**不走缓存**（见 ttlNone 的说明），
+	// 且提交是**写操作**。两者的地址都由后端产出、由客户端自己发请求。
+	DataTypeEvaluation       DataType = "evaluation"       // 评教待评列表
+	DataTypeEvaluationSubmit DataType = "evaluationSubmit" // 评教提交地址（只给地址）
 )
 
 // TTL 分组。取值依据 #32 决议：
@@ -44,6 +49,14 @@ const (
 	ttlHighFrequency = 10 * time.Minute
 	ttlMedium        = 30 * time.Minute
 	ttlStable        = time.Hour
+	// ttlNone 表示**不缓存**。
+	//
+	// 为什么需要这个值而不是「用 0 兜底」： 在既有代码里意味着
+	// 「没配 TTL」，而 TTL() 对未知类型返回 ttlStable 兜底。若评教也用 0，
+	// 它会静默落进「一小时缓存」——而评教数据每提交一次就变，
+	// 缓存会让用户看到「已评价」却还能再评，或反之。
+	// 用一个显式的负数把「明确不缓存」与「未配置」区分开。
+	ttlNone = time.Duration(-1)
 )
 
 // dataTypeSpec 是每个数据类型的静态规格。
@@ -84,6 +97,10 @@ var dataTypeSpecs = map[DataType]dataTypeSpec{
 	DataTypeTeacherCourse:   {ttl: ttlStable, shape: shapeWrapper},
 	DataTypeClassroomCourse: {ttl: ttlStable, shape: shapeWrapper},
 	DataTypeKaike:           {ttl: ttlStable, shape: shapeWrapper},
+	// 评教：不缓存（ttlNone）。shape 记 object 是因为它下发的不是业务数据，
+	// 而是「地址 + 解析器 + 缺入参说明」这种取数说明。
+	DataTypeEvaluation:       {ttl: ttlNone, shape: shapeObject},
+	DataTypeEvaluationSubmit: {ttl: ttlNone, shape: shapeObject},
 }
 
 // ParseDataType 把外部字符串解析成受控的 DataType。
