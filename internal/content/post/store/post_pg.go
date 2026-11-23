@@ -14,6 +14,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"time"
@@ -51,7 +52,7 @@ func NewPostPGRepo(pool *pgxpool.Pool, now func() time.Time) *PostPGRepo {
 // 抽成常量而不是每处手写：列序与 scanPost 的 Scan 参数必须严格对齐，
 // 两处各写一份迟早会出现「多扫一列」这种只在运行时炸的错误。
 const postColumns = `
-	id, board, title, body, attachments, published_at, edited_at,
+	id, board, title, body, attachments, detail, published_at, edited_at,
 	deleted_at, author_id, created_at, updated_at`
 
 // Create 实现 post.Repo。ID / 时间戳由数据库回填后写回入参。
@@ -67,13 +68,18 @@ func (r *PostPGRepo) Create(ctx context.Context, p *post.Post) error {
 	if attachments == nil {
 		attachments = []string{}
 	}
+	// detail 是 NOT NULL JSONB：空对象而不是 NULL，与列默认值保持一致。
+	detail, err := post.NormalizeDetailJSON(p.Detail)
+	if err != nil {
+		return err
+	}
 
-	err := r.pool.QueryRow(ctx, `
-		INSERT INTO posts (board, title, body, attachments, author_id,
+	err = r.pool.QueryRow(ctx, `
+		INSERT INTO posts (board, title, body, attachments, detail, author_id,
 		                   published_at, edited_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+		VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$9)
 		RETURNING id, published_at, created_at, updated_at`,
-		string(p.Board), p.Title, p.Body, attachments, p.AuthorID,
+		string(p.Board), p.Title, p.Body, attachments, detail, p.AuthorID,
 		publishedAt, p.EditedAt, now,
 	).Scan(&p.ID, &p.PublishedAt, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
@@ -92,14 +98,18 @@ func (r *PostPGRepo) Update(ctx context.Context, p *post.Post) error {
 	if attachments == nil {
 		attachments = []string{}
 	}
+	detail, err := post.NormalizeDetailJSON(p.Detail)
+	if err != nil {
+		return err
+	}
 	now := r.nowFn()
 
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE posts
-		   SET title = $2, body = $3, attachments = $4,
-		       edited_at = $5, updated_at = $6
+		   SET title = $2, body = $3, attachments = $4, detail = $5::jsonb,
+		       edited_at = $6, updated_at = $7
 		 WHERE id = $1 AND deleted_at IS NULL`,
-		p.ID, p.Title, p.Body, attachments, p.EditedAt, now)
+		p.ID, p.Title, p.Body, attachments, detail, p.EditedAt, now)
 	if err != nil {
 		return err
 	}
@@ -378,7 +388,9 @@ type postRowScanner interface {
 func scanPost(s postRowScanner) (*post.Post, error) {
 	var p post.Post
 	var board string
-	if err := s.Scan(&p.ID, &board, &p.Title, &p.Body, &p.Attachments,
+	// detail 用 jsonb 列；pgx 能直接扫进 map[string]any，无需手工 Unmarshal。
+	var detail []byte
+	if err := s.Scan(&p.ID, &board, &p.Title, &p.Body, &p.Attachments, &detail,
 		&p.PublishedAt, &p.EditedAt, &p.DeletedAt, &p.AuthorID,
 		&p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
@@ -386,6 +398,14 @@ func scanPost(s postRowScanner) (*post.Post, error) {
 	p.Board = post.Board(board)
 	if p.Attachments == nil {
 		p.Attachments = []string{}
+	}
+	if len(detail) > 0 {
+		if err := json.Unmarshal(detail, &p.Detail); err != nil {
+			return nil, err
+		}
+	}
+	if p.Detail == nil {
+		p.Detail = map[string]any{}
 	}
 	return &p, nil
 }

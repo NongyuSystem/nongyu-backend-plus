@@ -21,8 +21,10 @@ import (
 type Board = content.Board
 
 const (
-	BoardFeedback  = content.BoardFeedback
-	BoardCourtyard = content.BoardCourtyard
+	BoardFeedback      = content.BoardFeedback
+	BoardCourtyard     = content.BoardCourtyard
+	BoardTeacherReview = content.BoardTeacherReview
+	BoardCourseReview  = content.BoardCourseReview
 )
 
 // ParseBoard 解析板块取值。空串表示「未指定」，返回 false，由调用方决定语义
@@ -117,6 +119,18 @@ type Post struct {
 	Title       string
 	Body        string
 	Attachments []string // 只存对象 key，不存 URL
+
+	// Detail 是该帖子类型专属的结构化字段（JSON 对象）。
+	//
+	// 为什么不给每个类型加固定列：类型会**由管理员持续新增**
+	// （教师评价 → 课程评价 → 以后还有别的），每种都加列意味着
+	// 每次都要改表结构 + 改 Go 结构体 + 改校验。用一个 JSONB 字段承载，
+	// 新类型只往**规则表**里加一行，不动表结构也不动代码。
+	//
+	// 它的形状由 Board + 规则表（post_type_rule）共同约束：
+	// 校验是**数据驱动**的，不是写死在代码里 —— 见 detail.go。
+	Detail map[string]any
+
 	PublishedAt time.Time
 	EditedAt    *time.Time
 	DeletedAt   *time.Time

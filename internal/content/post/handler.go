@@ -78,6 +78,9 @@ type publicView struct {
 	// 这两个字段不进列表响应（列表不逐条查反应，成本高且用途低）。
 	LikedByMe     bool `json:"likedByMe"`
 	FavoritedByMe bool `json:"favoritedByMe"`
+	// Detail 是结构化字段（如教师评价的 teacherName/courseName/rating）。
+	// 空对象省略，避免非评价贴被塞一个 "detail":{} 噪音字段。
+	Detail map[string]any `json:"detail,omitempty"`
 }
 
 // adminView 多带真实作者（管理端处理问题时需要，且该读取记审计）。
@@ -103,6 +106,7 @@ func toPublic(p *Post, viewerID int64) publicView {
 		EditedAt: p.EditedAt,
 		// isMine 只在有会话时可能为真；匿名读者恒 false。
 		IsMine: viewerID > 0 && p.AuthorID == viewerID,
+		Detail: p.Detail,
 	}
 }
 
@@ -215,6 +219,8 @@ type createRequest struct {
 	Title       string   `json:"title"`
 	Body        string   `json:"body"`
 	Attachments []string `json:"attachments"`
+	// Detail 是该类型的结构化字段（形状由规则表决定，服务端校验并剔除多余键）。
+	Detail map[string]any `json:"detail"`
 }
 
 func createHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
@@ -230,7 +236,8 @@ func createHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 			return
 		}
 		p, err := svc.Create(c.Request.Context(), uid, CreateInput{
-			Board: in.Board, Title: in.Title, Body: in.Body, Attachments: in.Attachments,
+			Board: in.Board, Title: in.Title, Body: in.Body,
+			Attachments: in.Attachments, Detail: in.Detail,
 		})
 		if err != nil {
 			apperr.WriteGin(c, err)
@@ -360,9 +367,10 @@ func patchHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 			return
 		}
 		var in struct {
-			Title       *string   `json:"title"`
-			Body        *string   `json:"body"`
-			Attachments *[]string `json:"attachments"`
+			Title       *string        `json:"title"`
+			Body        *string        `json:"body"`
+			Attachments *[]string      `json:"attachments"`
+			Detail      map[string]any `json:"detail"`
 		}
 		if err := c.ShouldBindJSON(&in); err != nil {
 			apperr.WriteGin(c, apperr.Errorf(apperr.CodeValidationFailed, "请求体非法"))
@@ -370,6 +378,7 @@ func patchHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 		}
 		p, err := svc.Update(c.Request.Context(), uid, id, UpdateInput{
 			Title: in.Title, Body: in.Body, Attachments: in.Attachments,
+			Detail: in.Detail,
 		})
 		if err != nil {
 			apperr.WriteGin(c, err)

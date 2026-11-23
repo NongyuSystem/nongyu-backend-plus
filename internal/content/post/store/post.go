@@ -304,6 +304,14 @@ func clonePost(p *post.Post) *post.Post {
 	if p.Attachments != nil {
 		cp.Attachments = append([]string(nil), p.Attachments...)
 	}
+	// detail 必须深拷贝：它是 map，浅拷贝会让调用方改到仓储内部状态
+	// （内存实现里这类 bug 极难发现——数据会「莫名其妙」被改掉）。
+	if p.Detail != nil {
+		cp.Detail = make(map[string]any, len(p.Detail))
+		for k, v := range p.Detail {
+			cp.Detail[k] = v
+		}
+	}
 	return &cp
 }
 

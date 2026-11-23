@@ -110,9 +110,13 @@ type fakeStore = platform.MemoryObjectStore
 func newEnv(t *testing.T) (*gin.Engine, *post.Service, *store.PostMemoryRepo, *fakeStore) {
 	t.Helper()
 	repo := store.NewPostMemoryRepo(func() time.Time { return t0 })
-	store := platform.NewMemoryObjectStore()
+	// 注意：局部变量 store 会遮蔽同名的 store 包，所以规则仓库必须**先**取到。
+	detailRules := store.NewSeedDetailRules()
+	objStore := platform.NewMemoryObjectStore()
 	svc := post.New(post.Options{
-		Repo: repo, Clock: fixedClock{now: t0}, ObjectStore: store,
+		Repo: repo, Clock: fixedClock{now: t0}, ObjectStore: objStore,
+		// 结构化字段规则用内存种子（与迁移里的种子一致）。
+		DetailRules: detailRules,
 	})
 	uidOf := func(c *gin.Context) (int64, bool) {
 		raw := c.GetHeader("X-Test-UID")
@@ -129,7 +133,7 @@ func newEnv(t *testing.T) (*gin.Engine, *post.Service, *store.PostMemoryRepo, *f
 	post.RegisterPublic(r, svc, uidOf)
 	post.RegisterSession(r, svc, uidOf)
 	post.RegisterAdmin(r, svc)
-	return r, svc, repo, store
+	return r, svc, repo, objStore
 }
 
 func do(t *testing.T, r *gin.Engine, method, path, uid string, body any) (int, map[string]any) {

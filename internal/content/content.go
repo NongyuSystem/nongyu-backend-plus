@@ -61,33 +61,69 @@ func CodeOf(err error) (Code, bool) {
 	return apperr.CodeOf(err)
 }
 
-// Board 是帖子的板块。
+// Board 是帖子的**类型**（也叫板块）。
 //
-// 两个取值来自 map #43 子票 #49：`feedback`（反馈）与 `courtyard`（留言/院子）。
+// 语义澄清（2026-11-23 维护者确认）：board 就是「帖子类型」，
+// 不存在独立的 type 维度。`teacher_review` / `course_review` 与既有的
+// `feedback` / `courtyard` 是同一维度上的并列取值。
+//
 // 「广场」不是正名（见 GLOSSARY.md），代码里也不使用该词。
 type Board string
 
 const (
-	// BoardFeedback 反馈板块：面向学校/后勤的问题反馈。
+	// BoardFeedback 反馈：面向学校/后勤的问题反馈。
 	BoardFeedback Board = "feedback"
-	// BoardCourtyard 留言板块：轻量讨论。
+	// BoardCourtyard 院子：轻量讨论。
 	BoardCourtyard Board = "courtyard"
+
+	// BoardTeacherReview 教师评价贴。
+	//
+	// 与下面两个是**带固定格式的类型**：发这类帖子必须填
+	// TeacherName 与 CourseName（见 post.RequiresTargetFields）。
+	BoardTeacherReview Board = "teacher_review"
+	// BoardCourseReview 课程评价贴。同样必须填 TeacherName 与 CourseName。
+	BoardCourseReview Board = "course_review"
 )
 
-// ParseBoard 解析板块取值；空串视为未指定（返回 false），由调用方决定默认值。
+// ParseBoard 解析类型取值；空串视为未指定（返回 false），由调用方决定默认值。
+//
+// **只做形状校验（非空、长度、字符集），不校验「是不是已知类型」。**
+//
+// 为什么不再枚举：类型是可以由管理员**新增**的（教师评价 → 课程评价 →
+// 宿舍评价 → …）。若这里写死四个值，每加一个类型都要改代码 + 发版，
+// 「数据驱动」就名不副实了。真正的合法性判据在数据库 post_types 表里
+// （发帖时由外键/规则表把关），这里只挡住明显非法的输入。
 func ParseBoard(s string) (Board, bool) {
-	switch Board(s) {
-	case BoardFeedback:
-		return BoardFeedback, true
-	case BoardCourtyard:
-		return BoardCourtyard, true
-	default:
+	if s == "" {
 		return "", false
 	}
+	// 类型码是「小写字母/数字/下划线」的短标识符，长度上限 32。
+	// 这个约束同时保证了它不会被当成任意字符串塞进数据库。
+	if len(s) > 32 {
+		return "", false
+	}
+	for _, c := range s {
+		ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+		if !ok {
+			return "", false
+		}
+	}
+	return Board(s), true
 }
 
-// Valid 判断板块取值是否合法。
+// Valid 判断类型取值的形状是否合法（不判断是否已登记）。
 func (b Board) Valid() bool {
 	_, ok := ParseBoard(string(b))
 	return ok
+}
+
+// RequiresTarget 判断该类型是否**必须**带结构化字段。
+//
+// 这里**刻意不写死**「教师评价/课程评价要哪两个字段」：
+// 那种固定写法会让每新增一个类型都要改代码。真正的校验规则在
+// 数据库的 post_type_rule 表里（见 migrations 与 post/detail.go），
+// 本方法只回答「这类帖子有没有专属字段」这一个问题，
+// 供列表/详情决定是否要带上 detail。
+func (b Board) RequiresTarget() bool {
+	return b == BoardTeacherReview || b == BoardCourseReview
 }

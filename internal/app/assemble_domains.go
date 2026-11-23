@@ -25,6 +25,7 @@ import (
 	"nongyu-backend-plus/internal/config"
 	"nongyu-backend-plus/internal/content/announcement"
 	"nongyu-backend-plus/internal/content/post"
+	"nongyu-backend-plus/internal/content/post/store"
 	identityflow "nongyu-backend-plus/internal/identity/flow"
 	identityuser "nongyu-backend-plus/internal/identity/user"
 	"nongyu-backend-plus/internal/message"
@@ -252,12 +253,26 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	if infra.cache != nil {
 		postCacheOpt = bridge.NewPostCache(infra.cache)
 	}
+	// 类型字段规则：配了 PG 就从 post_type_rule 表现查（管理员加类型立刻生效），
+	// 没配库时用内存种子（与迁移里的种子一致，由测试守着不漂移）。
+	//
+	// 为什么规则不缓存：规则表量极小（每类型几行）、低频写，
+	// 而缓存会让「管理员刚加的字段要求」要等重启才生效——那是最难解释的一类
+	// 运维现象。真成为热点时应在装配层加带失效的缓存，而不是塞进仓储。
+	var detailRules post.DetailRuleRepo
+	if pgPool != nil {
+		detailRules = store.NewDetailRulePGRepo(pgPool)
+	} else {
+		detailRules = store.NewSeedDetailRules()
+	}
+
 	postSvc := post.New(post.Options{
 		Repo:        repos.Posts,
 		Clock:       clock,
 		ObjectStore: objectStore,
 		Cache:       postCacheOpt,
 		Logger:      logger,
+		DetailRules: detailRules,
 	})
 	post.RegisterPublic(engine, postSvc, currentUserIDOf)
 	post.RegisterSession(engine, postSvc, currentUserIDOf)

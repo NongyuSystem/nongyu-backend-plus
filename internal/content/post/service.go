@@ -28,6 +28,12 @@ type Options struct {
 	PresignTTL time.Duration
 	// Logger 可选：异步清理失败时记日志，为 nil 时丢弃。
 	Logger *slog.Logger
+	// DetailRules 可选：帖子类型 → 结构化字段规则的映射（数据驱动校验）。
+	//
+	// 为 nil 时**拒绝所有带 detail 的请求**（fail-closed）而不是放行：
+	// 没有规则就无法校验形状，放行等于让 detail 变成任意 JSON 垃圾场。
+	// 不配置它的唯一合理场景是「完全不用结构化类型」的部署。
+	DetailRules DetailRuleRepo
 }
 
 // Cache 是帖子域需要的缓存能力。
@@ -45,12 +51,13 @@ type Service struct {
 	// notify 是通知派生的窄钩子（装配层注入，可为 nil）。
 	notify NotifyHook
 
-	repo       Repo
-	clock      platform.Clock
-	store      platform.ObjectStore
-	cache      Cache
-	presignTTL time.Duration
-	logger     *slog.Logger
+	repo        Repo
+	clock       platform.Clock
+	store       platform.ObjectStore
+	cache       Cache
+	detailRules DetailRuleRepo
+	presignTTL  time.Duration
+	logger      *slog.Logger
 
 	// ownership 记录「对象 key → 上传者」的归属，用于附件引用校验与清理判定。
 	// 由 New 统一构造，所有 post.New(Options{...}) 调用点无需改动即可获得该能力。
@@ -79,8 +86,42 @@ func New(opts Options) *Service {
 	return &Service{
 		repo: opts.Repo, clock: opts.Clock, store: opts.ObjectStore,
 		cache: opts.Cache, presignTTL: opts.PresignTTL, logger: opts.Logger,
-		ownership: NewAttachmentOwnership(),
+		detailRules: opts.DetailRules,
+		ownership:   NewAttachmentOwnership(),
 	}
+}
+
+// validateDetailFor 按类型规则校验 detail（数据驱动）。
+//
+// 规则从 DetailRuleRepo 读；没配 repo 时 fail-closed：
+// 带 detail 的请求一律拒，空 detail 放行——「没有规则」不该被理解成
+// 「不校验」，那会让 detail 退化成任意 JSON 垃圾场。
+//
+// 同时承担「类型是否已登记」的判定：规则表只对**已登记且启用**的类型返回行，
+// 但「零规则」既可能表示「这类没有专属字段」（feedback）也可能表示
+// 「这类根本不存在」。两者必须区分——否则未登记类型会一路走到 PG 才被
+// 外键拦下，表现为 500（把客户端的错误说成服务端故障）。
+func (s *Service) validateDetailFor(ctx context.Context, board Board, detail map[string]any) (map[string]any, error) {
+	if s.detailRules == nil {
+		if len(detail) > 0 {
+			return nil, apperr.Errorf(apperr.CodeValidationFailed,
+				"服务未配置类型字段规则，暂不接受结构化字段")
+		}
+		return map[string]any{}, nil
+	}
+	known, err := s.detailRules.KnownType(ctx, board)
+	if err != nil {
+		return nil, err
+	}
+	if !known {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed,
+			"帖子类型 %q 未登记或已停用", string(board))
+	}
+	rules, err := s.detailRules.RulesFor(ctx, board)
+	if err != nil {
+		return nil, err
+	}
+	return ValidateDetail(board, detail, rules)
 }
 
 // CleanupFailureCount 返回异步附件清理累计失败的对象数（可观测性/测试用）。
@@ -133,6 +174,9 @@ type CreateInput struct {
 	Title       string
 	Body        string
 	Attachments []string
+	// Detail 是该类型的结构化字段（形状由规则表决定）。
+	// 不需要结构化字段的类型传 nil / 空对象，两者等价。
+	Detail map[string]any
 }
 
 // UpdateInput 是编辑入参（指针语义：nil 表示不改）。
@@ -140,6 +184,8 @@ type UpdateInput struct {
 	Title       *string
 	Body        *string
 	Attachments *[]string
+	// Detail 为 nil 表示不改；传空 map 表示**清空**（对不需要字段的类型）。
+	Detail map[string]any
 }
 
 // ListResult 是一次列表返回。
@@ -187,10 +233,16 @@ func (s *Service) Create(ctx context.Context, authorID int64, in CreateInput) (*
 	if err := s.ownership.ValidateOwned(in.Attachments, authorID); err != nil {
 		return nil, err
 	}
+	// 结构化字段：按类型规则校验并规范化（未声明字段会被剔除）。
+	detail, err := s.validateDetailFor(ctx, board, in.Detail)
+	if err != nil {
+		return nil, err
+	}
 	now := s.clock.Now()
 	p := &Post{
 		Board: board, Title: in.Title, Body: in.Body,
 		Attachments: append([]string(nil), in.Attachments...), AuthorID: authorID,
+		Detail:      detail,
 		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.repo.Create(ctx, p); err != nil {
@@ -241,6 +293,15 @@ func (s *Service) Update(ctx context.Context, actorID, id int64, in UpdateInput)
 			return nil, err
 		}
 		p.Attachments = append([]string(nil), (*in.Attachments)...)
+	}
+	// Detail 只有非 nil 才改：nil 表示「这次不动结构化字段」。
+	// 注意 board 不可编辑，所以规则仍按 p.Board 取（与创建时同一套）。
+	if in.Detail != nil {
+		detail, err := s.validateDetailFor(ctx, p.Board, in.Detail)
+		if err != nil {
+			return nil, err
+		}
+		p.Detail = detail
 	}
 	t := now
 	p.EditedAt = &t
