@@ -178,14 +178,23 @@ var publicPaths = []string{
 // 写操作（上传 / 激活）一律在 /admin/* 下，不在此列。
 //
 // 前导斜杠与匹配规则由 IsPublicPath 统一处理；新增条目时**不要**加尾斜杠。
-var publicReadablePaths = []string{
-	"/announcements",        // 公告列表
-	"/announcements/latest", // 首页最新一条公告
-	"/posts",                // 帖子列表
-	"/skins",                // 皮肤目录 / 详情 / 包体下载（issue #53）
-	// 教室楼栋与导航（/classrooms/*）2026-11-23 起需要登录鉴权，已从公开读移除。
-	// 该数据含校内楼栋坐标与路线，按用户身份提供；读者侧 GET 走全局会话中间件。
-}
+// publicReadablePaths 是「公开可读业务内容」路径（无尾斜杠形式）。
+//
+// **当前为空**（2026-11-23 维护者决定：基本所有业务都要认证）。
+//
+// 历史上这里放过 /announcements、/posts、/skins 等，现在全部移除：
+// 业务数据（含公告、帖子、皮肤包体）一律要求会话。
+//
+// 为什么保留这个空清单而不是把整段机制删掉：
+//  1. 判定入口 AllowedWithoutAuth 仍要同时考虑 publicPaths（身份获取类），
+//     删掉 publicReadablePaths 会让那部分逻辑也要改，改动面不必要地扩大；
+//  2. 以后若真有「无需登录的公开内容」（如落地页公告），加一行即可，
+//     不用重新设计机制。
+//
+// 注意：这里**不能**加 /healthz 或 /identity/*——那些属于 publicPaths
+// （取得身份类 / 探活），有各自语义。往这里加会造成「同一个端点被两张
+// 清单共同管理」，正是评审 M5/N6 要避免的「三处清单各自为政」。
+var publicReadablePaths = []string{}
 
 // IsPublicPath 判断一个请求路径是否属于**取得身份类**的免认证路径。
 //
