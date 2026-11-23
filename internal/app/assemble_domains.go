@@ -317,7 +317,8 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 
 	// ── 教室楼栋地址域 ──────────────────────────────────────────
 	//
-	// 读者侧公开（学生查教室地址不该被登录拦住）；
+	// 读者侧（lookup / buildings / 详情）需要登录鉴权：走全局会话中间件，
+	// 已从 publicReadablePaths 移除（2026-11-23，含校内坐标与路线按身份提供）。
 	// 管理端挂在 adminGroup 上（见下方 admin 段），由装配层做会话 + 角色门槛。
 	//
 	// 粒度是**楼栋**不是教室：`10-B201`/`10-B213` 都归到「十教B」，

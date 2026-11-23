@@ -81,6 +81,7 @@ func TestAllowedWithoutAuth_PublicReadOnlyGet(t *testing.T) {
 
 func TestAllowedWithoutAuth_StillRequiresAuth(t *testing.T) {
 	// 消息、埋点、管理端一律不进公开清单。
+	// 教室楼栋与导航（/classrooms/*）2026-11-23 起也需鉴权（含坐标与路线，按身份提供）。
 	for _, p := range []string{
 		"/messages",
 		"/messages/unread-count",
@@ -88,6 +89,10 @@ func TestAllowedWithoutAuth_StillRequiresAuth(t *testing.T) {
 		"/track/events/summary",
 		"/admin/announcements",
 		"/admin/posts",
+		"/classrooms",
+		"/classrooms/lookup",
+		"/classrooms/buildings",
+		"/classrooms/buildings/1",
 	} {
 		if server.AllowedWithoutAuth(http.MethodGet, p) {
 			t.Fatalf("%s 不应是公开路径（必须要求会话）", p)

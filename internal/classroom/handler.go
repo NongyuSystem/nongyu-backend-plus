@@ -9,9 +9,10 @@ import (
 	"nongyu-backend-plus/internal/apperr"
 )
 
-// RegisterPublic 挂载读者侧（公开读）。
+// RegisterPublic 挂载读者侧（需登录鉴权，由全局会话中间件负责）。
 //
-// 「查教室地址」是纯查询，不需要登录——学生查自己上课的楼不该被登录拦住。
+// 2026-11-23 起查教室地址/导航需要登录：数据含校内楼栋坐标与进入路线，
+// 按用户身份提供；本包不重复鉴权，只负责路由与业务。
 func RegisterPublic(r gin.IRouter, svc *Service) {
 	r.GET("/classrooms/lookup", lookupHandler(svc))
 	r.GET("/classrooms/buildings", listBuildingsHandler(svc))
