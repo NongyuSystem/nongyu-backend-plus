@@ -87,7 +87,8 @@ func NewSeedDetailRules() *DetailRuleMemoryRepo {
 		{Field: "courseName", ValueType: "string", Required: true, MinLen: 1, MaxLen: 128, Label: "课程名称"},
 		// 授课教师选填：有些课（如通识大课）学生记不住具体老师。
 		{Field: "teacherName", ValueType: "string", Required: false, MinLen: 1, MaxLen: 64, Label: "授课教师"},
-		{Field: "rating", ValueType: "int", Required: true, MinValue: floatPtr(1), MaxValue: floatPtr(5), Label: "评分（1-5）"},
+		// 评分选填（2026-11-23）：用户只想留言时不必打星；不打星的 detail 不含 rating。
+		{Field: "rating", ValueType: "int", Required: false, MinValue: floatPtr(1), MaxValue: floatPtr(5), Label: "评分（1-5）"},
 	})
 	// feedback / courtyard：已登记但**不设规则行** → 它们的 detail 必须为空。
 	r.RegisterType(post.BoardFeedback)
