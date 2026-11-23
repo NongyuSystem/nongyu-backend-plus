@@ -128,38 +128,54 @@ func (r *PostPGRepo) List(ctx context.Context, board post.Board, after post.Page
 	if board == "" {
 		return r.ListAll(ctx, after, limit)
 	}
-	return r.listPosts(ctx, after, limit, string(board))
+	return r.listPosts(ctx, after, limit, string(board), 0)
 }
 
 // ListAll 实现 post.Repo：跨板块（管理端）。
 func (r *PostPGRepo) ListAll(ctx context.Context, after post.PageCursor, limit int) ([]*post.Post, error) {
-	return r.listPosts(ctx, after, limit, "")
+	return r.listPosts(ctx, after, limit, "", 0)
 }
 
-// listPosts 是 List / ListAll 的共用实现。
+// ListByAuthor 实现 post.Repo（「我的帖子」）。
 //
-// board 为空串表示不过滤。游标用**行值比较** (published_at, id) < ($n, $m)：
-// 这与 ORDER BY published_at DESC, id DESC 是同一个全序，天然满足
-// 「严格排在游标之后」的语义；写成 published_at < $1 OR (published_at = $1 AND id < $2)
-// 也对，但行值比较让「排序键」和「过滤条件」在 SQL 里是同一个形状，
+// authorID <= 0 时**返回空列表而不是回落到全站**：这是隐私边界，
+// 宁可返回空，也不要因为一次脏参数把所有人的帖子露出去。
+func (r *PostPGRepo) ListByAuthor(ctx context.Context, authorID int64, board post.Board, after post.PageCursor, limit int) ([]*post.Post, error) {
+	if authorID <= 0 {
+		return []*post.Post{}, nil
+	}
+	return r.listPosts(ctx, after, limit, string(board), authorID)
+}
+
+// listPosts 是 List / ListAll / ListByAuthor 的共用实现。
+//
+// 两个可选条件都用「参数恒在、条件恒写」的方式承载：
+//   - $1 board：空串表示不过滤；
+//   - $2 authorID：<=0 表示不过滤（ListByAuthor 已在入口挡住 <=0）。
+//
+// 这样 SQL 的 WHERE 形状是固定的，新增条件时不用改写已有占位符序号。
+// 游标用**行值比较** (published_at, id) < ($n, $m)：它与
+// ORDER BY published_at DESC, id DESC 是同一个全序，天然满足「严格排在
+// 游标之后」；写成 OR 展开也对，但行值比较让排序键与过滤条件同形状，
 // 改排序时不会只改一半。
-func (r *PostPGRepo) listPosts(ctx context.Context, after post.PageCursor, limit int, board string) ([]*post.Post, error) {
-	// 三态而不是两个分支：有板块 + 有游标 / 有板块 + 无游标 / 无板块（游标两种都覆盖）。
-	// 用 $1 是否为空来动态决定 board 条件，保持只发一条 SQL（参数化，不拼字符串）。
+func (r *PostPGRepo) listPosts(ctx context.Context, after post.PageCursor, limit int, board string, authorID int64) ([]*post.Post, error) {
 	sql := `SELECT ` + postColumns + ` FROM posts
 	         WHERE deleted_at IS NULL
-	           AND ($1 = '' OR board = $1)`
-	args := []any{board}
+	           AND ($1 = '' OR board = $1)
+	           AND ($2 <= 0 OR author_id = $2)`
+	args := []any{board, authorID}
+
 	if !after.Zero() {
+		// $3/$4 是游标（两个值）。
 		sql += `
-	           AND (published_at, id) < ($2, $3)`
+	           AND (published_at, id) < ($3, $4)`
 		args = append(args, after.PublishedAt, after.ID)
 	}
 	sql += `
 	         ORDER BY published_at DESC, id DESC`
 	if limit > 0 {
-		// 占位符序号随调用形态变化（有没有游标），这里按参数个数算，
-		// 拼的只是 `$N` 这个数字，值一律走参数绑定。
+		// LIMIT 的序号 = 已有参数个数 + 1；拼的只是 `$N` 这个数字，
+		// 值一律走参数绑定。
 		sql += `
 	         LIMIT $` + strconv.Itoa(len(args)+1)
 		args = append(args, limit)

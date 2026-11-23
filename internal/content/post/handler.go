@@ -139,12 +139,28 @@ func listHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 			}
 			board = b
 		}
-		res, err := svc.List(c.Request.Context(), board, after, limit)
+
+		// mine 是**会话相关**的过滤（「我的帖子」）。
+		//
+		// /posts 本身是公开读端点，但 mine=true 必须有身份：
+		//   - 未登录 → 401 而不是返回空列表。返回空会让客户端以为
+		//     「我没有帖子」，而真实原因是没登录，属误导；
+		//   - 打开 mine 时忽略 board 之外的一切干扰，仍支持 board / 游标 / 分页。
+		//
+		// 只认 "true"/"1"/""（空）三种：其它值（如 "yes"）按未开启处理，
+		// 不报错——query 参数写错不该让整个列表 500。
+		viewerID, _ := userIDOf(c)
+		mine := c.Query("mine") == "true" || c.Query("mine") == "1"
+		if mine && viewerID <= 0 {
+			apperr.WriteGin(c, apperr.Errorf(apperr.CodeUnauthorized, "mine=true 需要已认证身份"))
+			return
+		}
+
+		res, err := svc.List(c.Request.Context(), board, viewerID, after, limit)
 		if err != nil {
 			apperr.WriteGin(c, err)
 			return
 		}
-		viewerID, _ := userIDOf(c)
 		out := listResponse{Items: make([]publicView, 0, len(res.Items))}
 		for _, p := range res.Items {
 			out.Items = append(out.Items, toPublic(p, viewerID))

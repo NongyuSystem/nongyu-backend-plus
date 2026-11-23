@@ -88,10 +88,17 @@ func (s *Service) CleanupFailureCount() int64 { return s.cleanupFailures.Load() 
 
 // ---------- 缓存键与失效 ----------
 
-// 缓存键含 board + 游标 + 代 + limit（Spec：「键含 board+游标」）。
-func listCacheKey(board Board, epoch int64, after PageCursor, limit int) string {
-	return fmt.Sprintf("post:list:%s:%d:%d:%d:%d",
-		board, epoch, after.PublishedAt.UnixNano(), after.ID, limit)
+// listCacheKey 含 board + 游标 + 代 + limit（Spec：「键含 board+游标」）。
+//
+// authorID 也是键的一部分：**这是隐私边界**。若不区分作者，
+// A 的「我的帖子」缓存会被 B 命中，B 就看到 A 的私下列表——
+// 这比「缓存命中率低」严重得多，所以 authorID 必须进键（0 表示公开列表）。
+//
+// 同一作者的列表命中的是同一个键，写操作通过 boardEpoch 自增整体失效，
+// 所以这里不需要为 mine 单独做失效逻辑。
+func listCacheKey(board Board, authorID, epoch int64, after PageCursor, limit int) string {
+	return fmt.Sprintf("post:list:%s:a%d:%d:%d:%d:%d",
+		board, authorID, epoch, after.PublishedAt.UnixNano(), after.ID, limit)
 }
 
 func detailCacheKey(id int64) string { return fmt.Sprintf("post:detail:%d", id) }
@@ -514,11 +521,26 @@ type cachedDetail struct {
 }
 
 // List 返回某板块（board 为空表示不过滤）的帖子列表，publishedAt 倒序 + 游标。
-func (s *Service) List(ctx context.Context, board Board, after PageCursor, limit int) (ListResult, error) {
+// List 返回帖子列表。
+//
+// authorID > 0 时只返回该作者自己的帖子（「我的帖子」）；0 表示公开列表。
+// 两种形态共用同一套缓存，靠 authorID 进缓存键来隔离，见 listCacheKey。
+func (s *Service) List(ctx context.Context, board Board, authorID int64, after PageCursor, limit int) (ListResult, error) {
 	limit = normalizeLimit(limit)
 
+	// mine 请求必须有明确作者；调用方（handler）已挡住未登录，这里再 fail-closed 一次：
+	// 若 authorID 被传成 0 却走了 mine 分支，会退化成公开列表——那是隐私事故。
+	byAuthor := authorID > 0
+
+	fetch := func(ctx context.Context) ([]*Post, error) {
+		if byAuthor {
+			return s.repo.ListByAuthor(ctx, authorID, board, after, limit)
+		}
+		return s.repo.List(ctx, board, after, limit)
+	}
+
 	if s.cache != nil {
-		key := listCacheKey(board, s.boardEpoch(board), after, limit)
+		key := listCacheKey(board, authorID, s.boardEpoch(board), after, limit)
 		if raw, ok := s.cache.Get(ctx, key); ok {
 			var cl cachedList
 			if err := json.Unmarshal(raw, &cl); err == nil {
@@ -526,7 +548,7 @@ func (s *Service) List(ctx context.Context, board Board, after PageCursor, limit
 			}
 			// 缓存值损坏：当作未命中，继续回源（不把 5xx 抛给客户端）。
 		} else {
-			rows, err := s.repo.List(ctx, board, after, limit)
+			rows, err := fetch(ctx)
 			if err != nil {
 				return ListResult{}, err
 			}
@@ -537,7 +559,7 @@ func (s *Service) List(ctx context.Context, board Board, after PageCursor, limit
 		}
 	}
 
-	rows, err := s.repo.List(ctx, board, after, limit)
+	rows, err := fetch(ctx)
 	if err != nil {
 		return ListResult{}, err
 	}

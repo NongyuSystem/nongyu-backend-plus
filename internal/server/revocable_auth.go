@@ -248,7 +248,25 @@ func RevocableAuthMiddleware(verifier *TokenVerifier, resolver SessionResolver, 
 	return func(c *gin.Context) {
 		// 免认证端点：取得身份类（健康探针、登录、发验证码）+ 公开可读内容
 		// （公告/帖子的 GET）。后者已叠加方法维度，写操作不会被误放行。
+		//
+		// 但「免认证」不等于「一定没有身份」：公开列表上有 mine=true 这类
+		// 依赖会话的过滤（我的帖子），此时必须知道「谁在请求」。
+		// 所以这里对**带了令牌**的请求做一次**尽力而为**的解析：
+		//   - 令牌有效 → 写入 context，mine 才能工作；
+		//   - 未带令牌 / 令牌无效 / 会话已撤销 → **仍然匿名放行**，不报错。
+		// 后者是关键：公开列表不该因为客户端持有一个过期令牌就整页打不开。
+		// 需要身份的分支（mine）在 handler 里自己 fail-closed 成 401。
 		if AllowedWithoutAuth(c.Request.Method, c.Request.URL.Path) {
+			if hdr := c.GetHeader("Authorization"); strings.HasPrefix(hdr, "Bearer ") {
+				if sid, err := verifier.parseSession(strings.TrimPrefix(hdr, "Bearer ")); err == nil {
+					if info, rerr := resolver.ResolveSession(c.Request.Context(), sid); rerr == nil {
+						c.Set(CtxUserID, formatInt64(info.UserID))
+						c.Set(CtxStudentNo, info.StudentNo)
+						c.Set(CtxRole, info.Role)
+						c.Set(CtxSessionID, sid)
+					}
+				}
+			}
 			c.Next()
 			return
 		}

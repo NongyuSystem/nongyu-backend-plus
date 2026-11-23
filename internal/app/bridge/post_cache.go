@@ -28,6 +28,14 @@ func (p PostCache) Get(ctx context.Context, key string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
+	// **必须判 nil**：RedisCache.Get 在「未命中」时返回 (nil, nil) 而不是
+	// error（见 platform/cache 里 err == redis.Nil 的分支）。若只判 err，
+	// 未命中会被当成「命中且值为空」，于是上层永远不会回源、也永远不会
+	// Set——缓存看似启用了，其实一次都没写进去（实测 Redis 里 0 个
+	// post:list 键，就是这个原因）。
+	if v == nil {
+		return nil, false
+	}
 	return v, true
 }
 

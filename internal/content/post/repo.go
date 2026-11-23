@@ -27,6 +27,15 @@ type Repo interface {
 	// 混用一个入口时，很容易出现「管理端误传到零值就变成看全部未删帖」这种
 	// 静默越权；两个方法名把意图写进签名里。
 	ListAll(ctx context.Context, after PageCursor, limit int) ([]*Post, error)
+
+	// ListByAuthor 返回某作者自己的帖子（「我的帖子」），与 List 同排序、
+	// 同游标、同「只返回未软删」口径；board 为空表示跨板块。
+	//
+	// 为什么单列方法而不是给 List 加 authorID 参数（传 0 表示不按作者过滤）：
+	// 参数化之后，「传 0 意外看到全站帖子」就成了一次静默越权——而 mine 是
+	// 用户可见的隐私边界。方法名把「这是谁的列表」写进签名，调用方不可能
+	// 因为漏传参数而越界。
+	ListByAuthor(ctx context.Context, authorID int64, board Board, after PageCursor, limit int) ([]*Post, error)
 	// MarkDeleted 软删帖子（幂等）。
 	MarkDeleted(ctx context.Context, id int64, at time.Time) error
 
