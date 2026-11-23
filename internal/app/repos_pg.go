@@ -5,6 +5,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apikeystore "nongyu-backend-plus/internal/apikey/store"
+	classroomstore "nongyu-backend-plus/internal/classroom/store"
 	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
 	poststore "nongyu-backend-plus/internal/content/post/store"
 	messagestore "nongyu-backend-plus/internal/message/store"
@@ -34,6 +36,8 @@ func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, erro
 		Messages:      messagestore.NewMessagePGRepo(pool, now),
 		Track:         trackstore.NewTrackPGRepo(pool),
 		Skins:         skinstore.NewSkinPGRepo(pool, now),
+		Buildings:     classroomstore.NewBuildingPGRepo(pool, now),
+		AMapKeys:      apikeystore.NewKeyPGRepo(pool),
 		Mode:          storeModePostgres,
 	}, nil
 }

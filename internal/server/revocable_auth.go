@@ -183,6 +183,9 @@ var publicReadablePaths = []string{
 	"/announcements/latest", // 首页最新一条公告
 	"/posts",                // 帖子列表
 	"/skins",                // 皮肤目录 / 详情 / 包体下载（issue #53）
+	// 教室楼栋地址（2026-11-23）：学生查自己上课的楼不该被登录拦住。
+	// 只放 GET（IsPublicReadable 已叠加方法维度），CRUD 仍走 /admin。
+	"/classrooms",
 }
 
 // IsPublicPath 判断一个请求路径是否属于**取得身份类**的免认证路径。

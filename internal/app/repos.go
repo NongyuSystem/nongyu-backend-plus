@@ -14,6 +14,10 @@ import (
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 
+	"nongyu-backend-plus/internal/apikey"
+	apikeystore "nongyu-backend-plus/internal/apikey/store"
+	"nongyu-backend-plus/internal/classroom"
+	classroomstore "nongyu-backend-plus/internal/classroom/store"
 	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
 	poststore "nongyu-backend-plus/internal/content/post/store"
 	messagestore "nongyu-backend-plus/internal/message/store"
@@ -55,6 +59,10 @@ type repoBundle struct {
 	Messages      message.Repo
 	Track         track.Repo
 	Skins         skin.Repo
+	// Buildings 是教室楼栋（含路线的读写）。
+	Buildings classroom.Repo
+	// AMapKeys 是高德密钥池（存密文）。
+	AMapKeys apikey.Repo
 	// Mode 供日志与 /status 报告「现在到底用的哪套」。
 	// 这个值必须如实反映实现，否则运维会误以为数据在库里。
 	Mode storeMode
@@ -73,6 +81,8 @@ func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error)
 			Messages:      messagestore.NewMessageMemoryRepo(now),
 			Track:         trackstore.NewTrackMemoryRepo(),
 			Skins:         skinstore.NewSkinMemoryRepo(now),
+			Buildings:     classroomstore.NewBuildingMemoryRepo(now),
+			AMapKeys:      apikeystore.NewKeyMemoryRepo(),
 			Mode:          storeModeMemory,
 		}, nil
 	}

@@ -40,6 +40,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"nongyu-backend-plus/internal/apikey"
+	"nongyu-backend-plus/internal/classroom"
 )
 
 // domainDeps 是装配第四阶段的产物：需要挂到 App 上的运行时句柄。
@@ -308,6 +310,51 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	d.trackSvc = trackSvc
 	logger.Info("埋点域已装配：上报端点 1 条")
 
+	// ── 教室楼栋地址域 ──────────────────────────────────────────
+	//
+	// 读者侧公开（学生查教室地址不该被登录拦住）；
+	// 管理端挂在 adminGroup 上（见下方 admin 段），由装配层做会话 + 角色门槛。
+	//
+	// 粒度是**楼栋**不是教室：`10-B201`/`10-B213` 都归到「十教B」，
+	// 归一化规则在 classroom.ParseKey（纯函数，有单测守着）。
+	classroomSvc := classroom.New(classroom.Options{
+		Repo:  repos.Buildings,
+		Clock: clock,
+	})
+	classroom.RegisterPublic(engine, classroomSvc)
+	logger.Info("教室地址域已装配：读者侧 3 条（lookup / buildings / building 详情）")
+
+	// ── 第三方密钥池（高德）─────────────────────────────────────
+	//
+	// 客户端不存死 key：APK 里的字符串一定能被提取，「硬编码 key」等于公开 key。
+	// 池化后可以轮换、可以按平台分发、失效时禁用即可而不必发版。
+	//
+	// **边界必须说清**：key 一旦下发到客户端就不再是秘密。这个池降低的是
+	// 「永久硬编码」的风险并让轮换可行，**不能**防止拿到 key 的人滥用；
+	// 真正的配额防线在高德控制台（绑包名/签名 + 设配额）。
+	//
+	// Cipher 复用 TICKET_KEY 派生的同一套 AES（用不同后缀隔离用途），
+	// 与身份证号加密的做法一致（ADR-0002：敏感数据必须加密落库）。
+	amapKeySvc := apikey.New(apikey.Options{
+		Repo:   repos.AMapKeys,
+		Cipher: platform.NewAESCipher(cfg.TicketKey + ":amapkey"),
+		Clock:  clock,
+	})
+	// 取用端点**要求会话**：否则任何人都能无限取 key，「不硬编码」就退回成
+	// 「公开分发」。这里单独建一个需要会话的路由组（ScopeApp），
+	// 与 /admin 的 ScopeAdmin 组区分开。
+	if cfg.AuthKey != "" && id.store != nil {
+		sessionGroup := engine.Group("/",
+			server.RevocableAuthMiddleware(httpStack.tokenV,
+				server.NewSessionStoreResolver(id.store, id.store, clock),
+				server.ScopeApp),
+		)
+		apikey.RegisterPublic(sessionGroup, amapKeySvc)
+		logger.Info("高德密钥池已装配：取用端点需会话")
+	} else {
+		logger.Warn("高德密钥池取用端点未挂载：需要 AUTH_KEY 与身份域才能要求会话")
+	}
+
 	// ── 站内消息域 + 通知派生编排 ────────────────────────────────
 	//
 	// 三处依赖都必须注入，缺一不可：
@@ -360,6 +407,8 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 		announcement.RegisterAdmin(adminGroup, announcementSvc, announcementUserIDOf)
 		post.RegisterAdmin(adminGroup, postSvc)
 		track.RegisterAdmin(adminGroup, trackSvc)
+		classroom.RegisterAdmin(adminGroup, classroomSvc)
+		apikey.RegisterAdmin(adminGroup, amapKeySvc)
 		// 教务公共服务取数账号 + 公共缓存失效（仅管理员）。
 		jiaowu.RegisterFetchAccountAdmin(adminGroup, fetchAccountAdmin, jiaowuSvc)
 		// 皮肤包 B 端上传 / 列表 / 激活（issue #53）。与管理台同一套
