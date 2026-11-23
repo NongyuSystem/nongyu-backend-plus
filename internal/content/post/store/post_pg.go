@@ -22,8 +22,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fmt"
 	"nongyu-backend-plus/internal/apperr"
 	"nongyu-backend-plus/internal/content/post"
+	"strings"
 )
 
 // PostPGRepo 是 post.Repo 的 PostgreSQL 实现。
@@ -144,6 +146,91 @@ func (r *PostPGRepo) List(ctx context.Context, board post.Board, after post.Page
 // ListAll 实现 post.Repo：跨板块（管理端）。
 func (r *PostPGRepo) ListAll(ctx context.Context, after post.PageCursor, limit int) ([]*post.Post, error) {
 	return r.listPosts(ctx, after, limit, "", 0)
+}
+
+// ListByDetail 实现 post.Repo（按 detail 字段精确匹配）。
+//
+// 用 JSONB 包含运算符 `@>` 而不是 `detail->>'k' = v`：
+//   - `@>` 能命中 GIN 索引 (idx_posts_detail_gin)，`->>` 不能；
+//   - `@>` 的语义就是「JSON 里包含这些键值对」，与我们的 AND 语义一致。
+//
+// 但 `@>` 是**大小写敏感**的，而内存版用 EqualFold。为了让两套实现行为
+// 一致，这里对每个条件同时接受原值与全小写值两种写法——
+// 见 lowerVariants：`C语言` 会同时匹配 `C语言` 与 `c语言`。
+// 这是「索引友好」与「大小写不敏感」之间的折中：不建表达式索引（
+// 那要改表结构），而是让查询侧多给几个候选值。
+func (r *PostPGRepo) ListByDetail(ctx context.Context, board post.Board, match map[string]string, after post.PageCursor, limit int) ([]*post.Post, error) {
+	if len(match) == 0 {
+		// 没有任何条件时不返回全表：那等于绕过了这个接口的存在理由
+		//（它是「按字段查」，不是「列全部」）。
+		return []*post.Post{}, nil
+	}
+
+	// 构造 OR 的多个 @> 条件：每个条件一组「原值 + 小写值」。
+	// 例如 match={teacherName:"王老师"} → $(detail @> '{"teacherName":"王老师"}' OR detail @> '{"teacherName":"王老师"}')
+	args := []any{string(board)}
+	var conds []string
+	idx := 2
+	for k, v := range match {
+		var ors []string
+		for _, variant := range lowerVariants(v) {
+			obj, err := json.Marshal(map[string]string{k: variant})
+			if err != nil {
+				return nil, err
+			}
+			ors = append(ors, fmt.Sprintf("detail @> $%d::jsonb", idx))
+			args = append(args, string(obj))
+			idx++
+		}
+		conds = append(conds, "("+strings.Join(ors, " OR ")+")")
+	}
+
+	sql := `SELECT ` + postColumns + ` FROM posts
+	         WHERE deleted_at IS NULL
+	           AND ($1 = '' OR board = $1)
+	           AND ` + strings.Join(conds, " AND ")
+	if !after.Zero() {
+		sql += fmt.Sprintf(`
+	           AND (published_at, id) < ($%d, $%d)`, idx, idx+1)
+		args = append(args, after.PublishedAt, after.ID)
+		idx += 2
+	}
+	sql += `
+	         ORDER BY published_at DESC, id DESC`
+	if limit > 0 {
+		sql += fmt.Sprintf(`
+	         LIMIT $%d`, idx)
+		args = append(args, limit)
+	}
+
+	rows, err := r.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*post.Post, 0)
+	for rows.Next() {
+		p, err := scanPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// lowerVariants 返回一个值的「原样」与「全小写」两种写法（去重）。
+//
+// 用途见 ListByDetail 的说明：`@>` 大小写敏感，而业务上要求不敏感，
+// 于是查询侧同时给两个候选。对纯中文值两者相同，会自动去重成一条。
+func lowerVariants(v string) []string {
+	v = strings.TrimSpace(v)
+	lower := strings.ToLower(v)
+	if lower == v {
+		return []string{v}
+	}
+	return []string{v, lower}
 }
 
 // ListByAuthor 实现 post.Repo（「我的帖子」）。

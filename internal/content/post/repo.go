@@ -39,6 +39,18 @@ type Repo interface {
 	// MarkDeleted 软删帖子（幂等）。
 	MarkDeleted(ctx context.Context, id int64, at time.Time) error
 
+	// ListByDetail 按 detail 里的字段精确匹配（供「查某老师的评价」这类专用接口）。
+	//
+	//   - board 非空时限定类型（评价查询会传 teacher_review / course_review）；
+	//   - match 是「字段名 → 期望值」，全部条件都要满足（AND）；
+	//   - 值按**字符串精确匹配**（大小写不敏感），不做模糊。
+	//
+	// 为什么单列一个方法而不是给 List 加参数：detail 的键来自规则表，
+	// 是**数据**而不是编译期已知的字段名。用 map 传条件让新增筛选项
+	// 不需要改接口；但「哪些键允许用来过滤」由服务层白名单控制，
+	// 否则调用方可以拿 detail 里任意键做筛选（等于把内部结构暴露成 API）。
+	ListByDetail(ctx context.Context, board Board, match map[string]string, after PageCursor, limit int) ([]*Post, error)
+
 	// CreateReply 插入一条留言并回填 ID。
 	CreateReply(ctx context.Context, r *Reply) error
 	// ListReplies 返回某帖下未软删的留言，publishedAt 升序（先来先看）。

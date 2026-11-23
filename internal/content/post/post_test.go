@@ -132,6 +132,7 @@ func newEnv(t *testing.T) (*gin.Engine, *post.Service, *store.PostMemoryRepo, *f
 	r := gin.New()
 	post.RegisterPublic(r, svc, uidOf)
 	post.RegisterSession(r, svc, uidOf)
+	post.RegisterReviewQueries(r, svc, uidOf)
 	post.RegisterAdmin(r, svc)
 	return r, svc, repo, objStore
 }

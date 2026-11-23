@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,6 +149,57 @@ func (r *PostMemoryRepo) ListByAuthor(_ context.Context, authorID int64, board p
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// ListByDetail 实现 post.Repo（按 detail 字段精确匹配）。
+//
+// 匹配规则与 PG 版保持一致：**大小写不敏感**的字符串相等。
+// 用 strings.EqualFold 而不是 ==：教师名/课程名是人工录入的自然语言，
+// 「王老师」与「王老师」不该因为大小写或全角差异而查不到（虽然中文
+// 无大小写，但课程名常含英文，如「C语言」与「c语言」）。
+func (r *PostMemoryRepo) ListByDetail(_ context.Context, board post.Board, match map[string]string, after post.PageCursor, limit int) ([]*post.Post, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]*post.Post, 0, len(r.posts))
+	for _, p := range r.posts {
+		if p.DeletedAt != nil {
+			continue
+		}
+		if board != "" && p.Board != board {
+			continue
+		}
+		if !detailMatches(p.Detail, match) {
+			continue
+		}
+		if !post.AfterCursor(p, after) {
+			continue
+		}
+		out = append(out, clonePost(p))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return post.LessForOrder(out[i], out[j]) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// detailMatches 判断 detail 是否满足全部条件（AND）。
+func detailMatches(detail map[string]any, match map[string]string) bool {
+	for k, want := range match {
+		raw, ok := detail[k]
+		if !ok {
+			return false
+		}
+		s, ok := raw.(string)
+		if !ok {
+			return false // 只支持字符串字段的匹配
+		}
+		if !strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(want)) {
+			return false
+		}
+	}
+	return true
 }
 
 // ListAll 实现 post.Repo（管理端：跨板块）。

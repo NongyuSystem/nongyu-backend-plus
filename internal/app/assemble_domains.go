@@ -278,6 +278,11 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	})
 	post.RegisterPublic(engine, postSvc, currentUserIDOf)
 	post.RegisterSession(engine, postSvc, currentUserIDOf)
+	// 评价专用查询：**需要会话**（与 /posts 公开读不同），
+	// 路径用 /post-reviews/* 独立前缀（gin 不允许 /posts/:id 与
+	// /posts/reviews/teacher 共存，启动会 panic）。
+	// 挂 engine 上靠全局鉴权保护，handler 内部再 fail-closed 一次。
+	post.RegisterReviewQueries(engine, postSvc, currentUserIDOf)
 	logger.Info("帖子域已装配：读者侧 2 条 + 会话侧 11 条（含附件上传）")
 
 	// 皮肤包上传 / 下载服务（issue #53 / ADR-0003、0004、0006）。
