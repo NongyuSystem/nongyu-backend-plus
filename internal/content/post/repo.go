@@ -57,6 +57,17 @@ type Repo interface {
 	ListReplies(ctx context.Context, postID int64, limit int) ([]*Reply, error)
 	// FindReplyByID 取一条留言（含已软删），供靶子校验与归属判定。
 	FindReplyByID(ctx context.Context, id int64) (*Reply, error)
+	// MarkReplyDeleted 软删一条留言（幂等）。
+	//
+	// 只改 deleted_at，不删行：点赞等反应记录以 target_id 引用它，
+	// 硬删会留下悬空引用。读路径（ListReplies / 点赞校验）已经会跳过已删行。
+	MarkReplyDeleted(ctx context.Context, id int64, at time.Time) error
+	// MarkRepliesDeletedByPost 把某帖下**全部未删留言**软删（管理端删帖时级联）。
+	//
+	// 为什么不用逐条 FindReplyByID + MarkReplyDeleted：
+	// 那是 N+1 次往返，且中间失败会留下「帖子删了、评论还在」的半状态。
+	// 一条 UPDATE 是原子的。
+	MarkRepliesDeletedByPost(ctx context.Context, postID int64, at time.Time) error
 
 	// AddReaction 建立一条点赞/收藏。同键已存在时返回 created=false（幂等 no-op）。
 	AddReaction(ctx context.Context, r *Reaction) (created bool, err error)

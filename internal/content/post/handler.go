@@ -46,6 +46,8 @@ func RegisterSession(r gin.IRouter, svc *Service, userIDOf UserIDFunc) {
 	r.DELETE("/posts/:id/favorite", reactHandler(svc, userIDOf, "favorite", false))
 	r.POST("/posts/:id/replies/:replyId/like", reactCommentHandler(svc, userIDOf, true))
 	r.DELETE("/posts/:id/replies/:replyId/like", reactCommentHandler(svc, userIDOf, false))
+	// 删评论：嵌套资源，父帖 id 必填（防止跨帖删别人的评论）。
+	r.DELETE("/posts/:id/replies/:replyId", deleteReplyHandler(svc, userIDOf))
 	r.PATCH("/posts/:id", patchHandler(svc, userIDOf))
 	r.DELETE("/posts/:id", deleteHandler(svc, userIDOf))
 }
@@ -385,6 +387,35 @@ func patchHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": toPublic(p, uid)})
+	}
+}
+
+// deleteReplyHandler 删除自己的评论。
+//
+// 父帖 id (:id) 与评论 id (:replyId) 都参与校验，
+// 防止调用方拿 A 帖的 id 去删 B 帖下的评论。
+func deleteReplyHandler(svc *Service, userIDOf UserIDFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := userIDOf(c)
+		if !ok {
+			apperr.WriteGin(c, apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份"))
+			return
+		}
+		postID, err := parseID(c.Param("id"))
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		replyID, err := parseID(c.Param("replyId"))
+		if err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		if err := svc.DeleteReply(c.Request.Context(), uid, postID, replyID); err != nil {
+			apperr.WriteGin(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 }
 

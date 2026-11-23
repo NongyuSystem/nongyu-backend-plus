@@ -332,8 +332,7 @@ func (s *Service) Delete(ctx context.Context, actorID, id int64) error {
 	if err := s.repo.MarkDeleted(ctx, id, s.clock.Now()); err != nil {
 		return err
 	}
-	s.invalidateBoard(p.Board)
-	s.invalidateDetail(ctx, id)
+	s.afterPostDeleted(ctx, id, p)
 	// 只清理「属主 == 帖子作者」的 key：作者删自己的帖子时 actorID==p.AuthorID。
 	s.cleanupAttachments(p.Attachments, p.AuthorID)
 	return nil
@@ -351,12 +350,30 @@ func (s *Service) AdminDelete(ctx context.Context, id int64) error {
 	if err := s.repo.MarkDeleted(ctx, id, s.clock.Now()); err != nil {
 		return err
 	}
-	s.invalidateBoard(p.Board)
-	s.invalidateDetail(ctx, id)
+	s.afterPostDeleted(ctx, id, p)
 	// 管理端删除没有「本人」语义；用帖子作者的身份做归属判定，只删该帖真正属主
 	// 上传的 key（fail-closed：查不到归属的 key 一律跳过）。
 	s.cleanupAttachments(p.Attachments, p.AuthorID)
 	return nil
+}
+
+// afterPostDeleted 是普通删除与管理端删除共用的后续动作。
+//
+// 级联软删该帖下的全部留言：帖子都没了，留言单独留着没有意义
+// （列表/详情入口已随帖子消失，只会在管理端变成孤儿数据）。
+// 用一条 UPDATE 完成（MarkRepliesDeletedByPost），不是逐条删——
+// 逐条删是 N+1 且中间失败会留下半状态。
+func (s *Service) afterPostDeleted(ctx context.Context, id int64, p *Post) {
+	if err := s.repo.MarkRepliesDeletedByPost(ctx, id, s.clock.Now()); err != nil {
+		// 级联失败不回滚帖子删除（已经 MarkDeleted 了，回滚要引入事务，
+		// 而本域 Repo 接口是有意不带事务的）。孤儿评论不会对外可见：
+		// 读路径都先检查帖子状态，帖子已删就不再下发其留言。
+		if s.logger != nil {
+			s.logger.Warn("级联软删评论失败", "err", err, "postID", id)
+		}
+	}
+	s.invalidateBoard(p.Board)
+	s.invalidateDetail(ctx, id)
 }
 
 // cleanupAttachments 异步清理附件对象。
@@ -743,4 +760,46 @@ func (s *Service) FindReply(ctx context.Context, id int64) (*Reply, error) {
 		return nil, apperr.Errorf(apperr.CodeValidationFailed, "留言 id 非法")
 	}
 	return s.repo.FindReplyByID(ctx, id)
+}
+
+// DeleteReply 删除自己的留言（软删）。
+//
+// 权限口径与删帖一致：
+//   - 只有作者本人能删；非作者一律 404（不泄露「这条留言存在但不是你的」）；
+//   - 父帖 id 必须匹配：这是嵌套资源 /posts/:id/replies/:replyId，
+//     若只按 replyId 找，调用方可以用 A 帖的 id 删 B 帖下的评论。
+//
+// 不做「帖主可以删别人在自己帖子下的评论」：那是版主能力，
+// 需要单独的权限模型（会涉及通知/申诉），本期不引入。
+func (s *Service) DeleteReply(ctx context.Context, actorID, postID, replyID int64) error {
+	if actorID <= 0 {
+		return apperr.Errorf(apperr.CodeUnauthorized, "缺少已认证身份")
+	}
+	if postID <= 0 || replyID <= 0 {
+		return apperr.Errorf(apperr.CodeValidationFailed, "id 非法")
+	}
+
+	// 先确认父帖存在且未删：帖子已删时其下评论由级联路径处理，
+	// 不再单独接受写操作（fail-closed）。
+	p, err := s.repo.FindByID(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.Deleted() {
+		return apperr.Errorf(apperr.CodeNotFound, "帖子不存在")
+	}
+
+	rp, err := s.repo.FindReplyByID(ctx, replyID)
+	if err != nil {
+		return err
+	}
+	// 归属校验：评论必须属于该帖，且作者必须是当前用户。
+	// 两条都返回 404，避免泄露「评论存在但不属于你/不在这条帖子下」。
+	if rp.PostID != postID || rp.AuthorID != actorID {
+		return apperr.Errorf(apperr.CodeNotFound, "留言不存在")
+	}
+	if rp.Deleted() {
+		return nil // 幂等
+	}
+	return s.repo.MarkReplyDeleted(ctx, replyID, s.clock.Now())
 }

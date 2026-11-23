@@ -378,6 +378,41 @@ func (r *PostPGRepo) FindReplyByID(ctx context.Context, id int64) (*post.Reply, 
 	return &rp, nil
 }
 
+// MarkReplyDeleted 实现 post.Repo（幂等软删）。
+//
+// `WHERE deleted_at IS NULL` 让重复删除不改动任何行，
+// 也不会把原本的删除时间覆盖成当前时间（审计价值）。
+func (r *PostPGRepo) MarkReplyDeleted(ctx context.Context, id int64, at time.Time) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE post_replies SET deleted_at = $2
+		 WHERE id = $1 AND deleted_at IS NULL`, id, at)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// 区分「不存在」与「已删」：已删按幂等成功处理。
+		var exists bool
+		if err := r.pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM post_replies WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return apperr.Errorf(apperr.CodeNotFound, "留言不存在")
+		}
+	}
+	return nil
+}
+
+// MarkRepliesDeletedByPost 实现 post.Repo（级联软删某帖下全部未删留言）。
+//
+// 一条 UPDATE 原子完成，避免逐条删的 N+1 与半状态。
+func (r *PostPGRepo) MarkRepliesDeletedByPost(ctx context.Context, postID int64, at time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE post_replies SET deleted_at = $2
+		 WHERE post_id = $1 AND deleted_at IS NULL`, postID, at)
+	return err
+}
+
 // AddReaction 实现 post.Repo：同键已存在返回 created=false。
 //
 // 关键点：**唯一性判定交给数据库**。

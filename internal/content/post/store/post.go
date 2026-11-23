@@ -289,6 +289,34 @@ func (r *PostMemoryRepo) FindReplyByID(_ context.Context, id int64) (*post.Reply
 	return cloneReply(rp), nil
 }
 
+// MarkReplyDeleted 实现 post.Repo（幂等软删）。
+func (r *PostMemoryRepo) MarkReplyDeleted(_ context.Context, id int64, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rp, ok := r.replies[id]
+	if !ok {
+		return apperr.Errorf(apperr.CodeNotFound, "留言不存在")
+	}
+	if rp.DeletedAt == nil {
+		t := at
+		rp.DeletedAt = &t
+	}
+	return nil
+}
+
+// MarkRepliesDeletedByPost 实现 post.Repo（级联软删某帖下全部未删留言）。
+func (r *PostMemoryRepo) MarkRepliesDeletedByPost(_ context.Context, postID int64, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rp := range r.replies {
+		if rp.PostID == postID && rp.DeletedAt == nil {
+			t := at
+			rp.DeletedAt = &t
+		}
+	}
+	return nil
+}
+
 // AddReaction 实现 post.Repo（同键幂等）。
 func (r *PostMemoryRepo) AddReaction(_ context.Context, rn *post.Reaction) (bool, error) {
 	r.mu.Lock()
