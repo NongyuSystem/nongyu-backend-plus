@@ -60,6 +60,9 @@ type Service struct {
 	fetchAccounts FetchAccountPool
 	// fetchST 用取数账号的整套 cookie 换 st（公共类建网关侧会话用）。
 	fetchST FetchAccountSTIssuer
+	// semesterEnds 是稳定类缓存的学期末切换日（MM-DD），由 BindSemesterEndDates 注入。
+	// 为 nil 时稳定类不套用学期末失效，仍按 dataTypeSpec TTL（未绑定配置时的兼容行为）。
+	semesterEnds []semesterEnd
 }
 
 // New 构造 Service（#13 起保持的签名，装配层 app.New 一行无需改动）。
@@ -131,6 +134,13 @@ func (s *Service) BindFetchAccountPool(p FetchAccountPool) {
 // BindFetchAccountSTIssuer 接入「取数账号整套 cookie 换 st」的能力。
 func (s *Service) BindFetchAccountSTIssuer(i FetchAccountSTIssuer) {
 	s.fetchST = i
+}
+
+// BindSemesterEndDates 接入稳定类缓存的学期末切换日（如 "07-10,01-10"）。
+// 绑定后，稳定类（课表/成绩等）写入后整个学期命中，到学期末 + userID 哈希偏移
+// （0~7 天）才判 cache_miss。未调用时稳定类仍按 dataTypeSpec TTL。
+func (s *Service) BindSemesterEndDates(raw string) {
+	s.semesterEnds = parseSemesterEndDates(raw)
 }
 
 // BindRenewScheduler 把续期调度器接入 Service：写票过期时刻改由观测周期决定，// 换票成功/失败时刻回喂给调度器，形成「观测 → 周期 → 写票 TTL」闭环（#7 决议）。

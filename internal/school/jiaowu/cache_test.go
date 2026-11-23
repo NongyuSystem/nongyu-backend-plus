@@ -415,6 +415,25 @@ func TestCache_StaleOnlyOnFallback(t *testing.T) {
 }
 
 // TestCache_StaleHardCap 验证 7 天硬上限：再旧就不给了（#32 Q3）。
+// TestCache_StableClassNoHourlyMiss 验证 2026-11-23 改造：稳定类绑定学期末后，
+// 写入 90 分钟（超过旧 1 小时窗口）仍命中，不再每小时 cache_miss。
+func TestCache_StableClassNoHourlyMiss(t *testing.T) {
+	engine, svc, cache, clock := newCacheTestServer(t, "user-1")
+	svc.BindSemesterEndDates("07-10,01-10")
+
+	if code, _ := doJSON(t, engine, http.MethodPost, "/school/jiaowu/cache/course", validCourseBody); code != http.StatusOK {
+		t.Fatalf("回传失败")
+	}
+	// 推进 90 分钟（旧逻辑此时应 cache_miss）
+	clock.Advance(90 * time.Minute)
+	cache.forceAge(t, "user-1", DataTypeCourse, 90*time.Minute)
+
+	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course", "")
+	if code != http.StatusOK || body["code"] == "cache_miss" {
+		t.Fatalf("稳定类学期内不应按小时 miss，实际 code=%v body=%v", code, body)
+	}
+}
+
 func TestCache_StaleHardCap(t *testing.T) {
 	engine, _, cache, _ := newCacheTestServer(t, "user-1")
 
@@ -422,15 +441,15 @@ func TestCache_StaleHardCap(t *testing.T) {
 		t.Fatalf("回传失败")
 	}
 
-	// 把 fetchedAt 往前拨 8 天（超过 7 天上限）。
-	cache.forceAge(t, "user-1", DataTypeCourse, 8*24*time.Hour)
+	// 把 fetchedAt 往前拨 31 天（超过 30 天上限；2026-11-23 从 7 天改为 30 天）。
+	cache.forceAge(t, "user-1", DataTypeCourse, 31*24*time.Hour)
 
 	code, body := doJSON(t, engine, http.MethodGet, "/school/jiaowu/cache/course?fallback=1", "")
 	if code != http.StatusOK {
 		t.Fatalf("超期应回 200（cache_miss 语义），实际 %d", code)
 	}
 	if body["code"] != "cache_miss" {
-		t.Fatalf("超过 7 天硬上限必须回 cache_miss，实际 %v", body)
+		t.Fatalf("超过 30 天硬上限必须回 cache_miss，实际 %v", body)
 	}
 }
 

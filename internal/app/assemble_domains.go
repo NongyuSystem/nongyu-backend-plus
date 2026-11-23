@@ -66,6 +66,8 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	jiaowuSvc := jiaowu.NewWithAccel(infra.doer, infra.tickets, infra.cipher, clock, logger, cfg.AccelEnabled)
 	jiaowuSvc.BindRenewScheduler(scheduler)
 	jiaowuSvc.BindAuditStore(auditStore)
+	// 稳定类（课表/成绩等）缓存到学期末才失效；日期由管理员配置，按用户哈希偏移防雪崩。
+	jiaowuSvc.BindSemesterEndDates(cfg.SemesterEndDates)
 
 	// 公共类取数账号池：只有 tgt + webvpn 票、不对应任何 app 用户的专用凭据，
 	// 由管理员通过管理端维护。配了 DATABASE_URL 走 PG（加密落库），否则走内存。

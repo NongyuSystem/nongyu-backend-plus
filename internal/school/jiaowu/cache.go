@@ -41,14 +41,14 @@ import (
 type CacheStore = platform.CacheStore
 
 const (
-	// staleMaxAge 是旧数据下发的硬上限（#32 定 7 天）。
-	// 7 天足以覆盖假期，又避免把去年课表当当前数据下发。
-	staleMaxAge = 7 * 24 * time.Hour
+	// staleMaxAge 是旧数据下发的硬上限（原 #32 定 7 天，2026-11-23 改为 30 天）。
+	// 30 天覆盖整个假期 + 学期初切换空窗，客户端取数失败时仍能读一个月内旧课表。
+	staleMaxAge = 30 * 24 * time.Hour
 
 	// redisRetention 是写进 Redis 的实际存活时间。
 	// 比 staleMaxAge 多留一天：RedisCache.Set 会给 TTL 加抖动（默认 ±20%），
-	// 若正好写 staleMaxAge，抖动可能把它压到 7 天以下，让最后一段窗口凭空消失。
-	// 精确的「7 天」由读路径按 fetchedAt 判定，不依赖 Redis 何时淘汰。
+	// 若正好写 staleMaxAge，抖动可能把它压到 30 天以下，让最后一段窗口凭空消失。
+	// 精确的「30 天」由读路径按 fetchedAt 判定，不依赖 Redis 何时淘汰。
 	redisRetention = staleMaxAge + 24*time.Hour
 
 	// refreshInterval 是同一用户同一 dataType 的失效间隔（#34 定 60 秒）。
@@ -189,8 +189,14 @@ func (s *Service) CacheGet(ctx context.Context, userID string, dt DataType, fall
 		return snapshotOf(entry, true), nil
 	}
 
-	// 正常路径：超过该类的新鲜度窗口就判未命中（数据仍在，供 fallback 用）。
-	if age > dt.TTL() {
+	// 正常路径：判断缓存是否还「新鲜」。
+	//   - 稳定类 + 已绑定学期末配置：写入后整个学期命中，到学期末+用户偏移才判 miss；
+	//   - 其它情况：仍按该类的 TTL 新鲜度窗口（数据留在缓存里供 fallback 用）。
+	if IsStableDataType(dt) && len(s.semesterEnds) > 0 {
+		if stableCacheExpired(s.clock.Now(), entry.FetchedAt, userID, s.semesterEnds) {
+			return CacheSnapshot{}, ErrCacheMiss
+		}
+	} else if age > dt.TTL() {
 		return CacheSnapshot{}, ErrCacheMiss
 	}
 	return snapshotOf(entry, false), nil

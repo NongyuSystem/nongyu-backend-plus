@@ -101,6 +101,10 @@ type Config struct {
 	CacheBreakerThreshold int
 	// CacheBreakerCooldownSec 是熔断冷却秒数，期满转半开探测。
 	CacheBreakerCooldownSec int
+	// SemesterEndDates 是学期末切换日（MM-DD，逗号分隔，如 "07-10,01-10"）。
+	// 稳定类缓存到该日 + userID 哈希偏移后失效。空串时用默认值 07-10,01-10。
+	// 解析与偏移逻辑在 jiaowu 包；这里只承载配置字符串。
+	SemesterEndDates string
 	// DatabaseURL 是 Postgres 连接串（审计流水等结构化数据）。
 	// 为空时不启用持久层，审计只写 slog。
 	DatabaseURL string
@@ -158,6 +162,7 @@ func Load() (Config, error) {
 		CacheFlushRatePerSec:    envIntOr("CACHE_FLUSH_RATE_PER_SEC", 100),
 		CacheBreakerThreshold:   envIntOr("CACHE_BREAKER_THRESHOLD", 5),
 		CacheBreakerCooldownSec: envIntOr("CACHE_BREAKER_COOLDOWN_SEC", 5),
+		SemesterEndDates:        envOr("SEMESTER_END_DATES", "07-10,01-10"),
 		DatabaseURL:             envOr("DATABASE_URL", ""),
 		MinIOEndpoint:           envOr("MINIO_ENDPOINT", ""),
 		MinIOAccessKey:          envOr("MINIO_ACCESS_KEY", ""),
