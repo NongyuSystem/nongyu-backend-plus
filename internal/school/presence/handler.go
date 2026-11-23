@@ -21,16 +21,13 @@ import (
 	"nongyu-backend-plus/internal/school"
 )
 
-const (
-	presenceRoute = "/school/presence"
-	codeInvalid   = "invalid_presence"
-)
+const codeInvalid = "invalid_presence"
 
 // Register 把校内/校外状态子域的 HTTP 路由挂到给定的 gin.IRouter 上。
 // 由 app 装配层在拿到 Service 后调用；本包不 import app/server/config。
 func Register(r gin.IRouter, svc *Service) {
-	r.POST(presenceRoute, reportHandler(svc))
-	r.GET(presenceRoute, decideHandler(svc))
+	r.POST("/school/presence", reportHandler(svc))
+	r.GET("/school/presence", decideHandler(svc))
 }
 
 // reportRequest 是上报请求体：只收用户与模式，上报时刻由服务端 Clock 盖章，
