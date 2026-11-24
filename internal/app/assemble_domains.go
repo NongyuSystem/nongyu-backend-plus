@@ -31,11 +31,11 @@ import (
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
 	"nongyu-backend-plus/internal/platform/mail"
+	"nongyu-backend-plus/internal/release"
 	"nongyu-backend-plus/internal/school/jiaowu"
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/secondclass"
 	"nongyu-backend-plus/internal/server"
-	"nongyu-backend-plus/internal/release"
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 

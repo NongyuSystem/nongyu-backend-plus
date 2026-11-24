@@ -96,14 +96,14 @@ type Release struct {
 
 // UploadInput 是一次上传的输入（包体已在 handler 读入内存并受体积限）。
 type UploadInput struct {
-	PackBytes   []byte
-	AppID       string
-	VersionCode int64
-	VersionName string
-	MinSdk      int
+	PackBytes               []byte
+	AppID                   string
+	VersionCode             int64
+	VersionName             string
+	MinSdk                  int
 	MinSupportedVersionCode int64
-	Changelog   string
-	CreatedBy   string
+	Changelog               string
+	CreatedBy               string
 }
 
 // ValidateApplicationID 判定一个 applicationId 是否可用作对象 key 与 URL 段。

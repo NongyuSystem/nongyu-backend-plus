@@ -17,10 +17,10 @@ import (
 // 与「最新 = versionCode 最大」两条语义用互斥锁严格执行，避免内存与 PG
 // 行为分叉导致测试假绿。
 type ReleaseMemoryRepo struct {
-	mu       sync.Mutex
-	rows     map[string]*release.Release // 键：appId + "/" + versionCode
-	seq      int64
-	nowFn    func() time.Time
+	mu    sync.Mutex
+	rows  map[string]*release.Release // 键：appId + "/" + versionCode
+	seq   int64
+	nowFn func() time.Time
 }
 
 // NewReleaseMemoryRepo 构造内存仓储。nowFn 可为 nil（默认 time.Now）。
