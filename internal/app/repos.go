@@ -11,6 +11,7 @@ import (
 	"nongyu-backend-plus/internal/content/post"
 	"nongyu-backend-plus/internal/message"
 	"nongyu-backend-plus/internal/platform"
+	"nongyu-backend-plus/internal/release"
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 
@@ -21,6 +22,7 @@ import (
 	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
 	poststore "nongyu-backend-plus/internal/content/post/store"
 	messagestore "nongyu-backend-plus/internal/message/store"
+	releasestore "nongyu-backend-plus/internal/release/store"
 	skinstore "nongyu-backend-plus/internal/skin/store"
 	trackstore "nongyu-backend-plus/internal/track/store"
 )
@@ -59,6 +61,8 @@ type repoBundle struct {
 	Messages      message.Repo
 	Track         track.Repo
 	Skins         skin.Repo
+	// Releases 是应用发布（安卓安装包版本与包体，Spec #80）。
+	Releases release.Repo
 	// Buildings 是教室楼栋（含路线的读写）。
 	Buildings classroom.Repo
 	// AMapKeys 是高德密钥池（存密文）。
@@ -81,6 +85,7 @@ func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error)
 			Messages:      messagestore.NewMessageMemoryRepo(now),
 			Track:         trackstore.NewTrackMemoryRepo(),
 			Skins:         skinstore.NewSkinMemoryRepo(now),
+			Releases:      releasestore.NewReleaseMemoryRepo(now),
 			Buildings:     classroomstore.NewBuildingMemoryRepo(now),
 			AMapKeys:      apikeystore.NewKeyMemoryRepo(),
 			Mode:          storeModeMemory,

@@ -10,6 +10,7 @@ import (
 	announcementstore "nongyu-backend-plus/internal/content/announcement/store"
 	poststore "nongyu-backend-plus/internal/content/post/store"
 	messagestore "nongyu-backend-plus/internal/message/store"
+	releasestore "nongyu-backend-plus/internal/release/store"
 	skinstore "nongyu-backend-plus/internal/skin/store"
 	trackstore "nongyu-backend-plus/internal/track/store"
 )
@@ -36,6 +37,7 @@ func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, erro
 		Messages:      messagestore.NewMessagePGRepo(pool, now),
 		Track:         trackstore.NewTrackPGRepo(pool),
 		Skins:         skinstore.NewSkinPGRepo(pool, now),
+		Releases:      releasestore.NewReleasePGRepo(pool, now),
 		Buildings:     classroomstore.NewBuildingPGRepo(pool, now),
 		AMapKeys:      apikeystore.NewKeyPGRepo(pool),
 		Mode:          storeModePostgres,
