@@ -1,4 +1,4 @@
-﻿# 编译产物
+# 编译产物
 /bin/
 /dist/
 *.exe
@@ -48,3 +48,7 @@ docs/agents/
 .dev-server.exe
 # 本地验收产物（截图/验证码/落盘凭据），不入库
 _artifacts/
+
+# Go 构建缓存放进工作区（沙箱环境无法写默认的 %LOCALAPPDATA%\go-build），不入库
+.gocache/
+.gotmp/

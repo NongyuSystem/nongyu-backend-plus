@@ -328,5 +328,25 @@ func identityDDLStatements() []string {
 			created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		// 0012：应用发布域（Spec #80）。
+		// 逐列照 migrations/0012_app_releases.sql 的定义与顺序，供 DDL 一致性守卫比对。
+		// 注意：迁移里额外的 app_releases_latest_idx 属「已知差异」（测试隔离
+		// schema 不建二级索引），与 skin_packs_created_at_idx 同口径，守卫只提示不判失败。
+		`CREATE TABLE IF NOT EXISTS app_releases (
+			id                         BIGSERIAL   PRIMARY KEY,
+			app_id                     TEXT        NOT NULL,
+			version_code               BIGINT      NOT NULL CHECK (version_code > 0),
+			version_name               TEXT        NOT NULL,
+			min_sdk                    INTEGER     NOT NULL DEFAULT 0,
+			min_supported_version_code BIGINT      NOT NULL DEFAULT 0
+			                           CHECK (min_supported_version_code >= 0),
+			changelog                  TEXT        NOT NULL DEFAULT '',
+			object_key                 TEXT        NOT NULL,
+			sha256                     TEXT        NOT NULL,
+			size                       BIGINT      NOT NULL CHECK (size >= 0),
+			created_by                 TEXT        NOT NULL DEFAULT '',
+			created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT app_releases_ref_unique UNIQUE (app_id, version_code)
+		)`,
 	}
 }

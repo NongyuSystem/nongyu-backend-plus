@@ -35,6 +35,7 @@ import (
 	"nongyu-backend-plus/internal/school/presence"
 	"nongyu-backend-plus/internal/school/secondclass"
 	"nongyu-backend-plus/internal/server"
+	"nongyu-backend-plus/internal/release"
 	"nongyu-backend-plus/internal/skin"
 	"nongyu-backend-plus/internal/track"
 
@@ -303,6 +304,21 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	skin.RegisterPublic(engine, skinSvc)
 	logger.Info("皮肤域已装配：App 侧 3 条只读（目录/详情/包体）")
 
+	// ── 应用发布域（Spec #80）─────────────────────────────────────
+	//
+	// 三个只读端点 + 一个管理端上传。与皮肤域刻意不同的两处：
+	//  1. **不进 publicReadablePaths**：查版本与下包都要有效 App 会话
+	//     （维护者决定：基本所有业务都要认证）；签名仍由全局中间件要求。
+	//  2. **不做激活指针**：「最新」= versionCode 最大者。
+	releaseSvc := release.New(release.Options{
+		Repo:        repos.Releases,
+		ObjectStore: objectStore,
+		Clock:       clock,
+		Logger:      logger,
+	})
+	release.RegisterSession(engine, releaseSvc)
+	logger.Info("应用发布域已装配：App 侧 3 条只读（最新版本/最新包/指定版本包）")
+
 	// 用户行为埋点（map #43 / Spec 六类常见功能）。
 	//
 	// 三条硬约束都在业务侧兜住：信封统一、脱敏三步顺序、缓冲满不返 503。
@@ -420,6 +436,12 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 		// 皮肤包 B 端上传 / 列表 / 激活（issue #53）。与管理台同一套
 		// admin 会话 + role 门槛；CreatedBy 取已认证会话的用户 ID 字符串。
 		skin.RegisterAdmin(adminGroup, skinSvc, func(c *gin.Context) (string, bool) {
+			uid := c.GetString(server.CtxUserID)
+			return uid, uid != "" && uid != "0"
+		})
+		// 应用发布：安装包上传登记（Spec #80）。与皮肤包同一套 admin 会话 +
+		// role 门槛；宁高不低——发布安装包是比发布皮肤更高影响的动作。
+		release.RegisterAdmin(adminGroup, releaseSvc, func(c *gin.Context) (string, bool) {
 			uid := c.GetString(server.CtxUserID)
 			return uid, uid != "" && uid != "0"
 		})
