@@ -39,6 +39,7 @@ func newPGRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, erro
 		Skins:         skinstore.NewSkinPGRepo(pool, now),
 		Releases:      releasestore.NewReleasePGRepo(pool, now),
 		Buildings:     classroomstore.NewBuildingPGRepo(pool, now),
+		Maps:          classroomstore.NewMapPGRepo(pool, now),
 		AMapKeys:      apikeystore.NewKeyPGRepo(pool),
 		Mode:          storeModePostgres,
 	}, nil

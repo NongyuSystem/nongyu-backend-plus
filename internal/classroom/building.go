@@ -18,10 +18,22 @@ type Building struct {
 	DisplayName string
 	// Aliases 是别名，便于搜索（如「十教B」「十教 B 栋」）。
 	Aliases []string
-	Campus  string
+	// Campus 是所属校区（受控枚举 yaan/chengdu/dujiangyan，见 map.go）。
+	//
+	// 为空串表示「未归属校区」——历史数据可能是空的，此时 MapPx/MapPy
+	// 必须也为 nil（没有校区就无像素坐标系可言）。
+	Campus string
 	// Lat/Lng 为 nil 表示坐标未录入（此时前端只能显示地址文字）。
+	//
+	// 有像素时这两个字段是**派生值**：由 Campus 底图的换算参数算出并随行存下。
 	Lat *float64
 	Lng *float64
+	// MapPx/MapPy 是底图上的像素坐标（原点左上，px 向右、py 向下）。
+	//
+	// 与 Lat/Lng 一样可为 nil：维护者要求「都要像素，但允许无像素」——
+	// 写入门槛要求像素，数据模型留空以兼容历史数据与未来接口。
+	MapPx *float64
+	MapPy *float64
 	// AddressText 是地址的文字描述。
 	AddressText string
 	Note        string
@@ -65,6 +77,12 @@ type RoutePoint struct {
 	Seq int
 	Lat float64
 	Lng float64
+	// MapPx/MapPy 是该点在底图上的像素坐标，可为 nil。
+	//
+	// **不单独存 campus**：路线属于楼栋，两者校区不一致是无意义状态，
+	// 查楼栋即得校区（规格 §6.4）。
+	MapPx *float64
+	MapPy *float64
 	// Label 是该点的说明（「进门后左转到电梯」）。
 	Label string
 }

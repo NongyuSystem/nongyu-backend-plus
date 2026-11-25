@@ -13,6 +13,7 @@ import (
 
 	"nongyu-backend-plus/internal/classroom"
 	"nongyu-backend-plus/internal/classroom/store"
+	"nongyu-backend-plus/internal/platform"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -23,13 +24,45 @@ type fixedClock struct{ now time.Time }
 
 func (f fixedClock) Now() time.Time { return f.now }
 
+// yaanCalFake 是测试用的雅安换算参数（与真值同形，便于断言派生结果）。
+var yaanCalFake = classroom.Calibration{
+	AR: 0.19050900468989643, AI: 0.0002290787340230358,
+	TX0: -1509.247805327019, TY0: 525.6390234504005,
+	LNG0: 102.995025, LAT0: 29.978648,
+	KX: 96426.68366048264, KY: 110540.0,
+}
+
+// newEnv 构造测试环境，并预置雅安底图（已标定 + 已上传）。
+//
+// 为什么要预置：2026-11-25 起**不兼容旧数据、强制传像素**，
+// 新建楼栋/路线点必须带 campus + mapPx/mapPy，后端据此派生经纬度。
+// 没有已标定的底图，任何录入都会被拒——这不是测试特例，正是真实前提。
 func newEnv(t *testing.T) (*gin.Engine, *classroom.Service, *store.BuildingMemoryRepo) {
 	t.Helper()
 	repo := store.NewBuildingMemoryRepo(func() time.Time { return t0 })
+	mapRepo := store.NewMapMemoryRepo(func() time.Time { return t0 })
+	objStore := platform.NewMemoryObjectStore()
+
+	if err := mapRepo.UpsertMapImage(context.Background(), &classroom.Map{
+		Campus: classroom.CampusYaan, ObjectKey: "classroom/maps/yaan-test.gif",
+		ContentType: "image/gif", SizeBytes: 1024, Width: 12488, Height: 5586,
+		CoordSystem: "GCJ-02", Enabled: true,
+	}); err != nil {
+		t.Fatalf("预置底图失败: %v", err)
+	}
+	if err := mapRepo.SetCalibration(context.Background(), classroom.CampusYaan,
+		&yaanCalFake, "测试"); err != nil {
+		t.Fatalf("预置换算参数失败: %v", err)
+	}
+
 	svc := classroom.New(classroom.Options{Repo: repo, Clock: fixedClock{now: t0}})
+	svc.BindMaps(classroom.MapOptions{Repo: mapRepo, Store: objStore})
+
 	r := gin.New()
 	classroom.RegisterPublic(r, svc)
 	classroom.RegisterAdmin(r, svc)
+	classroom.RegisterMapRoutes(r, svc)
+	classroom.RegisterMapAdmin(r, svc)
 	return r, svc, repo
 }
 
@@ -61,12 +94,12 @@ func TestLookup_CollapsesToBuilding(t *testing.T) {
 	// 管理员录入十教B 与一教。
 	if code, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
 		"buildingNo": "10", "zone": "B", "displayName": "十教B栋",
-		"lat": 30.5, "lng": 114.3, "addressText": "XX路1号",
+		"campus": "yaan", "mapPx": 6244, "mapPy": 2793, "addressText": "XX路1号",
 	}); code != http.StatusCreated {
 		t.Fatalf("录入十教B 失败：%d %v", code, body)
 	}
 	if code, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
-		"buildingNo": "1", "displayName": "第一教学楼", "lat": 30.51, "lng": 114.31,
+		"buildingNo": "1", "displayName": "第一教学楼", "campus": "yaan", "mapPx": 100, "mapPy": 200,
 	}); code != http.StatusCreated {
 		t.Fatalf("录入一教失败：%d %v", code, body)
 	}
@@ -124,7 +157,7 @@ func TestLookup_DistinguishesTwoFailureModes(t *testing.T) {
 func TestLookup_DisabledBuildingInvisible(t *testing.T) {
 	r, _, _ := newEnv(t)
 	code, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
-		"buildingNo": "5", "displayName": "五教", "enabled": false,
+		"buildingNo": "5", "displayName": "五教", "enabled": false, "campus": "yaan", "mapPx": 1000, "mapPy": 2000,
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("录入失败：%d %v", code, body)
@@ -159,7 +192,10 @@ func TestBuilding_CreateRejectsBadInput(t *testing.T) {
 // 否则查询无法确定答案（两栋楼同键 = 随机返回一栋）。
 func TestBuilding_DuplicateKeyRejected(t *testing.T) {
 	r, _, _ := newEnv(t)
-	in := map[string]any{"buildingNo": "10", "zone": "B", "displayName": "十教B"}
+	in := map[string]any{
+		"buildingNo": "10", "zone": "B", "displayName": "十教B",
+		"campus": "yaan", "mapPx": 6244, "mapPy": 2793,
+	}
 	if code, _ := do(t, r, http.MethodPost, "/admin/classrooms/buildings", in); code != http.StatusCreated {
 		t.Fatal("首次录入应成功")
 	}
@@ -172,7 +208,7 @@ func TestBuilding_DuplicateKeyRejected(t *testing.T) {
 func TestRoute_CreateAndLookupThroughBuilding(t *testing.T) {
 	r, _, _ := newEnv(t)
 	code, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
-		"buildingNo": "10", "zone": "B", "displayName": "十教B", "lat": 30.5, "lng": 114.3,
+		"buildingNo": "10", "zone": "B", "displayName": "十教B", "campus": "yaan", "mapPx": 6244, "mapPy": 2793,
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("录入楼栋失败：%d %v", code, body)
@@ -184,9 +220,9 @@ func TestRoute_CreateAndLookupThroughBuilding(t *testing.T) {
 		"/admin/classrooms/buildings/"+itoa(bid)+"/routes", map[string]any{
 			"title": "从南门进入", "startLabel": "南门", "recommended": true,
 			"points": []map[string]any{
-				{"lat": 30.500, "lng": 114.300, "label": "南门口"},
-				{"lat": 30.501, "lng": 114.301, "label": "直走到路口右转"},
-				{"lat": 30.502, "lng": 114.302, "label": "B栋正门"},
+				{"mapPx": 6244, "mapPy": 2793, "label": "南门口"},
+				{"mapPx": 6300, "mapPy": 2800, "label": "直走到路口右转"},
+				{"mapPx": 6350, "mapPy": 2850, "label": "B栋正门"},
 			},
 		})
 	if code != http.StatusCreated {
@@ -219,6 +255,7 @@ func TestRoute_PointsReplacedOnUpdate(t *testing.T) {
 	r, _, _ := newEnv(t)
 	_, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
 		"buildingNo": "7", "displayName": "七教",
+		"campus": "yaan", "mapPx": 1000, "mapPy": 2000,
 	})
 	bid := int64(body["data"].(map[string]any)["id"].(float64))
 
@@ -226,14 +263,14 @@ func TestRoute_PointsReplacedOnUpdate(t *testing.T) {
 		"/admin/classrooms/buildings/"+itoa(bid)+"/routes", map[string]any{
 			"title": "路线A",
 			"points": []map[string]any{
-				{"lat": 1.0, "lng": 2.0}, {"lat": 1.1, "lng": 2.1},
+				{"mapPx": 10, "mapPy": 20}, {"mapPx": 11, "mapPy": 21},
 			},
 		})
 	rid := int64(body["data"].(map[string]any)["id"].(float64))
 
 	// 改成 1 个点：旧的第 2 点必须消失（不是残留）。
 	code, body := do(t, r, http.MethodPatch, "/admin/classrooms/routes/"+itoa(rid), map[string]any{
-		"title": "路线A改", "points": []map[string]any{{"lat": 3.0, "lng": 4.0}},
+		"title": "路线A改", "points": []map[string]any{{"mapPx": 30, "mapPy": 40}},
 	})
 	if code != http.StatusOK {
 		t.Fatalf("更新失败：%d %v", code, body)
@@ -249,12 +286,13 @@ func TestRoute_RejectsTooManyPoints(t *testing.T) {
 	r, _, _ := newEnv(t)
 	_, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
 		"buildingNo": "8", "displayName": "八教",
+		"campus": "yaan", "mapPx": 1000, "mapPy": 2000,
 	})
 	bid := int64(body["data"].(map[string]any)["id"].(float64))
 
 	pts := make([]map[string]any, classroom.MaxRoutePoints+1)
 	for i := range pts {
-		pts[i] = map[string]any{"lat": 1.0, "lng": 2.0}
+		pts[i] = map[string]any{"mapPx": 1 + i, "mapPy": 2 + i}
 	}
 	if code, _ := do(t, r, http.MethodPost,
 		"/admin/classrooms/buildings/"+itoa(bid)+"/routes",
@@ -267,12 +305,12 @@ func TestRoute_RejectsTooManyPoints(t *testing.T) {
 func TestDeleteBuilding_CascadesRoutes(t *testing.T) {
 	r, svc, _ := newEnv(t)
 	_, body := do(t, r, http.MethodPost, "/admin/classrooms/buildings", map[string]any{
-		"buildingNo": "9", "displayName": "九教",
+		"buildingNo": "9", "displayName": "九教", "campus": "yaan", "mapPx": 1000, "mapPy": 2000,
 	})
 	bid := int64(body["data"].(map[string]any)["id"].(float64))
 	_, rb := do(t, r, http.MethodPost,
 		"/admin/classrooms/buildings/"+itoa(bid)+"/routes",
-		map[string]any{"title": "x", "points": []map[string]any{{"lat": 1.0, "lng": 2.0}}})
+		map[string]any{"title": "x", "points": []map[string]any{{"mapPx": 1, "mapPy": 2}}})
 	rid := int64(rb["data"].(map[string]any)["id"].(float64))
 
 	if code, _ := do(t, r, http.MethodDelete, "/admin/classrooms/buildings/"+itoa(bid), nil); code != http.StatusOK {

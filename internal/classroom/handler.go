@@ -37,15 +37,19 @@ func RegisterAdmin(r gin.IRouter, svc *Service) {
 // ---------- 响应体 ----------
 
 type buildingView struct {
-	ID          int64       `json:"id"`
-	Key         string      `json:"key"`
-	No          string      `json:"no"`
-	Zone        string      `json:"zone,omitempty"`
-	DisplayName string      `json:"displayName"`
-	Aliases     []string    `json:"aliases,omitempty"`
-	Campus      string      `json:"campus,omitempty"`
-	Lat         *float64    `json:"lat,omitempty"`
-	Lng         *float64    `json:"lng,omitempty"`
+	ID          int64    `json:"id"`
+	Key         string   `json:"key"`
+	No          string   `json:"no"`
+	Zone        string   `json:"zone,omitempty"`
+	DisplayName string   `json:"displayName"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Campus      string   `json:"campus,omitempty"`
+	Lat         *float64 `json:"lat,omitempty"`
+	Lng         *float64 `json:"lng,omitempty"`
+	// MapPx/MapPy 是底图像素坐标（原点左上，px 向右、py 向下）。
+	// 维护者口径「给用户的是两个都要」：经纬度与像素同时下发。
+	MapPx       *float64    `json:"mapPx,omitempty"`
+	MapPy       *float64    `json:"mapPy,omitempty"`
 	AddressText string      `json:"addressText,omitempty"`
 	Note        string      `json:"note,omitempty"`
 	Enabled     bool        `json:"enabled"`
@@ -64,17 +68,21 @@ type routeView struct {
 }
 
 type pointView struct {
-	Seq   int     `json:"seq"`
-	Lat   float64 `json:"lat"`
-	Lng   float64 `json:"lng"`
-	Label string  `json:"label,omitempty"`
+	Seq int     `json:"seq"`
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+	// 与 buildingView 同理：像素与经纬度同时下发。
+	MapPx *float64 `json:"mapPx,omitempty"`
+	MapPy *float64 `json:"mapPy,omitempty"`
+	Label string   `json:"label,omitempty"`
 }
 
 func toBuildingView(b *Building) buildingView {
 	v := buildingView{
 		ID: b.ID, Key: b.Key, No: b.No, Zone: b.Zone,
 		DisplayName: b.DisplayName, Aliases: b.Aliases, Campus: b.Campus,
-		Lat: b.Lat, Lng: b.Lng, AddressText: b.AddressText, Note: b.Note,
+		Lat: b.Lat, Lng: b.Lng, MapPx: b.MapPx, MapPy: b.MapPy,
+		AddressText: b.AddressText, Note: b.Note,
 		Enabled: b.Enabled,
 	}
 	if len(b.Routes) > 0 {
@@ -94,7 +102,10 @@ func toRouteView(r *Route) routeView {
 		Points: make([]pointView, 0, len(r.Points)),
 	}
 	for _, p := range r.Points {
-		v.Points = append(v.Points, pointView{Seq: p.Seq, Lat: p.Lat, Lng: p.Lng, Label: p.Label})
+		v.Points = append(v.Points, pointView{
+			Seq: p.Seq, Lat: p.Lat, Lng: p.Lng,
+			MapPx: p.MapPx, MapPy: p.MapPy, Label: p.Label,
+		})
 	}
 	return v
 }
@@ -176,6 +187,10 @@ type buildingRequest struct {
 	Campus      string   `json:"campus"`
 	Lat         *float64 `json:"lat"`
 	Lng         *float64 `json:"lng"`
+	// MapPx/MapPy 必填（维护者：不兼容旧数据，强制传像素）。
+	// 后端按 campus 底图的换算参数派生 lat/lng，传入的 lat/lng 会被覆盖。
+	MapPx       *float64 `json:"mapPx"`
+	MapPy       *float64 `json:"mapPy"`
 	AddressText string   `json:"addressText"`
 	Note        string   `json:"note"`
 	Enabled     *bool    `json:"enabled"`
@@ -185,6 +200,7 @@ func (in buildingRequest) toInput() BuildingInput {
 	return BuildingInput{
 		BuildingNo: in.BuildingNo, Zone: in.Zone, DisplayName: in.DisplayName,
 		Aliases: in.Aliases, Campus: in.Campus, Lat: in.Lat, Lng: in.Lng,
+		MapPx: in.MapPx, MapPy: in.MapPy,
 		AddressText: in.AddressText, Note: in.Note, Enabled: in.Enabled,
 	}
 }
@@ -285,15 +301,21 @@ type routeRequest struct {
 }
 
 type pointRequest struct {
-	Lat   float64 `json:"lat"`
-	Lng   float64 `json:"lng"`
-	Label string  `json:"label"`
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+	// MapPx/MapPy 必填；lat/lng 由楼栋校区的换算参数派生。
+	MapPx *float64 `json:"mapPx"`
+	MapPy *float64 `json:"mapPy"`
+	Label string   `json:"label"`
 }
 
 func (in routeRequest) toInput() RouteInput {
 	pts := make([]RoutePointInput, 0, len(in.Points))
 	for _, p := range in.Points {
-		pts = append(pts, RoutePointInput{Lat: p.Lat, Lng: p.Lng, Label: p.Label})
+		pts = append(pts, RoutePointInput{
+			Lat: p.Lat, Lng: p.Lng,
+			MapPx: p.MapPx, MapPy: p.MapPy, Label: p.Label,
+		})
 	}
 	return RouteInput{
 		Title: in.Title, Description: in.Description, StartLabel: in.StartLabel,

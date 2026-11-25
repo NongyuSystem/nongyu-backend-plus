@@ -27,18 +27,19 @@ func NewBuildingPGRepo(pool *pgxpool.Pool, nowFn func() time.Time) *BuildingPGRe
 
 const buildingCols = `
 	id, building_key, building_no, zone, display_name, aliases, campus,
-	latitude, longitude, address_text, note, enabled, created_at, updated_at`
+	latitude, longitude, map_px, map_py, address_text, note, enabled,
+	created_at, updated_at`
 
 // CreateBuilding 实现 classroom.Repo。
 func (r *BuildingPGRepo) CreateBuilding(ctx context.Context, b *classroom.Building) error {
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO classroom_building
 			(building_key, building_no, zone, display_name, aliases, campus,
-			 latitude, longitude, address_text, note, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			 latitude, longitude, map_px, map_py, address_text, note, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING id, created_at, updated_at`,
 		b.Key, b.No, b.Zone, b.DisplayName, b.Aliases, b.Campus,
-		b.Lat, b.Lng, b.AddressText, b.Note, b.Enabled,
+		b.Lat, b.Lng, b.MapPx, b.MapPy, b.AddressText, b.Note, b.Enabled,
 	).Scan(&b.ID, &b.CreatedAt, &b.UpdatedAt)
 	if err != nil {
 		// 唯一约束冲突翻译成 400：这是管理员重复录入，不是服务端故障。
@@ -55,11 +56,12 @@ func (r *BuildingPGRepo) UpdateBuilding(ctx context.Context, b *classroom.Buildi
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE classroom_building SET
 			display_name = $2, aliases = $3, campus = $4,
-			latitude = $5, longitude = $6, address_text = $7, note = $8,
-			enabled = $9, updated_at = $10
+			latitude = $5, longitude = $6, map_px = $7, map_py = $8,
+			address_text = $9, note = $10,
+			enabled = $11, updated_at = $12
 		 WHERE id = $1`,
 		b.ID, b.DisplayName, b.Aliases, b.Campus,
-		b.Lat, b.Lng, b.AddressText, b.Note, b.Enabled, r.nowFn())
+		b.Lat, b.Lng, b.MapPx, b.MapPy, b.AddressText, b.Note, b.Enabled, r.nowFn())
 	if err != nil {
 		return err
 	}
@@ -266,8 +268,10 @@ func insertPoints(ctx context.Context, tx pgx.Tx, routeID int64, pts []classroom
 	}
 	batch := &pgx.Batch{}
 	for _, p := range pts {
-		batch.Queue(`INSERT INTO classroom_route_point (route_id, seq, latitude, longitude, label)
-		             VALUES ($1,$2,$3,$4,$5)`, routeID, p.Seq, p.Lat, p.Lng, p.Label)
+		batch.Queue(`INSERT INTO classroom_route_point
+		             (route_id, seq, latitude, longitude, map_px, map_py, label)
+		             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+			routeID, p.Seq, p.Lat, p.Lng, p.MapPx, p.MapPy, p.Label)
 	}
 	br := tx.SendBatch(ctx, batch)
 	defer br.Close()
@@ -282,7 +286,7 @@ func insertPoints(ctx context.Context, tx pgx.Tx, routeID int64, pts []classroom
 // loadPoints 按路线 ID 批量取点，返回 routeID → 点切片（按 seq 升序）。
 func (r *BuildingPGRepo) loadPoints(ctx context.Context, routeIDs []int64) (map[int64][]classroom.RoutePoint, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT route_id, seq, latitude, longitude, label
+		SELECT route_id, seq, latitude, longitude, map_px, map_py, label
 		  FROM classroom_route_point
 		 WHERE route_id = ANY($1)
 		 ORDER BY route_id, seq`, routeIDs)
@@ -297,7 +301,8 @@ func (r *BuildingPGRepo) loadPoints(ctx context.Context, routeIDs []int64) (map[
 			rid int64
 			p   classroom.RoutePoint
 		)
-		if err := rows.Scan(&rid, &p.Seq, &p.Lat, &p.Lng, &p.Label); err != nil {
+		if err := rows.Scan(&rid, &p.Seq, &p.Lat, &p.Lng,
+			&p.MapPx, &p.MapPy, &p.Label); err != nil {
 			return nil, err
 		}
 		out[rid] = append(out[rid], p)
@@ -308,7 +313,8 @@ func (r *BuildingPGRepo) loadPoints(ctx context.Context, routeIDs []int64) (map[
 func scanBuilding(row pgx.Row) (*classroom.Building, error) {
 	var b classroom.Building
 	err := row.Scan(&b.ID, &b.Key, &b.No, &b.Zone, &b.DisplayName, &b.Aliases, &b.Campus,
-		&b.Lat, &b.Lng, &b.AddressText, &b.Note, &b.Enabled, &b.CreatedAt, &b.UpdatedAt)
+		&b.Lat, &b.Lng, &b.MapPx, &b.MapPy, &b.AddressText, &b.Note, &b.Enabled,
+		&b.CreatedAt, &b.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -346,6 +346,35 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 	classroom.RegisterPublic(engine, classroomSvc)
 	logger.Info("教室地址域已装配：读者侧 3 条（lookup / buildings / building 详情）")
 
+	// ── 校区底图（spec-教室地图底图与像素坐标.md）──────────────────
+	//
+	// 底图是「管理员按像素录点、用户看经纬度」的公共基准：
+	//   管理员看的是拼接底图，凭经纬度无法判断位置对不对；
+	//   客户端要把点画在图上，就需要像素与经纬度之间的可复用换算。
+	//
+	// 换算参数**存在数据库**而不是写死代码：只有雅安做过人工标定，
+	// 成都/都江堰没有。写死会逼实现者给未标定的校区伪造公式或复用雅安参数，
+	// 两者都会静默产出错误坐标；放进表里，「未标定」就是可显式判定的状态。
+	//
+	// 图字节放对象存储、读取走**后端流式代理**（不 PresignGet）：
+	// 底图是校内地理数据，不把 MinIO 暴露公网、无 CORS、无预签名过期窗口，
+	// 端到端测试也不必起 MinIO（与皮肤包域同一判断）。
+	//
+	// 任一依赖缺失（未配对象存储/仓储）时不挂路由，但**不影响**上方楼栋查询——
+	// 与二课域「可选依赖不拖死核心功能」同一口径。
+	if objectStore != nil && repos.Maps != nil {
+		classroomSvc.BindMaps(classroom.MapOptions{
+			Repo:  repos.Maps,
+			Store: objectStore,
+		})
+		classroom.RegisterMapRoutes(engine, classroomSvc)
+		logger.Info("校区底图已装配：读者侧 2 条（map 图 / meta 元信息）")
+	} else {
+		logger.Warn("校区底图未装配：需要对象存储与地图仓储；楼栋查询不受影响",
+			"object_store_configured", objectStore != nil,
+			"map_repo_configured", repos.Maps != nil)
+	}
+
 	// ── 第三方密钥池（高德）─────────────────────────────────────
 	//
 	// 客户端不存死 key：APK 里的字符串一定能被提取，「硬编码 key」等于公开 key。
@@ -430,6 +459,12 @@ func buildDomains(cfg config.Config, infra infraDeps, httpStack *httpStack, id i
 		post.RegisterAdmin(adminGroup, postSvc)
 		track.RegisterAdmin(adminGroup, trackSvc)
 		classroom.RegisterAdmin(adminGroup, classroomSvc)
+		// 校区底图的管理端（上传图 / 列出 / 写换算参数）。
+		// 与楼栋管理同一套 admin 会话 + role 门槛：换底图会改变所有点位的
+		// 像素含义，影响面比单条楼栋记录大得多，门槛不宜更低。
+		if objectStore != nil && repos.Maps != nil {
+			classroom.RegisterMapAdmin(adminGroup, classroomSvc)
+		}
 		apikey.RegisterAdmin(adminGroup, amapKeySvc)
 		// 教务公共服务取数账号 + 公共缓存失效（仅管理员）。
 		jiaowu.RegisterFetchAccountAdmin(adminGroup, fetchAccountAdmin, jiaowuSvc)

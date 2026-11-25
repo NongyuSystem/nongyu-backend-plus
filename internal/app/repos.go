@@ -65,6 +65,8 @@ type repoBundle struct {
 	Releases release.Repo
 	// Buildings 是教室楼栋（含路线的读写）。
 	Buildings classroom.Repo
+	// Maps 是校区底图（含像素↔经纬度换算参数，规格 §6.1）。
+	Maps classroom.MapRepo
 	// AMapKeys 是高德密钥池（存密文）。
 	AMapKeys apikey.Repo
 	// Mode 供日志与 /status 报告「现在到底用的哪套」。
@@ -87,6 +89,7 @@ func newRepoBundle(pool *pgxpool.Pool, now func() time.Time) (repoBundle, error)
 			Skins:         skinstore.NewSkinMemoryRepo(now),
 			Releases:      releasestore.NewReleaseMemoryRepo(now),
 			Buildings:     classroomstore.NewBuildingMemoryRepo(now),
+			Maps:          classroomstore.NewMapMemoryRepo(now),
 			AMapKeys:      apikeystore.NewKeyMemoryRepo(),
 			Mode:          storeModeMemory,
 		}, nil

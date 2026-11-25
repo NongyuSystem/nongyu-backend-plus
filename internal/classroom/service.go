@@ -2,6 +2,7 @@ package classroom
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -36,6 +37,11 @@ type Options struct {
 type Service struct {
 	repo  Repo
 	clock platform.Clock
+
+	// 底图能力（可选）。经 BindMaps 注入，两者都非 nil 才启用；
+	// 未注入时楼栋查询等既有功能照常工作（见 mapsReady）。
+	mapRepo  MapRepo
+	mapStore MapObjectStore
 }
 
 // New 构造 Service。
@@ -124,8 +130,21 @@ type BuildingInput struct {
 	Aliases     []string
 	Campus      string
 	// Lat/Lng 必须成对出现（只填一个会被拒）。
-	Lat         *float64
-	Lng         *float64
+	Lat *float64
+	Lng *float64
+	// MapPx/MapPy 是底图像素坐标，必须成对出现。
+	//
+	// 维护者口径（2026-11-25）：「管理员只用像素点位置，给用户的是两个都要」。
+	// 因此管理端**新建/更新一律传像素**，后端按 Campus 底图的换算参数
+	// 算出 Lat/Lng 一并存下；读者侧两个都下发。
+	//
+	// 字段本身可为 nil（维护者：「允许无像素，给其他未来接口兼容」）——
+	// 「必须有」是写入门槛，不是「列非空约束」。
+	MapPx *float64
+	MapPy *float64
+	// 注：Lat/Lng 仍保留在入参里，但**已不再是录入途径**——
+	// 维护者决定「不兼容旧数据，强制传像素」，经纬度恒由像素派生。
+	// 保留字段是为了不改动 handler 的请求类型解码结构，写入时会被派生值覆盖。
 	AddressText string
 	Note        string
 	Enabled     *bool
@@ -133,7 +152,7 @@ type BuildingInput struct {
 
 // CreateBuilding 新建楼栋。
 func (s *Service) CreateBuilding(ctx context.Context, in BuildingInput) (*Building, error) {
-	b, err := s.buildFromInput(in, nil)
+	b, err := s.buildFromInput(ctx, in, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +179,7 @@ func (s *Service) UpdateBuilding(ctx context.Context, id int64, in BuildingInput
 	if err != nil {
 		return nil, err
 	}
-	b, err := s.buildFromInput(in, old)
+	b, err := s.buildFromInput(ctx, in, old)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +200,7 @@ func (s *Service) UpdateBuilding(ctx context.Context, id int64, in BuildingInput
 }
 
 // buildFromInput 把入参校验并转成实体。old 为 nil 表示新建。
-func (s *Service) buildFromInput(in BuildingInput, old *Building) (*Building, error) {
+func (s *Service) buildFromInput(ctx context.Context, in BuildingInput, old *Building) (*Building, error) {
 	key, ok := NormalizeKey(in.BuildingNo, in.Zone)
 	if !ok {
 		return nil, apperr.Errorf(apperr.CodeValidationFailed,
@@ -203,14 +222,41 @@ func (s *Service) buildFromInput(in BuildingInput, old *Building) (*Building, er
 	if (in.Lat == nil) != (in.Lng == nil) {
 		return nil, apperr.Errorf(apperr.CodeValidationFailed, "经纬度必须同时提供")
 	}
-	if in.Lat != nil {
-		if *in.Lat < -90 || *in.Lat > 90 {
-			return nil, apperr.Errorf(apperr.CodeValidationFailed, "纬度需在 -90..90")
-		}
-		if *in.Lng < -180 || *in.Lng > 180 {
-			return nil, apperr.Errorf(apperr.CodeValidationFailed, "经度需在 -180..180")
+	if (in.MapPx == nil) != (in.MapPy == nil) {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed, "像素坐标 mapPx/mapPy 必须同时提供")
+	}
+
+	campus := strings.TrimSpace(in.Campus)
+	if campus != "" {
+		if _, ok := ParseCampus(campus); !ok {
+			return nil, apperr.Errorf(apperr.CodeValidationFailed,
+				"校区非法：%q（可选 yaan/chengdu/dujiangyan）", campus)
 		}
 	}
+
+	var mapPx, mapPy *float64
+	var lat, lng *float64
+
+	if in.MapPx == nil || in.MapPy == nil {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed,
+			"必须提供像素坐标 mapPx/mapPy（不支持只传经纬度）")
+	}
+	// 像素必须有校区：没有校区就无像素坐标系可言。
+	if campus == "" {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed,
+			"必须指定校区 campus（可选 yaan/chengdu/dujiangyan）")
+	}
+
+	// 像素是唯一事实源，经纬度是派生值。
+	//
+	// 即使调用方同时传了 lat/lng，也一律以像素换算结果覆盖：同一行存在
+	// 两套互相矛盾的坐标时，读者无法判断该信哪个，数据即不可信。
+	derivedLng, derivedLat, err := s.deriveGeoFromPixel(ctx, Campus(campus), *in.MapPx, *in.MapPy)
+	if err != nil {
+		return nil, err
+	}
+	mapPx, mapPy = in.MapPx, in.MapPy
+	lng, lat = &derivedLng, &derivedLat
 
 	b := &Building{
 		Key: key,
@@ -218,9 +264,11 @@ func (s *Service) buildFromInput(in BuildingInput, old *Building) (*Building, er
 		No:          strings.SplitN(key, "-", 2)[0],
 		DisplayName: name,
 		Aliases:     trimAll(in.Aliases),
-		Campus:      strings.TrimSpace(in.Campus),
-		Lat:         in.Lat,
-		Lng:         in.Lng,
+		Campus:      campus,
+		Lat:         lat,
+		Lng:         lng,
+		MapPx:       mapPx,
+		MapPy:       mapPy,
 		AddressText: strings.TrimSpace(in.AddressText),
 		Note:        strings.TrimSpace(in.Note),
 	}
@@ -228,6 +276,35 @@ func (s *Service) buildFromInput(in BuildingInput, old *Building) (*Building, er
 		b.Zone = parts[1]
 	}
 	return b, nil
+}
+
+// deriveGeoFromPixel 用该校区底图的换算参数把像素派生成经纬度。
+//
+// 这是「管理员只用像素」的核心：像素是唯一事实源，经纬度是派生物。
+// 四条失败路径都必须显式报错、绝不退回雅安参数（规格 §5 第 3 条）：
+//  1. 底图能力未启用；
+//  2. 该校区没有底图行 / 未标定参数（成都、都江堰当前就是这种）；
+//  3. 未上传图片字节（无尺寸则无从判越界）；
+//  4. 像素越界。
+func (s *Service) deriveGeoFromPixel(
+	ctx context.Context, campus Campus, px, py float64,
+) (lng, lat float64, err error) {
+	if err := s.mapsReady(); err != nil {
+		return 0, 0, err
+	}
+	m, err := s.mapRepo.FindMapByCampus(ctx, campus)
+	if err != nil {
+		if isNotFound(err) {
+			return 0, 0, apperr.Errorf(apperr.CodeValidationFailed,
+				"%s 校区尚未登记地图底图，无法按像素定位", campus.Label())
+		}
+		return 0, 0, err
+	}
+	lng, lat, verr := m.ValidatePixel(px, py)
+	if verr != nil {
+		return 0, 0, apperr.Errorf(apperr.CodeValidationFailed, "%v", verr)
+	}
+	return lng, lat, nil
 }
 
 // AdminListBuildings 管理端列表（含停用）。
@@ -274,18 +351,28 @@ type RouteInput struct {
 }
 
 // RoutePointInput 是路线上的一个点。
+//
+// 维护者决定「不兼容旧数据，强制传像素」：每个点**必须**给 MapPx/MapPy，
+// 经纬度由所属楼栋校区的底图换算参数派生（见 BuildingInput 的同款口径）。
+//
+// 不在这里放 campus：路线属于楼栋，校区由楼栋决定，冗余一列会引入
+// 「楼栋在雅安、点却在成都图上」这种无意义状态。
 type RoutePointInput struct {
+	// Lat/Lng 已不是录入途径（恒由像素派生），保留以兼容请求体解码结构。
 	Lat   float64
 	Lng   float64
+	MapPx *float64
+	MapPy *float64
 	Label string
 }
 
 // CreateRoute 新建路线。
 func (s *Service) CreateRoute(ctx context.Context, buildingID int64, in RouteInput) (*Route, error) {
-	if err := s.ensureBuilding(ctx, buildingID); err != nil {
+	b, err := s.findBuilding(ctx, buildingID)
+	if err != nil {
 		return nil, err
 	}
-	r, err := s.routeFromInput(in, nil)
+	r, err := s.routeFromInput(ctx, in, nil, b.Campus)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +397,12 @@ func (s *Service) UpdateRoute(ctx context.Context, routeID int64, in RouteInput)
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.routeFromInput(in, old)
+	// 取所属楼栋：路线点的像素坐标系由楼栋校区决定。
+	b, err := s.findBuilding(ctx, old.BuildingID)
+	if err != nil {
+		return nil, err
+	}
+	r, err := s.routeFromInput(ctx, in, old, b.Campus)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +422,12 @@ func (s *Service) UpdateRoute(ctx context.Context, routeID int64, in RouteInput)
 	return r, nil
 }
 
-func (s *Service) routeFromInput(in RouteInput, old *Route) (*Route, error) {
+// routeFromInput 校验入参并转成实体。
+//
+// campus 来自**所属楼栋**（不是入参）：路线点的像素坐标系由楼栋所在校区决定。
+func (s *Service) routeFromInput(
+	ctx context.Context, in RouteInput, old *Route, campus string,
+) (*Route, error) {
 	title := strings.TrimSpace(in.Title)
 	if title == "" || len(title) > MaxRouteTitleLen {
 		return nil, apperr.Errorf(apperr.CodeValidationFailed, "路线标题不能为空且不超过 %d 字符", MaxRouteTitleLen)
@@ -344,18 +441,35 @@ func (s *Service) routeFromInput(in RouteInput, old *Route) (*Route, error) {
 
 	pts := make([]RoutePoint, 0, len(in.Points))
 	for i, p := range in.Points {
-		if p.Lat < -90 || p.Lat > 90 {
-			return nil, apperr.Errorf(apperr.CodeValidationFailed, "第 %d 个点的纬度非法", i+1)
+		if p.MapPx == nil || p.MapPy == nil {
+			return nil, apperr.Errorf(apperr.CodeValidationFailed,
+				"第 %d 个点必须提供像素坐标 mapPx/mapPy", i+1)
 		}
-		if p.Lng < -180 || p.Lng > 180 {
-			return nil, apperr.Errorf(apperr.CodeValidationFailed, "第 %d 个点的经度非法", i+1)
+		// 传了像素：按楼栋校区换算。楼栋未设校区则无法换算。
+		if campus == "" {
+			return nil, apperr.Errorf(apperr.CodeValidationFailed,
+				"所属楼栋未设置校区，第 %d 个点无法按像素定位", i+1)
 		}
+		c, ok := ParseCampus(campus)
+		if !ok {
+			return nil, apperr.Errorf(apperr.CodeValidationFailed,
+				"所属楼栋的校区 %q 非法", campus)
+		}
+		lng, lat, err := s.deriveGeoFromPixel(ctx, c, *p.MapPx, *p.MapPy)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 个点：%w", i+1, err)
+		}
+
 		if len(p.Label) > MaxRoutePointNote {
 			return nil, apperr.Errorf(apperr.CodeValidationFailed, "第 %d 个点的说明超长", i+1)
 		}
 		// seq 由服务端按数组顺序生成，**不接受客户端自报**：
 		// 让客户端定 seq 会出现重复/跳号，前端连线就乱了。
-		pts = append(pts, RoutePoint{Seq: i + 1, Lat: p.Lat, Lng: p.Lng, Label: strings.TrimSpace(p.Label)})
+		pts = append(pts, RoutePoint{
+			Seq: i + 1, Lat: lat, Lng: lng,
+			MapPx: p.MapPx, MapPy: p.MapPy,
+			Label: strings.TrimSpace(p.Label),
+		})
 	}
 
 	return &Route{
@@ -374,6 +488,16 @@ func (s *Service) DeleteRoute(ctx context.Context, routeID int64) error {
 		return apperr.Errorf(apperr.CodeValidationFailed, "路线 id 非法")
 	}
 	return s.repo.DeleteRoute(ctx, routeID)
+}
+
+// findBuilding 取楼栋实体（供需要其校区等字段的调用方使用）。
+//
+// 与 ensureBuilding 的区别：后者只验证存在性，前者要拿到实体。
+func (s *Service) findBuilding(ctx context.Context, id int64) (*Building, error) {
+	if id <= 0 {
+		return nil, apperr.Errorf(apperr.CodeValidationFailed, "楼栋 id 非法")
+	}
+	return s.repo.FindBuildingByID(ctx, id)
 }
 
 func (s *Service) ensureBuilding(ctx context.Context, id int64) error {
